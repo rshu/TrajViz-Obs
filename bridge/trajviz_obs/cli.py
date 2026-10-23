@@ -25,7 +25,7 @@ Handler = Callable[[argparse.Namespace], dict]
 SUBCOMMANDS: dict[str, Handler] = {}
 
 #: Handler modules, each exposing ``add_parser(sub)``; every task appends its own.
-MODULES: tuple[str, ...] = ("doctor",)
+MODULES: tuple[str, ...] = ("doctor", "sessions")
 
 
 def register(name: str) -> Callable[[Handler], Handler]:
