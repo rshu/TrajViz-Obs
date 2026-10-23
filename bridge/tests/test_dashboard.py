@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import socket
@@ -74,15 +75,27 @@ def _serve(monkeypatch, argv: list[str]) -> tuple[int, list[str], _EofAfterProbe
     return code, out.getvalue().splitlines(), stdin
 
 
+def _argv(kind: str, transcript, data_root) -> list[str]:
+    return (["dashboard", "--transcript", str(transcript)] if kind == "dashboard"
+            else ["converge", "--data-root", str(data_root)])
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@pytest.mark.parametrize("explicit_port", [False, True], ids=["any-port", "explicit-port"])
 @pytest.mark.parametrize("kind", ["dashboard", "converge"])
-def test_serves_until_stdin_closes(kind, fixture_session, tmp_path, monkeypatch):
-    argv = ["dashboard", "--transcript", str(fixture_session)] if kind == "dashboard" else [
-        "converge", "--data-root", str(tmp_path)]
+def test_serves_until_stdin_closes(kind, explicit_port, fixture_session, tmp_path, monkeypatch):
+    port = _free_port() if explicit_port else None
+    argv = [*_argv(kind, fixture_session, tmp_path), *(["--port", str(port)] if port else [])]
     code, lines, stdin = _serve(monkeypatch, argv)
     assert code == 0
     assert len(lines) == 1
     url = json.loads(lines[0])["url"]
-    assert url.startswith("http://127.0.0.1:")
+    assert url.startswith(f"http://127.0.0.1:{port}/" if port else "http://127.0.0.1:")
     assert stdin.status == 200
     with pytest.raises(OSError):
         urllib.request.urlopen(url, timeout=5)
@@ -120,13 +133,34 @@ def test_failing_plugin_is_reported_before_any_url(fixture_session, run_cli, fak
 
 
 @pytest.mark.parametrize("kind", ["dashboard", "converge"])
-def test_busy_port_is_port_busy(kind, fixture_session, tmp_path, run_cli):
-    argv = ["dashboard", "--transcript", str(fixture_session)] if kind == "dashboard" else [
-        "converge", "--data-root", str(tmp_path)]
+def test_busy_port_is_port_busy(kind, fixture_session, tmp_path, run_cli, monkeypatch):
+    """A --port another socket holds is ``port_busy``, found before the app is built."""
+    from agent_trajviz import dashboard
+
+    built = []
+    monkeypatch.setattr(dashboard, "insight_app", lambda **kwargs: built.append("insight"))
+    monkeypatch.setattr(dashboard, "converge_app", lambda **kwargs: built.append("converge"))
     with socket.socket() as taken:
         taken.bind(("127.0.0.1", 0))
         taken.listen()
         port = taken.getsockname()[1]
-        code, out = run_cli([*argv, "--port", str(port)])  # one JSON document: the error, no URL line
-    assert code == 1 and out["error"]["code"] == "port_busy"
+        code, out = run_cli([*_argv(kind, fixture_session, tmp_path), "--port", str(port)])  # one JSON document
+    assert code == 1 and out["error"]["code"] == "port_busy" and built == []
     assert str(port) in out["error"]["message"] and out["error"]["port"] == port
+
+
+@pytest.mark.parametrize("stage", ["build", "launch"])
+@pytest.mark.parametrize("kind", ["dashboard", "converge"])
+def test_other_os_error_with_a_port_stays_internal(kind, stage, fixture_session, tmp_path, run_cli, monkeypatch):
+    """Only a port that cannot be bound is ``port_busy``: an OSError from building or launching the app is not."""
+    from agent_trajviz import dashboard
+
+    def unwritable(*args, **kwargs):
+        raise PermissionError(errno.EACCES, "Permission denied", str(tmp_path / "gradio-cache"))
+
+    if stage == "build":  # converge builds its app inside launch_converge
+        monkeypatch.setattr(dashboard, "insight_app" if kind == "dashboard" else "converge_app", unwritable)
+    else:
+        monkeypatch.setattr(gradio.Blocks, "launch", unwritable)
+    code, out = run_cli([*_argv(kind, fixture_session, tmp_path), "--port", str(_free_port())])
+    assert code == 3 and out["error"]["code"] == "internal" and "Permission denied" in out["error"]["message"]

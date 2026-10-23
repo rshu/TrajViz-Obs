@@ -5,7 +5,8 @@ keeps the pipe open while the dashboard should run). The Insight dashboard opens
 loaded: a page-load event sets the trajectory file control to the transcript and clicks the dashboard's own
 Load button. The transcript is served in place (a Gradio static path) rather than as a cache copy, so TrajViz
 reads it at its real path and finds ``<id>/subagents/`` beside it. A missing ``app`` extra is reported as
-``missing_extra``, and a ``--port`` already in use as ``port_busy``, before anything else is printed.
+``missing_extra``, and a ``--port`` already in use as ``port_busy`` (checked before the app is built), before
+anything else is printed.
 """
 
 from __future__ import annotations
@@ -14,8 +15,8 @@ import argparse
 import contextlib
 import json
 import os
+import socket
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING
@@ -76,18 +77,21 @@ def build_preloaded_insight(transcript_path: str) -> gr.Blocks:
     return app
 
 
-@contextlib.contextmanager
-def _launching(port: int | None) -> Iterator[None]:
-    """Around a launch: Gradio's prints go to stderr, so the URL document stays the first stdout line, and the
-    ``OSError`` Gradio raises for a *port* it cannot bind becomes ``BridgeError("port_busy")``."""
-    try:
-        with contextlib.redirect_stdout(sys.stderr):
-            yield
-    except OSError as exc:
-        if port is None:
-            raise
-        raise BridgeError("port_busy", f"Port {port} on 127.0.0.1 is in use or cannot be bound; pass another "
-                          "--port, or none to take a free one.", port=port) from exc
+def _check_port(port: int | None) -> None:
+    """Raise ``BridgeError("port_busy")`` when 127.0.0.1 cannot bind *port*; ``None`` (Gradio picks one) passes.
+
+    Run before the app is built, so no other ``OSError`` is reported as the port. The probe binds with
+    ``SO_REUSEADDR`` as Gradio's own check does, so a port whose old connections are still closing counts as free.
+    """
+    if port is None:
+        return
+    with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError as exc:
+            raise BridgeError("port_busy", f"Port {port} on 127.0.0.1 is in use or cannot be bound; pass another "
+                              "--port, or none to take a free one.", port=port) from exc
 
 
 def _announce(url: str, **extra: object) -> None:
@@ -108,11 +112,12 @@ def serve_insight(transcript_path: str, port: int | None) -> None:
     When the preload cannot be wired (a TrajViz release changed the upload row) the dashboard still starts and
     the line carries ``"preloaded": false``.
     """
+    _check_port(port)
     dashboard = _dashboard()
     app = dashboard.insight_app()
     preloaded = _add_preload(app, transcript_path)
     try:
-        with _launching(port):
+        with contextlib.redirect_stdout(sys.stderr):  # Gradio's prints: the URL stays the first stdout line
             _, url, _ = app.launch(server_name="127.0.0.1", server_port=port, prevent_thread_lock=True, quiet=True,
                                    allowed_paths=[os.path.dirname(transcript_path)],
                                    **dashboard.insight_presentation())
@@ -125,11 +130,12 @@ def serve_insight(transcript_path: str, port: int | None) -> None:
 
 def serve_converge(data_root: str, port: int | None) -> None:
     """Serve the Converge dashboard over *data_root* until stdin closes; ``{"url"}`` is the first stdout line."""
+    _check_port(port)
     dashboard = _dashboard()
     import gradio as gr
 
     try:
-        with _launching(port):
+        with contextlib.redirect_stdout(sys.stderr):  # Gradio's prints: the URL stays the first stdout line
             _, url, _ = dashboard.launch_converge(host="127.0.0.1", port=port, data_root=data_root,
                                                   prevent_thread_lock=True, quiet=True)
         _announce(url)
