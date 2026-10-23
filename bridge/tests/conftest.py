@@ -8,6 +8,7 @@ import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -105,7 +106,8 @@ def tmp_session(tmp_path: Path) -> SessionTree:
 
     The transcript holds two ``ai-title`` records (the second wins), one real prompt ("fix the tests"),
     an ``isMeta`` caveat row, a ``<command-name>`` slash-command row, a tool call with its result and a final
-    reply; ``<id>/subagents/workflows/wf_1/agent-abc.meta.json`` names sub-agent ``abc``.
+    reply; ``<id>/subagents/workflows/wf_1/`` holds sub-agent ``abc``'s log (``agent-abc.jsonl``, one reply,
+    no spawning call, so TrajViz labels it by its id) and ``agent-abc.meta.json`` naming it.
     """
     sid = TMP_SESSION_ID
     usage = {"input_tokens": 1200, "output_tokens": 40, "cache_read_input_tokens": 0,
@@ -134,6 +136,89 @@ def tmp_session(tmp_path: Path) -> SessionTree:
     transcript.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
     workflow = tmp_path / sid / "subagents" / "workflows" / "wf_1"
     workflow.mkdir(parents=True)
+    child = [{**user(7, "check the build"), "agentId": "abc", "isSidechain": True},
+             {**assistant(8, [{"type": "text", "text": "The build is fine."}]), "agentId": "abc", "isSidechain": True}]
+    (workflow / "agent-abc.jsonl").write_text("".join(json.dumps(r) + "\n" for r in child), encoding="utf-8")
     (workflow / "agent-abc.meta.json").write_text(json.dumps(
         {"agentType": "general-purpose", "description": "Builder check", "spawnDepth": 1}), encoding="utf-8")
     return SessionTree(id=sid, transcript=str(transcript), dir=tmp_path)
+
+
+@pytest.fixture
+def tmp_session_with_bad_child(tmp_session: SessionTree) -> SessionTree:
+    """:func:`tmp_session` plus two sub-agent logs TrajViz cannot read (``agent-bad1``, ``agent-bad2``)."""
+    sub = tmp_session.dir / tmp_session.id / "subagents"
+    (sub / "agent-bad1.jsonl").write_text('{"type":broken}\n', encoding="utf-8")
+    (sub / "workflows" / "agent-bad2.jsonl").write_text("not json at all\n", encoding="utf-8")
+    return tmp_session
+
+
+_CLOCK = datetime(2026, 10, 22, 10, 0, tzinfo=UTC)
+
+
+def make_session(tmp_path: Path, *, steps: int = 40, agents: int = 0,
+                 session_id: str = "5e551011-0000-4000-8000-000000000002") -> str:
+    """Write a native Claude Code session of *steps* main-agent turns and *agents* sub-agents; return its path.
+
+    Each turn is one assistant record (usage, a text block and one tool call: ``Bash`` with a ``pytest``
+    command every third turn, else ``Read`` of a file) and its tool result; every tenth call fails. Each
+    sub-agent is spawned by an ``Agent`` call in place of a main turn and logs three turns of its own in
+    ``<id>/subagents/agent-<agent id>.jsonl``. Records are 1.5 s apart.
+    """
+    sid, clock, serial = session_id, 0.0, 0
+
+    def event(kind: str, message: dict, agent: str = "", **fields) -> dict:
+        nonlocal clock, serial
+        clock, serial = clock + 1.5, serial + 1
+        stamp = (_CLOCK + timedelta(seconds=clock)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        record = {"type": kind, "sessionId": sid, "uuid": f"{agent or 'main'}-{serial}", "parentUuid": None,
+                  "cwd": "/p", "isSidechain": bool(agent), "timestamp": stamp, "message": message, **fields}
+        return {**record, "agentId": agent} if agent else record
+
+    def assistant(i: int, content: list, agent: str = "") -> dict:
+        usage = {"input_tokens": 3, "output_tokens": 50 + i % 7, "cache_read_input_tokens": 1000 + 20 * i,
+                 "cache_creation_input_tokens": 200}
+        return event("assistant", {"role": "assistant", "id": f"msg-{agent}-{i}", "model": "claude-test",
+                                   "content": content, "usage": usage, "stop_reason": "tool_use"}, agent)
+
+    def user(content: str | list, agent: str = "", **fields) -> dict:
+        return event("user", {"role": "user", "content": content}, agent, **fields)
+
+    def turn(i: int, agent: str = "") -> list[dict]:
+        tid = f"toolu_{agent}{i}"
+        call = ({"command": f"pytest -q tests/test_{i % 11}.py"} if i % 3 == 0 else {"file_path": f"/p/src/m{i % 13}.py"})
+        result = {"type": "tool_result", "tool_use_id": tid, "content": "ok"}
+        if i % 10 == 0:
+            result.update(content="boom: exit 1", is_error=True)
+        return [assistant(i, [{"type": "text", "text": f"step {i}"},
+                              {"type": "tool_use", "id": tid, "name": "Bash" if i % 3 == 0 else "Read", "input": call}],
+                          agent),
+                user([result], agent)]
+
+    records = [{"type": "ai-title", "aiTitle": "Synthetic session", "sessionId": sid}, user("build it")]
+    children: dict[str, list[dict]] = {}
+    spawn_every = steps // (agents + 1) if agents else 0
+    for i in range(steps):
+        if len(children) < agents and i and i % spawn_every == 0:
+            aid, tid = f"a{len(children):016x}", f"toolu_spawn{len(children)}"
+            description = f"Worker {len(children)}"
+            records.append(assistant(i, [{"type": "tool_use", "id": tid, "name": "Agent", "input": {
+                "description": description, "prompt": "go", "subagent_type": "Explore"}}]))
+            children[aid] = [user("go", aid), *(r for j in range(3) for r in turn(j, aid))]
+            records.append(user([{"type": "tool_result", "tool_use_id": tid, "content": "done"}],
+                                toolUseResult={"agentId": aid, "description": description}))
+        else:
+            records += turn(i)
+    transcript = tmp_path / f"{sid}.jsonl"
+    transcript.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    for aid, child in children.items():
+        log = tmp_path / sid / "subagents" / f"agent-{aid}.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("".join(json.dumps(r) + "\n" for r in child), encoding="utf-8")
+    return str(transcript)
+
+
+@pytest.fixture
+def big_session(tmp_path: Path) -> str:
+    """A 5,000-turn synthetic session with three sub-agents (see :func:`make_session`)."""
+    return make_session(tmp_path, steps=5000, agents=3)
