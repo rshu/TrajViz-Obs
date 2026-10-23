@@ -22,6 +22,7 @@ import contextlib
 import functools
 import inspect
 import re
+import sys
 import types
 import weakref
 from collections.abc import Callable, Iterator
@@ -74,7 +75,8 @@ def check_supported() -> None:
 def _plugin_outcome() -> tuple[tuple[str, ...], str | None]:
     """The one ``agent_trajviz.load_plugins()`` call of this process: ``(names loaded, None)`` or ``((), error)``."""
     try:
-        return tuple(agent_trajviz.load_plugins()), None
+        with contextlib.redirect_stdout(sys.stderr):
+            return tuple(agent_trajviz.load_plugins()), None
     except agent_trajviz.PluginError as exc:
         return (), str(exc)
 
@@ -83,7 +85,8 @@ def load_plugins() -> list[str]:
     """Run the installed TrajViz plugins (formats, views) once per process; the names of those loaded.
 
     Later calls repeat the first outcome without running any hook again. A plugin whose hook fails raises
-    ``BridgeError("plugin_error")``, on this call and every later one.
+    ``BridgeError("plugin_error")``, on this call and every later one. What a hook prints goes to stderr, so
+    stdout keeps only the bridge's one JSON document.
     """
     loaded, error = _plugin_outcome()
     if error is not None:

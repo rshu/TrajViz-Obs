@@ -205,6 +205,17 @@ def test_doctor_names_loaded_plugins(run_cli, fake_plugins):
     assert code == 0 and out["plugins"] == {"loaded": ["obs-fake"], "error": None}
 
 
+def test_doctor_keeps_a_printing_plugin_off_stdout(fake_plugins, capsys):
+    """A plugin hook's print goes to stderr: stdout holds exactly one JSON document."""
+    from trajviz_obs import cli
+
+    fake_plugins("chatty", lambda: print("chatty plugin registered"))
+    code = cli.main(["doctor"])
+    out, err = capsys.readouterr()
+    assert code == 0 and json.loads(out)["plugins"] == {"loaded": ["chatty"], "error": None}
+    assert "chatty plugin registered" in err
+
+
 def test_doctor_survives_a_failing_plugin(run_cli, fake_plugins):
     def broken() -> None:
         raise RuntimeError("boom")
