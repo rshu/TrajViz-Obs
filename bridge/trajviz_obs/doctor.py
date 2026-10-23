@@ -10,7 +10,7 @@ import platform
 from typing import Any
 
 import agent_trajviz
-from agent_trajviz import attribution, llm
+from agent_trajviz import MissingExtraError, attribution
 
 from .cli import register
 from .errors import BridgeError
@@ -30,19 +30,33 @@ def _importable(name: str) -> bool:
         return False
 
 
+def _llm_env(cwd: str | None, llm_extra: bool) -> dict[str, Any]:
+    """LLM readiness; ``agent_trajviz.llm`` is imported only here, since it needs the ``llm`` extra."""
+    unavailable = {"available": False, "ready": False, "missing": [],
+                   "reason": "The 'llm' extra is not installed (pip install \"agent-trajviz[llm]\")."}
+    if not llm_extra:
+        return unavailable
+    try:
+        from agent_trajviz import llm
+    except MissingExtraError as exc:
+        return {**unavailable, "reason": str(exc)}
+    with contextlib.chdir(cwd) if cwd else contextlib.nullcontext():
+        config = llm.config_from_env(load_dotenv=True)
+    return {"available": True, "ready": bool(config.ready), "missing": list(config.missing), "reason": None}
+
+
 def doctor_info(cwd: str | None) -> dict[str, Any]:
     """Describe the environment; LLM settings are read with *cwd*'s ``.env`` (names only, never values)."""
     if cwd and not os.path.isdir(cwd):
         raise BridgeError("not_found", f"No such directory: {cwd}", path=cwd)
     ok, reason = attribution.available()
-    with contextlib.chdir(cwd) if cwd else contextlib.nullcontext():
-        config = llm.config_from_env(load_dotenv=True)
+    extras = {extra: all(_importable(name) for name in names) for extra, names in EXTRAS.items()}
     return {
         "python": platform.python_version(),
         "trajviz": {"version": agent_trajviz.__version__, "path": os.path.dirname(agent_trajviz.__file__)},
-        "extras": {extra: all(_importable(name) for name in names) for extra, names in EXTRAS.items()},
+        "extras": extras,
         "decaf": {"available": ok, "reason": reason},
-        "llm_env": {"ready": bool(config.ready), "missing": list(config.missing)},
+        "llm_env": _llm_env(cwd, extras["llm"]),
         "reference_root": os.environ.get("TRAJVIZ_REFERENCE_ROOT") or None,
     }
 

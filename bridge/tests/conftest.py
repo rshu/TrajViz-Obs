@@ -5,12 +5,38 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+pytest_plugins = ["pytester"]
+
 FIXTURES = Path(__file__).parent / "fixtures"
+
+#: Settings TrajViz's ``config_from_env`` reads (``ANALYZE_*``, with ``LABEL_*`` filling gaps).
+LLM_ENV = tuple(f"{prefix}_{key}" for prefix in ("ANALYZE", "LABEL") for key in ("BASE_URL", "API_KEY", "MODEL"))
+
+
+@pytest.fixture(autouse=True)
+def _restore_environ():
+    """Restore os.environ after each test.
+
+    TrajViz's ``load_dotenv`` writes ``os.environ`` directly, and monkeypatch cannot undo a write to a key
+    it never recorded (``delenv(..., raising=False)`` of an absent key records nothing).
+    """
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
+
+@pytest.fixture
+def no_llm_env(monkeypatch) -> None:
+    """Unset every LLM setting for one test (restored afterwards)."""
+    for name in LLM_ENV:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture

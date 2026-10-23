@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -16,11 +17,8 @@ def test_doctor_envelope(run_cli):
     assert "available" in out["decaf"] and "ready" in out["llm_env"]
 
 
-def test_doctor_details(run_cli, monkeypatch, tmp_path):
+def test_doctor_details(run_cli, monkeypatch, tmp_path, no_llm_env):
     monkeypatch.setenv("TRAJVIZ_REFERENCE_ROOT", "/refs")
-    for name in ("ANALYZE_BASE_URL", "ANALYZE_API_KEY", "ANALYZE_MODEL", "LABEL_BASE_URL", "LABEL_API_KEY",
-                 "LABEL_MODEL"):
-        monkeypatch.delenv(name, raising=False)
     code, out = run_cli(["doctor", "--cwd", str(tmp_path)])
     assert code == 0
     assert out["python"] == ".".join(map(str, sys.version_info[:3]))
@@ -33,15 +31,36 @@ def test_doctor_details(run_cli, monkeypatch, tmp_path):
     assert out["reference_root"] == "/refs"
 
 
-def test_doctor_reads_dotenv_of_cwd(run_cli, monkeypatch, tmp_path):
-    for prefix in ("ANALYZE", "LABEL"):
-        for key in ("BASE_URL", "API_KEY", "MODEL"):
-            monkeypatch.delenv(f"{prefix}_{key}", raising=False)
+def test_doctor_reads_dotenv_of_cwd(run_cli, tmp_path, no_llm_env):
     (tmp_path / ".env").write_text("ANALYZE_MODEL=m1\n")
     code, out = run_cli(["doctor", "--cwd", str(tmp_path)])
     assert code == 0
     assert not any("ANALYZE_MODEL" in name for name in out["llm_env"]["missing"])
     assert Path.cwd() != tmp_path
+
+
+def test_dotenv_values_do_not_leak_between_tests(pytester):
+    """TrajViz's fill-only load_dotenv writes os.environ directly; conftest must undo it after each test."""
+    pytester.makeconftest((Path(__file__).parent / "conftest.py").read_text())
+    pytester.makepyfile(
+        """
+        import os
+
+        from trajviz_obs.doctor import doctor_info
+
+
+        def test_writes(tmp_path, no_llm_env):
+            (tmp_path / ".env").write_text("ANALYZE_MODEL=leak-probe\\n")
+            doctor_info(str(tmp_path))
+            assert os.environ["ANALYZE_MODEL"] == "leak-probe"
+
+
+        def test_sees_nothing():
+            assert os.environ.get("ANALYZE_MODEL") != "leak-probe"
+        """
+    )
+    pytester.runpytest("-p", "no:cacheprovider").assert_outcomes(passed=2)
+    assert os.environ.get("ANALYZE_MODEL") != "leak-probe"
 
 
 def test_doctor_missing_cwd_is_not_found(run_cli, tmp_path):
@@ -139,6 +158,34 @@ def test_launcher_runs_isolated(tmp_path):
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["trajviz"]["version"].startswith("0.2")
+
+
+def _run_without_requests(tmp_path, *args):
+    """Run the launcher in a fresh ``-I`` interpreter where ``requests`` (the llm extra) cannot be imported."""
+    shim = tmp_path / "no_requests.py"
+    shim.write_text(
+        "import runpy, sys\n"
+        "sys.modules['requests'] = None\n"
+        f"sys.argv = [{str(BRIDGE / 'trajviz_obs_cli.py')!r}, *sys.argv[1:]]\n"
+        "runpy.run_path(sys.argv[0], run_name='__main__')\n"
+    )
+    return subprocess.run([sys.executable, "-I", str(shim), *args], cwd=tmp_path, capture_output=True, text=True,
+                          timeout=120, check=False)
+
+
+def test_doctor_reports_missing_llm_extra(tmp_path):
+    proc = _run_without_requests(tmp_path, "doctor")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["extras"]["llm"] is False and out["extras"]["app"] is False
+    assert out["llm_env"]["available"] is False and out["llm_env"]["ready"] is False
+    assert "llm" in out["llm_env"]["reason"]
+
+
+def test_help_works_without_llm_extra(tmp_path):
+    proc = _run_without_requests(tmp_path, "--help")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "doctor" in json.loads(proc.stdout)["help"]
 
 
 def test_fixture_session_is_vendored(fixture_session, tmp_artifacts):
