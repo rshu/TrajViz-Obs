@@ -48,6 +48,18 @@ def fixture_session() -> Path:
 
 
 @pytest.fixture
+def fixture_snapshot(fixture_session: Path) -> dict:
+    """The snapshot document of :func:`fixture_session` (TrajViz's own window estimate, no artifact folder)."""
+    from trajviz_obs.compat import load_run
+    from trajviz_obs.sidecars import agent_meta, scan_transcript
+    from trajviz_obs.snapshot import build_snapshot
+
+    path = str(fixture_session)
+    return build_snapshot(load_run(path), transcript_path=path, facts=scan_transcript(path),
+                          agents_meta=agent_meta(path), artifacts=None)
+
+
+@pytest.fixture
 def tmp_artifacts(tmp_path: Path) -> Path:
     """An empty artifact folder for one test."""
     path = tmp_path / "artifacts"

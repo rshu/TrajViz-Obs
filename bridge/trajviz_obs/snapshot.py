@@ -22,6 +22,7 @@ from .cli import register
 from .compat import TRAJVIZ_VERSION, EmptySession, load_run, window_info
 from .sessions import _positive_int
 from .sidecars import AgentMeta, TranscriptFacts, agent_meta, scan_transcript
+from .text import render_overview
 
 SCHEMA_VERSION = 1
 
@@ -320,6 +321,7 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
         "artifacts": _artifacts(artifacts),
         "text": "",
     }
+    snap["text"] = render_overview(snap)
     snap["duration_ms"] = duration_ms + int((time.monotonic() - started) * 1000)
     return snap
 

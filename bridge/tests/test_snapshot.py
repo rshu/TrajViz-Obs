@@ -48,7 +48,7 @@ def test_snapshot_enrichment(tmp_session):  # title, prompts, agent label from m
     agent = next(a for a in snap["agents"] if a["id"] == "abc")
     assert agent["label"] == "Builder check" and agent["type"] == "general-purpose"
     assert any(lane["label"] == "Builder check" for lane in snap["swimlane"]["lanes"])
-    assert snap["transcript"]["session_id"] == tmp_session.id and snap["text"] == ""
+    assert snap["transcript"]["session_id"] == tmp_session.id and snap["text"].startswith("Health: ")
 
 
 def test_snapshot_issue_evidence(fixture_session):
