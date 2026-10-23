@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import socket
 import sys
 import urllib.request
 
@@ -116,3 +117,16 @@ def test_failing_plugin_is_reported_before_any_url(fixture_session, run_cli, fak
     fake_plugins("broken", broken)
     code, out = run_cli(["dashboard", "--transcript", str(fixture_session)])
     assert code == 1 and out["error"]["code"] == "plugin_error" and "boom" in out["error"]["message"]
+
+
+@pytest.mark.parametrize("kind", ["dashboard", "converge"])
+def test_busy_port_is_port_busy(kind, fixture_session, tmp_path, run_cli):
+    argv = ["dashboard", "--transcript", str(fixture_session)] if kind == "dashboard" else [
+        "converge", "--data-root", str(tmp_path)]
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        port = taken.getsockname()[1]
+        code, out = run_cli([*argv, "--port", str(port)])  # one JSON document: the error, no URL line
+    assert code == 1 and out["error"]["code"] == "port_busy"
+    assert str(port) in out["error"]["message"] and out["error"]["port"] == port

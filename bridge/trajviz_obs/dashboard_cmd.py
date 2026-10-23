@@ -5,7 +5,7 @@ keeps the pipe open while the dashboard should run). The Insight dashboard opens
 loaded: a page-load event sets the trajectory file control to the transcript and clicks the dashboard's own
 Load button. The transcript is served in place (a Gradio static path) rather than as a cache copy, so TrajViz
 reads it at its real path and finds ``<id>/subagents/`` beside it. A missing ``app`` extra is reported as
-``missing_extra`` before anything is printed.
+``missing_extra``, and a ``--port`` already in use as ``port_busy``, before anything else is printed.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import contextlib
 import json
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING
@@ -75,6 +76,20 @@ def build_preloaded_insight(transcript_path: str) -> gr.Blocks:
     return app
 
 
+@contextlib.contextmanager
+def _launching(port: int | None) -> Iterator[None]:
+    """Around a launch: Gradio's prints go to stderr, so the URL document stays the first stdout line, and the
+    ``OSError`` Gradio raises for a *port* it cannot bind becomes ``BridgeError("port_busy")``."""
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+    except OSError as exc:
+        if port is None:
+            raise
+        raise BridgeError("port_busy", f"Port {port} on 127.0.0.1 is in use or cannot be bound; pass another "
+                          "--port, or none to take a free one.", port=port) from exc
+
+
 def _announce(url: str, **extra: object) -> None:
     sys.stdout.write(json.dumps({"url": url, **extra}) + "\n")
     sys.stdout.flush()
@@ -97,8 +112,7 @@ def serve_insight(transcript_path: str, port: int | None) -> None:
     app = dashboard.insight_app()
     preloaded = _add_preload(app, transcript_path)
     try:
-        # Gradio's own prints go to stderr so the URL document stays the first stdout line.
-        with contextlib.redirect_stdout(sys.stderr):
+        with _launching(port):
             _, url, _ = app.launch(server_name="127.0.0.1", server_port=port, prevent_thread_lock=True, quiet=True,
                                    allowed_paths=[os.path.dirname(transcript_path)],
                                    **dashboard.insight_presentation())
@@ -115,7 +129,7 @@ def serve_converge(data_root: str, port: int | None) -> None:
     import gradio as gr
 
     try:
-        with contextlib.redirect_stdout(sys.stderr):
+        with _launching(port):
             _, url, _ = dashboard.launch_converge(host="127.0.0.1", port=port, data_root=data_root,
                                                   prevent_thread_lock=True, quiet=True)
         _announce(url)
