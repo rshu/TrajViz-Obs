@@ -188,7 +188,7 @@ accepts a local checkout path (installed editable) or any pip requirement.
 ### Python environment *(my call)*
 
 - Location: `<cache>/trajviz-obs/venv`, where `<cache>` is `$XDG_CACHE_HOME`,
-  else `~/.cache` (macOS and Linux), else `%LOCALAPPDATA%` (Windows). A
+  else `$HOME/.cache`, else `%LOCALAPPDATA%` (Windows without `HOME`). A
   `state.json` beside it records what was installed (TrajViz version, extras,
   source, interpreter) so the mod decides whether a setup is needed without
   running pip.
