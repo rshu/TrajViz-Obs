@@ -2,7 +2,8 @@
 
 Exit codes: 0 with the handler's document; 1 with ``{"error": ...}`` for a
 reported failure; 2 for a usage error; 3 for an unexpected exception (the
-traceback goes to stderr).
+traceback goes to stderr). A handler that writes its own document (a server announcing its URL
+before it blocks) returns ``None`` and nothing more is written.
 """
 
 from __future__ import annotations
@@ -19,13 +20,14 @@ from agent_trajviz import LoadError, MissingExtraError
 
 from .errors import BridgeError
 
-Handler = Callable[[argparse.Namespace], dict]
+Handler = Callable[[argparse.Namespace], dict | None]
 
 #: Subcommand name -> handler, filled by :func:`register`.
 SUBCOMMANDS: dict[str, Handler] = {}
 
 #: Handler modules, each exposing ``add_parser(sub)``; every task appends its own.
-MODULES: tuple[str, ...] = ("doctor", "sessions", "snapshot", "views_cmd", "report_cmd", "compare_cmd", "llm_cmd")
+MODULES: tuple[str, ...] = ("doctor", "sessions", "snapshot", "views_cmd", "report_cmd", "compare_cmd", "llm_cmd",
+                             "dashboard_cmd")
 
 
 def register(name: str) -> Callable[[Handler], Handler]:
@@ -97,7 +99,10 @@ def main(argv: list[str] | None = None) -> int:
             _emit({"help": str(exc)})
             return 0
         # Serialised before anything is written, so a bad document never leaves partial output.
-        text = json.dumps(SUBCOMMANDS[args.command](args))
+        document = SUBCOMMANDS[args.command](args)
+        if document is None:
+            return 0
+        text = json.dumps(document)
     except BridgeError as exc:
         _emit({"error": exc.to_dict()})
         return 1
