@@ -132,21 +132,36 @@ def test_failing_plugin_is_reported_before_any_url(fixture_session, run_cli, fak
     assert code == 1 and out["error"]["code"] == "plugin_error" and "boom" in out["error"]["message"]
 
 
-@pytest.mark.parametrize("kind", ["dashboard", "converge"])
-def test_busy_port_is_port_busy(kind, fixture_session, tmp_path, run_cli, monkeypatch):
-    """A --port another socket holds is ``port_busy``, found before the app is built."""
+@pytest.fixture
+def builds(monkeypatch) -> list[str]:
+    """The dashboard apps the test asked TrajViz to build; each build is a stand-in that builds nothing."""
     from agent_trajviz import dashboard
 
-    built = []
+    built: list[str] = []
     monkeypatch.setattr(dashboard, "insight_app", lambda **kwargs: built.append("insight"))
     monkeypatch.setattr(dashboard, "converge_app", lambda **kwargs: built.append("converge"))
+    return built
+
+
+@pytest.mark.parametrize("kind", ["dashboard", "converge"])
+def test_busy_port_is_port_busy(kind, fixture_session, tmp_path, run_cli, builds):
+    """A --port another socket holds is ``port_busy``, found before the app is built."""
     with socket.socket() as taken:
         taken.bind(("127.0.0.1", 0))
         taken.listen()
         port = taken.getsockname()[1]
         code, out = run_cli([*_argv(kind, fixture_session, tmp_path), "--port", str(port)])  # one JSON document
-    assert code == 1 and out["error"]["code"] == "port_busy" and built == []
+    assert code == 1 and out["error"]["code"] == "port_busy" and builds == []
     assert str(port) in out["error"]["message"] and out["error"]["port"] == port
+
+
+@pytest.mark.parametrize("port", ["70000", "0"])
+@pytest.mark.parametrize("kind", ["dashboard", "converge"])
+def test_port_outside_1_to_65535_is_a_usage_error(kind, port, fixture_session, tmp_path, run_cli, builds):
+    code, out = run_cli([*_argv(kind, fixture_session, tmp_path), "--port", port])
+    assert code == 2 and out["error"]["code"] == "usage" and builds == []
+    assert "--port" in out["error"]["message"] and "1 to 65535" in out["error"]["message"]
+    assert repr(port) in out["error"]["message"]
 
 
 @pytest.mark.parametrize("stage", ["build", "launch"])

@@ -145,14 +145,26 @@ def serve_converge(data_root: str, port: int | None) -> None:
             gr.close_all()
 
 
+def _port(text: str) -> int:
+    """``--port`` (an argparse type): a TCP port number from 1 to 65535."""
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if not 1 <= value <= 65535:
+        raise argparse.ArgumentTypeError(f"expected a port number from 1 to 65535, got {text!r}")
+    return value
+
+
 def add_parser(sub: argparse._SubParsersAction) -> None:
+    port_help = "The port, 1 to 65535 (default: Gradio's first free one from 7860)."
     p = sub.add_parser("dashboard", help="The Insight dashboard with the session preloaded, until stdin closes.")
     p.add_argument("--transcript", required=True, help="The session transcript.")
-    p.add_argument("--port", type=int, default=None, help="The port (default: Gradio's first free one from 7860).")
+    p.add_argument("--port", type=_port, default=None, help=port_help)
 
     p = sub.add_parser("converge", help="The Converge comparison dashboard, until stdin closes.")
     p.add_argument("--data-root", required=True, help="The folder batch manifests may name files in.")
-    p.add_argument("--port", type=int, default=None, help="The port (default: Gradio's first free one from 7860).")
+    p.add_argument("--port", type=_port, default=None, help=port_help)
 
 
 @register("dashboard")
