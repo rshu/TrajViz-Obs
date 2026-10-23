@@ -60,6 +60,14 @@ def fixture_snapshot(fixture_session: Path) -> dict:
 
 
 @pytest.fixture
+def fixture_run(fixture_session: Path):
+    """:func:`fixture_session` loaded through ``compat.load_run`` (TrajViz's own window estimate)."""
+    from trajviz_obs.compat import load_run
+
+    return load_run(str(fixture_session))
+
+
+@pytest.fixture
 def tmp_artifacts(tmp_path: Path) -> Path:
     """An empty artifact folder for one test."""
     path = tmp_path / "artifacts"
