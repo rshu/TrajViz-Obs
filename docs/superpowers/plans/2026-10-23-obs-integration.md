@@ -16,7 +16,8 @@ Those of both earlier plans, plus the bridge contract as built (binding on the m
 - `view` and `json` take `--window N`, `--artifacts DIR` and `--kind current|other`; an empty current session answers `{"empty": true, "reason"}` with exit 0.
 - `llm-prompt` always writes `<artifacts>/prompts-<feature>.json` and omits `prompts` from stdout when that file is over 256 KB; the mod reads the file when `prompts` is absent. `llm-apply` and the direct subcommands take `--model`; the label result carries `errors`.
 - `compare` writes `compare/<other-stem>.json` (with an `orientation` key) and `scorecard` writes `compare/scorecard.json`; `converge-cli` requires `--artifacts DIR`.
-- `bundle` returns `{"path", "bytes", "members"}`; `dashboard`/`converge` print `{"url"}` first and block until stdin closes; a busy explicit port surfaces as the child's first stderr line.
+- `bundle` returns `{"path", "bytes", "members" (at most 200), "members_total"}`; `dashboard`/`converge` print `{"url"}` first and block until stdin closes; a busy explicit port prints a JSON error envelope `{"error": {"code": "port_busy", …}}` on stdout and exits 1 before any URL line (the mod's server start treats a JSON `error` line on stdout as the failure).
+- `--limit` is capped at 500 on `view` and `sessions` (a larger value is a usage error); inline text is held under 200 KB and a `cut` count says how many rows were dropped; `doctor` lists loaded TrajViz `plugins`; new error codes `plugin_error` and `port_busy`.
 - Handlers are `export async function name($, ctx)`; `CommandContext` carries no `$`; dispatch is a static switch (mod Task 1 ruling).
 
 ## Review Focus
