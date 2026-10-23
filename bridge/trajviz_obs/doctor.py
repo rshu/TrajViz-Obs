@@ -1,4 +1,4 @@
-"""``doctor``: what this environment can do (Python, TrajViz, extras, DECAF, LLM settings)."""
+"""``doctor``: what this environment can do (Python, TrajViz, its plugins, extras, DECAF, LLM settings)."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from typing import Any
 import agent_trajviz
 from agent_trajviz import MissingExtraError, attribution
 
+from . import compat
 from .cli import register
 from .errors import BridgeError
 
@@ -45,6 +46,14 @@ def _llm_env(cwd: str | None, llm_extra: bool) -> dict[str, Any]:
     return {"available": True, "ready": bool(config.ready), "missing": list(config.missing), "reason": None}
 
 
+def _plugins() -> dict[str, Any]:
+    """The TrajViz plugins loaded (names), or, when one failed, its error (``loaded`` is then empty)."""
+    try:
+        return {"loaded": compat.load_plugins(), "error": None}
+    except BridgeError as exc:
+        return {"loaded": [], "error": exc.message}
+
+
 def doctor_info(cwd: str | None) -> dict[str, Any]:
     """Describe the environment; LLM settings are read with *cwd*'s ``.env`` (names only, never values)."""
     if cwd and not os.path.isdir(cwd):
@@ -54,6 +63,7 @@ def doctor_info(cwd: str | None) -> dict[str, Any]:
     return {
         "python": platform.python_version(),
         "trajviz": {"version": agent_trajviz.__version__, "path": os.path.dirname(agent_trajviz.__file__)},
+        "plugins": _plugins(),
         "extras": extras,
         "decaf": {"available": ok, "reason": reason},
         "llm_env": _llm_env(cwd, extras["llm"]),

@@ -191,3 +191,24 @@ def test_help_works_without_llm_extra(tmp_path):
 def test_fixture_session_is_vendored(fixture_session, tmp_artifacts):
     assert fixture_session.is_file() and fixture_session.stat().st_size > 0
     assert tmp_artifacts.is_dir() and not any(tmp_artifacts.iterdir())
+
+
+def test_doctor_lists_plugins(run_cli, fake_plugins):
+    code, out = run_cli(["doctor"])
+    assert code == 0 and out["plugins"] == {"loaded": [], "error": None}
+
+
+def test_doctor_names_loaded_plugins(run_cli, fake_plugins):
+    fake_plugins("obs-fake", lambda: None)
+    code, out = run_cli(["doctor"])
+    assert code == 0 and out["plugins"] == {"loaded": ["obs-fake"], "error": None}
+
+
+def test_doctor_survives_a_failing_plugin(run_cli, fake_plugins):
+    def broken() -> None:
+        raise RuntimeError("boom")
+
+    fake_plugins("broken", broken)
+    code, out = run_cli(["doctor"])
+    assert code == 0 and out["plugins"]["loaded"] == []
+    assert "'broken'" in out["plugins"]["error"] and "boom" in out["plugins"]["error"]

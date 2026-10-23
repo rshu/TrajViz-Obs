@@ -19,7 +19,7 @@ import agent_trajviz as tv
 from agent_trajviz import Trajectory
 
 from .cli import register
-from .compat import EmptySession, load_run
+from .compat import EmptySession, load_plugins, load_run
 from .errors import BridgeError
 from .text import LINE_CHARS, _cell, _clip, _duration, _num
 from .views_cmd import _artifacts, _load, _session_args, _write_json
@@ -163,6 +163,7 @@ def scorecard(current: Trajectory | None, others: list[str], *, fuzzy: bool, lab
     Every ``run_group_views()`` view goes to ``out_dir/compare/scorecard.json``. A file TrajViz cannot read
     is a row with its ``error``; fewer than two runs raise ``BridgeError("compare_failed")``.
     """
+    load_plugins()  # TrajViz loads the others itself (and with --no-self nothing went through load_run)
     sources: list[Trajectory | str] = [*([] if no_self else [current]), *others]
     try:
         result = tv.compare_runs(sources, labels=labels, fuzzy_commands=fuzzy)

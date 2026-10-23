@@ -89,6 +89,43 @@ def _restore_subcommands():
 
 
 @pytest.fixture
+def fake_plugins(monkeypatch) -> Callable[[str, Callable[[], None]], None]:
+    """Install TrajViz plugins for one test: ``fake_plugins(name, hook)`` declares an entry point in TrajViz's
+    plugin group whose hook is *hook*.
+
+    The bridge's once-per-process plugin load starts afresh, and the formats and views the hooks register are
+    unregistered afterwards (TrajViz has no unregister, so its registries are restored).
+    """
+    import functools
+    import sys
+    import types
+    from importlib.metadata import EntryPoint
+
+    from agent_trajviz import plugins as tv_plugins
+    from agent_trajviz import views as tv_views
+
+    from trajviz_obs import compat
+
+    installed: list[EntryPoint] = []
+
+    def install(name: str, hook: Callable[[], None]) -> None:
+        module = types.ModuleType(f"obs_fake_plugin_{len(installed)}")
+        module.register = hook
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+        installed.append(EntryPoint(name=name, value=f"{module.__name__}:register", group=tv_plugins.PLUGIN_GROUP))
+
+    monkeypatch.setattr(tv_plugins, "entry_points", lambda *, group: [ep for ep in installed if ep.group == group])
+    monkeypatch.setattr(compat, "_plugin_outcome", functools.cache(compat._plugin_outcome.__wrapped__))
+    registries = (tv_plugins._CUSTOM, tv_plugins._LABELS, tv_views._SPECS, tv_views._CATALOG)
+    saved, loaded = [dict(registry) for registry in registries], list(tv_plugins._LOADED)
+    yield install
+    for registry, before in zip(registries, saved, strict=True):
+        registry.clear()
+        registry.update(before)
+    tv_plugins._LOADED[:] = loaded
+
+
+@pytest.fixture
 def run_cli() -> Callable[[list[str]], tuple[int, dict]]:
     """Call ``cli.main(argv)`` in-process; return its exit code and the parsed stdout JSON."""
     from trajviz_obs import cli

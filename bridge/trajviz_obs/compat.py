@@ -10,11 +10,16 @@ The plugin ships against the published ``agent-trajviz>=0.2.0,<0.3``. Two things
    labeler's ``call_llm`` (and its retry sleep) for the duration of a capture or replay.
 3. **A step cap on env-mode labeling.** ``label_trajectory()`` labels every step; :func:`labeler_step_cap`
    wraps its real ``call_llm`` so only the first steps reach the endpoint, as session mode labels them.
+
+It also runs TrajViz's plugins (public API): ``load()`` reads only the formats already registered, so
+:func:`load_plugins` runs ``agent_trajviz.load_plugins()`` once per process before the first load or view lookup,
+as TrajViz's own command does on start.
 """
 
 from __future__ import annotations
 
 import contextlib
+import functools
 import inspect
 import re
 import types
@@ -65,13 +70,35 @@ def check_supported() -> None:
                           version=TRAJVIZ_VERSION, required=">=0.2.0,<0.3")
 
 
+@functools.cache
+def _plugin_outcome() -> tuple[tuple[str, ...], str | None]:
+    """The one ``agent_trajviz.load_plugins()`` call of this process: ``(names loaded, None)`` or ``((), error)``."""
+    try:
+        return tuple(agent_trajviz.load_plugins()), None
+    except agent_trajviz.PluginError as exc:
+        return (), str(exc)
+
+
+def load_plugins() -> list[str]:
+    """Run the installed TrajViz plugins (formats, views) once per process; the names of those loaded.
+
+    Later calls repeat the first outcome without running any hook again. A plugin whose hook fails raises
+    ``BridgeError("plugin_error")``, on this call and every later one.
+    """
+    loaded, error = _plugin_outcome()
+    if error is not None:
+        raise BridgeError("plugin_error", error)
+    return list(loaded)
+
+
 def load_run(path: str, *, window_limit: int | None = None, current: bool = False) -> Trajectory:
     """``agent_trajviz.load(path)`` with the engine's window (when given) set before anything is computed.
 
-    With *current* (the session being written), a file with no assistant step yet raises
-    :class:`EmptySession` instead of TrajViz's ``LoadError``.
+    The installed TrajViz plugins are loaded first (:func:`load_plugins`). With *current* (the session being
+    written), a file with no assistant step yet raises :class:`EmptySession` instead of TrajViz's ``LoadError``.
     """
     check_supported()
+    load_plugins()
     if window_limit is not None and window_limit < 1:
         raise ValueError(f"window_limit must be a positive token count, not {window_limit}")
     try:

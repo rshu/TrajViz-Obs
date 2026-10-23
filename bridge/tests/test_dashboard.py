@@ -107,3 +107,12 @@ def test_missing_transcript_is_not_found(tmp_path, run_cli):
 def test_missing_data_root_is_not_found(tmp_path, run_cli):
     code, out = run_cli(["converge", "--data-root", str(tmp_path / "gone")])
     assert code == 1 and out["error"]["code"] == "not_found"
+
+
+def test_failing_plugin_is_reported_before_any_url(fixture_session, run_cli, fake_plugins):
+    def broken() -> None:
+        raise RuntimeError("boom")
+
+    fake_plugins("broken", broken)
+    code, out = run_cli(["dashboard", "--transcript", str(fixture_session)])
+    assert code == 1 and out["error"]["code"] == "plugin_error" and "boom" in out["error"]["message"]

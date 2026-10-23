@@ -23,7 +23,7 @@ from agent_trajviz import Trajectory
 
 from . import paths
 from .cli import register
-from .compat import EmptySession, load_run
+from .compat import EmptySession, load_plugins, load_run
 from .errors import BridgeError
 from .sessions import MAX_LIMIT, _positive_int, page_limit
 from .text import _clip, _num, render_series, render_table
@@ -67,12 +67,15 @@ _BARS: dict[str, tuple[str, str]] = {
 
 
 def catalog() -> list[dict]:
-    """Every single-run view, in TrajViz's order: ``{id, kind, title, description, options}``."""
+    """Every single-run view, in TrajViz's order (plugins' views included): ``{id, kind, title, description,
+    options}``."""
+    load_plugins()
     return [{"id": vid, "kind": e["kind"], "title": e["title"], "description": e["description"],
              "options": dict(e["options"])} for vid, e in tv.VIEW_CATALOG.items()]
 
 
 def _options_help(view_id: str) -> dict[str, str]:
+    load_plugins()
     if view_id not in tv.VIEW_CATALOG:
         raise BridgeError("unknown_view", f"No view {view_id!r}; `view` with no id lists them.",
                           views=list(tv.VIEW_CATALOG))
@@ -257,7 +260,8 @@ def export(run: Trajectory, out_dir: Path, *, only: list[str] | None, with_traje
 
 
 def write_schemas(out_dir: Path) -> dict:
-    """The JSON Schema of every view TrajViz knows, as ``<id>.schema.json``."""
+    """The JSON Schema of every view TrajViz knows (plugins' views included), as ``<id>.schema.json``."""
+    load_plugins()
     out_dir.mkdir(parents=True, exist_ok=True)
     files, total = [], 0
     for view_id, schema in tv.view_schemas().items():

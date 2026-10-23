@@ -20,6 +20,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 from .cli import register
+from .compat import load_plugins
 from .errors import BridgeError
 
 if TYPE_CHECKING:
@@ -140,6 +141,7 @@ def _serve_dashboard(args: argparse.Namespace) -> None:
     path = Path(args.transcript).resolve()
     if not path.is_file():
         raise BridgeError("not_found", f"No such transcript: {path}", path=str(path))
+    load_plugins()  # as TrajViz's own dashboard command does on start, so the app reads plugins' formats
     serve_insight(str(path), args.port)
 
 
