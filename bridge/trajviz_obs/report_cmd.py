@@ -21,6 +21,9 @@ from .compat import EmptySession
 from .errors import BridgeError
 from .views_cmd import _artifacts, _load, _session_args
 
+#: Most member names ``bundle`` lists on stdout.
+MEMBERS_LISTED = 200
+
 
 def _file_dest(dest: Path) -> Path:
     """*dest* with its folder created; an existing folder at *dest* is refused (an explicit file is wanted)."""
@@ -71,9 +74,12 @@ def _subagent_files(root: Path) -> list[Path]:
 
 
 def bundle_session(transcript_path: str, dest: Path) -> dict:
-    """The transcript and every file under ``<id>/subagents/`` as a ZIP at *dest*: ``{"path", "bytes", "members"}``.
+    """The transcript and every file under ``<id>/subagents/`` as a ZIP at *dest*: ``{"path", "bytes", "members",
+    "members_total"}``.
 
-    Members are stored as ``<id>.jsonl`` and ``<id>/subagents/…`` (relative to the transcript's folder).
+    Members are stored as ``<id>.jsonl`` and ``<id>/subagents/…`` (relative to the transcript's folder);
+    ``members`` names the first :data:`MEMBERS_LISTED` of them (the ZIP holds them all, ``members_total`` counts
+    them), so the answer does not grow with the session.
     """
     transcript = Path(transcript_path)
     if not transcript.is_file():
@@ -90,7 +96,8 @@ def bundle_session(transcript_path: str, dest: Path) -> dict:
     except BaseException:
         _discard(tmp)
         raise
-    return {"path": str(dest), "bytes": _replace(tmp, dest), "members": members}
+    return {"path": str(dest), "bytes": _replace(tmp, dest), "members": members[:MEMBERS_LISTED],
+            "members_total": len(members)}
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:

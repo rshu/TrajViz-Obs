@@ -99,6 +99,7 @@ def test_cli_report_empty_current(run_cli, tmp_path):
 def test_cli_bundle_default_path(run_cli, tmp_session_with_child, tmp_artifacts):
     code, out = run_cli(["bundle", "--transcript", tmp_session_with_child.transcript, "--artifacts", str(tmp_artifacts)])
     assert code == 0 and out["path"] == str(tmp_artifacts / "bundle.zip") and len(out["members"]) == 3
+    assert out["members_total"] == 3
 
 
 def test_cli_bundle_missing_transcript(run_cli, tmp_path):
@@ -116,3 +117,14 @@ def test_report_error_is_bridge_error(fixture_run, tmp_artifacts, monkeypatch):
     with pytest.raises(BridgeError) as e:
         write_report_file(fixture_run, tmp_artifacts / "report.html", dark=False, offline=False)
     assert e.value.code == "report_failed" and list(tmp_artifacts.iterdir()) == []
+
+
+def test_bundle_lists_at_most_200_members(tmp_session_with_child, tmp_artifacts, run_cli):
+    sub = tmp_session_with_child.dir / tmp_session_with_child.id / "subagents"
+    for i in range(250):
+        (sub / f"agent-x{i:03d}.jsonl").write_text("{}\n")
+    out = bundle_session(tmp_session_with_child.transcript, tmp_artifacts / "bundle.zip")
+    names = zipfile.ZipFile(out["path"]).namelist()
+    assert out["members_total"] == len(names) == 253 and out["members"] == names[:200]
+    code, out = run_cli(["bundle", "--transcript", tmp_session_with_child.transcript, "--out", out["path"]])
+    assert code == 0 and len(out["members"]) == 200 and out["members_total"] == 253
