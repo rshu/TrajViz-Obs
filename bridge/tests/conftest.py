@@ -165,6 +165,12 @@ def tmp_session(tmp_path: Path) -> SessionTree:
 
 
 @pytest.fixture
+def tmp_session_with_child(tmp_session: SessionTree) -> SessionTree:
+    """:func:`tmp_session`, named for tests that rely on its sub-agent log under ``<id>/subagents/``."""
+    return tmp_session
+
+
+@pytest.fixture
 def tmp_session_with_bad_child(tmp_session: SessionTree) -> SessionTree:
     """:func:`tmp_session` plus two sub-agent logs TrajViz cannot read (``agent-bad1``, ``agent-bad2``)."""
     sub = tmp_session.dir / tmp_session.id / "subagents"
