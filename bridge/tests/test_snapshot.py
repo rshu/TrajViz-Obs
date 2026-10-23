@@ -98,6 +98,14 @@ def test_snapshot_cli_on_fixture(run_cli, fixture_session, tmp_artifacts):
     assert len(out["series"]["tokens"]["output"]) <= 10 and out["duration_ms"] >= 0
 
 
+def test_snapshot_cli_max_points_is_capped_at_2000(run_cli, fixture_session):
+    base = ["snapshot", "--transcript", str(fixture_session)]
+    code, out = run_cli([*base, "--max-points", "2001"])
+    assert code == 2 and out["error"]["code"] == "usage" and "2000" in out["error"]["message"]
+    assert "--max-points" in out["error"]["message"]
+    assert run_cli([*base, "--max-points", "2000"])[0] == 0
+
+
 def test_snapshot_small_max_points_merges_lanes_and_phases(tmp_path):
     path = make_session(tmp_path, steps=300, agents=30)
     run = load_run(path)

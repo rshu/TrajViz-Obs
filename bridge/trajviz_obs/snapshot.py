@@ -2,7 +2,8 @@
 
 Every number comes from a TrajViz view (computed with ``run.views(only=VIEWS)``) except the enrichments the
 bridge reads itself (title, prompts, sub-agent names), which sit beside them. Series are downsampled to
-``max_points`` and tables cut to their top N, so the document stays small on any session.
+``max_points`` (``--max-points`` takes at most :data:`MAX_POINTS`) and tables cut to their top N, so the document
+stays small on any session.
 """
 
 from __future__ import annotations
@@ -51,6 +52,8 @@ LABEL_CHARS, PREVIEW_CHARS, EVIDENCE_CHARS = 40, 120, 80
 EVIDENCE_KEYS = ("command", "file_path", "path", "notebook_path", "pattern", "url", "query")
 #: Segment budget shared by the swimlane's lanes, as a multiple of ``max_points``.
 LANE_BUDGET = 4
+#: Largest ``--max-points``, which bounds every series, the phase band and each swimlane lane.
+MAX_POINTS = 2000
 
 
 def downsample(values: list[float | None], n: int) -> list[float | None]:
@@ -326,13 +329,25 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
     return snap
 
 
+def _points_limit(text: str) -> int:
+    """``--max-points`` (an argparse type): a whole number from 1 to :data:`MAX_POINTS`."""
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if not 1 <= value <= MAX_POINTS:
+        raise argparse.ArgumentTypeError(f"expected a whole number from 1 to {MAX_POINTS}, got {text!r}")
+    return value
+
+
 def add_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("snapshot", help="The snapshot document the overview card, pane and status line draw.")
     p.add_argument("--transcript", required=True, help="The session transcript (or session directory).")
     p.add_argument("--window", type=_positive_int, default=None,
                    help="The real context window in tokens (default: TrajViz's own estimate).")
     p.add_argument("--artifacts", type=Path, default=None, help="The session's artifact folder (read, never created).")
-    p.add_argument("--max-points", type=_positive_int, default=400, help="Longest series kept (default: 400).")
+    p.add_argument("--max-points", type=_points_limit, default=400,
+                   help=f"Longest series kept (default: 400, at most {MAX_POINTS}).")
     p.add_argument("--kind", choices=("current", "other"), default="other",
                    help="'current' (the session being written) answers {\"empty\": true} before its first step.")
 
