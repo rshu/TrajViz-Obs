@@ -7,6 +7,7 @@ file for its start time and counts newlines for its record count.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 from dataclasses import asdict, dataclass
@@ -91,13 +92,29 @@ def _looks_like_path(spec: str) -> bool:
         (".jsonl", ".json"))
 
 
+def _kind(target: Path) -> Literal["file", "dir"] | None:
+    """Whether *target* is a file or a directory (None for neither); ``OSError`` when the OS cannot look it up."""
+    return "file" if target.is_file() else "dir" if target.is_dir() else None
+
+
 def resolve_session(spec: str, *, cwd: str, config_dir: Path) -> Resolved:
     """Resolve *spec*: a path to a file or session directory (relative to *cwd*), else an id or unique id
-    prefix among this project's sessions."""
+    prefix among this project's sessions.
+
+    A path the OS cannot look up (a name too long, a folder on the way that cannot be searched) is
+    ``not_found``; a spec that is not path-like is then tried as an id.
+    """
     target = Path(os.path.abspath(os.path.join(cwd, os.path.expanduser(spec)))) if spec else None
-    if target is not None and target.is_file():
+    try:
+        kind = _kind(target) if target is not None else None
+    except OSError as exc:
+        if _looks_like_path(spec):
+            raise BridgeError("not_found", f"Cannot look up {target}: {exc.strerror or exc}",
+                              path=str(target)) from exc
+        kind = None
+    if kind == "file":
         return _resolved_file(target)
-    if target is not None and target.is_dir():
+    if kind == "dir":
         return Resolved(path=str(target), session_id=target.name, project_dir=str(target.parent), kind="dir")
     if target is not None and _looks_like_path(spec):
         raise BridgeError("not_found", f"No such file or session directory: {target}", path=str(target))
@@ -124,8 +141,9 @@ def resolve_session_id(session_id: str, *, cwd: str, config_dir: Path) -> Resolv
         folders += sorted(p for p in projects.iterdir() if p.is_dir() and p != folders[0])
     for folder in folders:
         candidate = folder / f"{session_id}.jsonl"
-        if candidate.is_file():
-            return _resolved_file(candidate)
+        with contextlib.suppress(OSError):  # a name too long, or a folder that cannot be searched: not here
+            if candidate.is_file():
+                return _resolved_file(candidate)
     raise BridgeError("not_found", f"No transcript for session {session_id} under {projects}", path=str(projects))
 
 

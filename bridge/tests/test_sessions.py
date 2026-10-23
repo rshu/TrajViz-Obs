@@ -199,3 +199,26 @@ def test_sessions_are_cut_to_the_byte_budget(run_cli, fake_projects, monkeypatch
     monkeypatch.setattr(sessions, "LIST_BYTES", len(json.dumps(rows[:2])))
     code, out = run_cli(["sessions", "--cwd", fake_projects.cwd, "--config-dir", str(fake_projects.config)])
     assert code == 0 and out["sessions"] == rows[:2] and out["cut"] == 1
+
+
+def test_resolve_over_long_spec_is_not_found(run_cli, fake_projects):
+    Path(fake_projects.cwd).mkdir(parents=True)  # an existing folder, so the OS checks the name's length
+    base = ["resolve", "--cwd", fake_projects.cwd, "--config-dir", str(fake_projects.config)]
+    long = "a" * 300
+    for argv in (["--session", long], ["--session", f"{long}.jsonl"], ["--session-id", long]):
+        code, out = run_cli([*base, *argv])
+        assert code == 1 and out["error"]["code"] == "not_found", (argv, out)
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="needs a user that permissions bind")
+def test_resolve_behind_an_unsearchable_folder_is_not_found(run_cli, fake_projects, tmp_path):
+    locked = tmp_path / "locked"
+    (locked / "inner").mkdir(parents=True)
+    (locked / "inner" / "x.jsonl").write_text("{}\n")
+    locked.chmod(0)
+    try:
+        code, out = run_cli(["resolve", "--cwd", fake_projects.cwd, "--config-dir", str(fake_projects.config),
+                             "--session", str(locked / "inner" / "x.jsonl")])
+    finally:
+        locked.chmod(0o755)
+    assert code == 1 and out["error"]["code"] == "not_found" and "Permission denied" in out["error"]["message"]
