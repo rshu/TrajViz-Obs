@@ -1,0 +1,146 @@
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import agent_trajviz
+
+BRIDGE = Path(__file__).resolve().parents[1]
+
+
+def test_doctor_envelope(run_cli):
+    code, out = run_cli(["doctor"])
+    assert code == 0
+    assert out["trajviz"]["version"].startswith("0.2")
+    assert set(out["extras"]) == {"charts", "llm", "app"}
+    assert "available" in out["decaf"] and "ready" in out["llm_env"]
+
+
+def test_doctor_details(run_cli, monkeypatch, tmp_path):
+    monkeypatch.setenv("TRAJVIZ_REFERENCE_ROOT", "/refs")
+    for name in ("ANALYZE_BASE_URL", "ANALYZE_API_KEY", "ANALYZE_MODEL", "LABEL_BASE_URL", "LABEL_API_KEY",
+                 "LABEL_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    code, out = run_cli(["doctor", "--cwd", str(tmp_path)])
+    assert code == 0
+    assert out["python"] == ".".join(map(str, sys.version_info[:3]))
+    assert out["trajviz"]["path"] == str(Path(agent_trajviz.__file__).parent)
+    assert all(isinstance(v, bool) for v in out["extras"].values())
+    assert isinstance(out["decaf"]["available"], bool)
+    assert out["decaf"]["reason"] is None or isinstance(out["decaf"]["reason"], str)
+    assert out["llm_env"]["ready"] is False
+    assert any("ANALYZE_MODEL" in name for name in out["llm_env"]["missing"])
+    assert out["reference_root"] == "/refs"
+
+
+def test_doctor_reads_dotenv_of_cwd(run_cli, monkeypatch, tmp_path):
+    for prefix in ("ANALYZE", "LABEL"):
+        for key in ("BASE_URL", "API_KEY", "MODEL"):
+            monkeypatch.delenv(f"{prefix}_{key}", raising=False)
+    (tmp_path / ".env").write_text("ANALYZE_MODEL=m1\n")
+    code, out = run_cli(["doctor", "--cwd", str(tmp_path)])
+    assert code == 0
+    assert not any("ANALYZE_MODEL" in name for name in out["llm_env"]["missing"])
+    assert Path.cwd() != tmp_path
+
+
+def test_doctor_missing_cwd_is_not_found(run_cli, tmp_path):
+    missing = tmp_path / "gone"
+    code, out = run_cli(["doctor", "--cwd", str(missing)])
+    assert code == 1 and out["error"]["code"] == "not_found" and out["error"]["path"] == str(missing)
+
+
+def test_extras_import_names_match_trajviz():
+    from agent_trajviz import _extras
+
+    from trajviz_obs import doctor
+
+    assert doctor.EXTRAS == _extras.EXTRAS
+
+
+def test_unknown_subcommand_is_usage_error(run_cli):
+    code, out = run_cli(["nonsense"])
+    assert code == 2
+    assert out["error"]["code"] == "usage"
+
+
+def test_bridge_error_envelope(run_cli, monkeypatch):
+    from trajviz_obs import cli, errors
+
+    @cli.register("boom")
+    def _boom(args):
+        raise errors.BridgeError("not_found", "no such thing", path="/x")
+
+    code, out = run_cli(["boom"])
+    assert code == 1 and out["error"] == {"code": "not_found", "message": "no such thing", "path": "/x"}
+
+
+def test_bridge_error_extra_fields(run_cli):
+    from trajviz_obs import cli, errors
+
+    @cli.register("boom")
+    def _boom(args):
+        raise errors.BridgeError("ambiguous", "two match", candidates=[{"id": "a"}])
+
+    code, out = run_cli(["boom"])
+    assert code == 1
+    assert out["error"] == {"code": "ambiguous", "message": "two match", "candidates": [{"id": "a"}]}
+
+
+def test_missing_extra_maps_to_missing_extra(run_cli):
+    from trajviz_obs import cli
+
+    @cli.register("boom")
+    def _boom(args):
+        raise agent_trajviz.MissingExtraError("charts", ["plotly"], "The report")
+
+    code, out = run_cli(["boom"])
+    assert code == 1
+    assert out["error"]["code"] == "missing_extra" and out["error"]["extra"] == "charts"
+    assert "pip install" in out["error"]["message"]
+
+
+def test_load_error_maps_to_load_error(run_cli, tmp_path):
+    from trajviz_obs import cli
+
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text("not json\n")
+
+    @cli.register("boom")
+    def _boom(args):
+        agent_trajviz.load(str(bad))
+
+    code, out = run_cli(["boom"])
+    assert code == 1
+    err = out["error"]
+    assert err["code"] == "load_error" and err["trajviz_code"] and err["path"] == str(bad)
+
+
+def test_unexpected_exception_is_internal(run_cli, capsys):
+    from trajviz_obs import cli
+
+    @cli.register("boom")
+    def _boom(args):
+        raise ValueError("kaput")
+
+    code, out = run_cli(["boom"])
+    assert code == 3
+    assert out["error"]["code"] == "internal" and "kaput" in out["error"]["message"]
+    assert "Traceback" in capsys.readouterr().err
+
+
+def test_help_is_json(run_cli):
+    code, out = run_cli(["--help"])
+    assert code == 0 and "doctor" in out["help"]
+
+
+def test_launcher_runs_isolated(tmp_path):
+    proc = subprocess.run([sys.executable, "-I", str(BRIDGE / "trajviz_obs_cli.py"), "doctor"], cwd=tmp_path,
+                          capture_output=True, text=True, timeout=120, check=False)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["trajviz"]["version"].startswith("0.2")
+
+
+def test_fixture_session_is_vendored(fixture_session, tmp_artifacts):
+    assert fixture_session.is_file() and fixture_session.stat().st_size > 0
+    assert tmp_artifacts.is_dir() and not any(tmp_artifacts.iterdir())
