@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -248,3 +249,43 @@ def make_session(tmp_path: Path, *, steps: int = 40, agents: int = 0,
 def big_session(tmp_path: Path) -> str:
     """A 5,000-turn synthetic session with three sub-agents (see :func:`make_session`)."""
     return make_session(tmp_path, steps=5000, agents=3)
+
+
+#: Session ids :func:`fake_projects` writes.
+AAA1 = "aaa11111-0000-4000-8000-000000000001"
+AAA2 = "aaa22222-0000-4000-8000-000000000002"
+BBB3 = "bbb33333-0000-4000-8000-000000000003"
+
+
+def _write_session(folder: Path, session_id: str, started: str, mtime: int, extra_lines: int = 0) -> Path:
+    """A stub transcript ``<folder>/<session_id>.jsonl`` (a start time, *extra_lines* more records) with *mtime*."""
+    path = folder / f"{session_id}.jsonl"
+    lines = [{"type": "last-prompt", "sessionId": session_id}]
+    lines += [{"type": "user", "timestamp": started, "sessionId": session_id}]
+    lines += [{"type": "assistant", "timestamp": started, "n": i} for i in range(extra_lines)]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+@pytest.fixture
+def fake_projects(tmp_path: Path) -> SimpleNamespace:
+    """``<config>/projects/<slug>/`` holding sessions aaa111…, aaa222…, bbb333… (bbb newest)."""
+    from trajviz_obs.paths import project_slug
+
+    cwd = str(tmp_path / "work" / "My Proj.x_y")
+    config = tmp_path / "config"
+    project = config / "projects" / project_slug(cwd)
+    project.mkdir(parents=True)
+    _write_session(project, AAA1, "2026-10-01T10:00:00.000Z", 1_700_000_100)
+    _write_session(project, AAA2, "2026-10-02T10:00:00.000Z", 1_700_000_200, extra_lines=2)
+    _write_session(project, BBB3, "2026-10-03T10:00:00.000Z", 1_700_000_300, extra_lines=4)
+    (project / BBB3 / "subagents").mkdir(parents=True)
+    return SimpleNamespace(cwd=cwd, config=config, project=project)
+
+
+@pytest.fixture
+def synthetic_session(tmp_path) -> str:
+    """A 30-turn native session (no sub-agents) to compare the fixture against."""
+    (tmp_path / "other").mkdir()
+    return make_session(tmp_path / "other", steps=30)

@@ -1,43 +1,14 @@
 import json
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
+from conftest import AAA1, AAA2, BBB3, _write_session
 
 from trajviz_obs import paths
 from trajviz_obs.errors import BridgeError
 from trajviz_obs.paths import project_slug
 from trajviz_obs.sessions import Resolved, list_sessions, resolve_session
-
-AAA1 = "aaa11111-0000-4000-8000-000000000001"
-AAA2 = "aaa22222-0000-4000-8000-000000000002"
-BBB3 = "bbb33333-0000-4000-8000-000000000003"
-
-
-def _write_session(folder: Path, session_id: str, started: str, mtime: int, extra_lines: int = 0) -> Path:
-    path = folder / f"{session_id}.jsonl"
-    lines = [{"type": "last-prompt", "sessionId": session_id}]
-    lines += [{"type": "user", "timestamp": started, "sessionId": session_id}]
-    lines += [{"type": "assistant", "timestamp": started, "n": i} for i in range(extra_lines)]
-    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
-    os.utime(path, (mtime, mtime))
-    return path
-
-
-@pytest.fixture
-def fake_projects(tmp_path: Path) -> SimpleNamespace:
-    """``<config>/projects/<slug>/`` holding sessions aaa111…, aaa222…, bbb333… (bbb newest)."""
-    cwd = str(tmp_path / "work" / "My Proj.x_y")
-    config = tmp_path / "config"
-    project = config / "projects" / project_slug(cwd)
-    project.mkdir(parents=True)
-    _write_session(project, AAA1, "2026-10-01T10:00:00.000Z", 1_700_000_100)
-    _write_session(project, AAA2, "2026-10-02T10:00:00.000Z", 1_700_000_200, extra_lines=2)
-    _write_session(project, BBB3, "2026-10-03T10:00:00.000Z", 1_700_000_300, extra_lines=4)
-    (project / BBB3 / "subagents").mkdir(parents=True)
-    return SimpleNamespace(cwd=cwd, config=config, project=project)
-
 
 # paths
 

@@ -27,7 +27,7 @@ SUBCOMMANDS: dict[str, Handler] = {}
 
 #: Handler modules, each exposing ``add_parser(sub)``; every task appends its own.
 MODULES: tuple[str, ...] = ("doctor", "sessions", "snapshot", "views_cmd", "report_cmd", "compare_cmd", "llm_cmd",
-                             "dashboard_cmd")
+                             "dashboard_cmd", "passthrough")
 
 
 def register(name: str) -> Callable[[Handler], Handler]:

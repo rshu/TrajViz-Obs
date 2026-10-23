@@ -14,13 +14,6 @@ from trajviz_obs.compat import labeler_chat
 from trajviz_obs.errors import BridgeError
 
 
-@pytest.fixture
-def synthetic_session(tmp_path) -> str:
-    """A 30-turn native session (no sub-agents) to compare the fixture against."""
-    (tmp_path / "other").mkdir()
-    return make_session(tmp_path / "other", steps=30)
-
-
 def _label(transcript: str, dest: Path, phases: list[str]) -> str:
     """*transcript* labelled to the sidecar *dest* through :func:`labeler_chat`, cycling through *phases*."""
     from agent_trajviz.labeling.labeler import label_trajectory
