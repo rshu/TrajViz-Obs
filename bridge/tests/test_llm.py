@@ -104,7 +104,7 @@ def test_label_max_steps_caps_the_prompts(fixture_run, fixture_session, tmp_arti
                         **_apply_opts(fixture_session, sidecar, max_steps=2, assistant_only=True))
     steps = json.loads(sidecar.read_text())["steps"]
     assert sum(s["label_source"] == "llm" for s in steps) == 2 and {s["role"] for s in steps} == {"assistant"}
-    assert out["summary"]["classified"] == 2
+    assert out["summary"]["classified"] == 2 and out["errors"] == []
 
 
 def test_reply_error_is_reported(fixture_run, fixture_session, tmp_artifacts):
@@ -112,6 +112,16 @@ def test_reply_error_is_reported(fixture_run, fixture_session, tmp_artifacts):
     replies = {"hash": p["hash"], "replies": [{"index": 0, "error": "api-error 529"}]}
     out = apply_replies(fixture_run, "fixes", replies, **_apply_opts(fixture_session, tmp_artifacts / "unused.json"))
     assert "api-error 529" in out["errors"][0] and out["issues"][0]["judgment"] is None
+
+
+def test_label_reply_error_is_reported(fixture_run, fixture_session, tmp_artifacts):
+    p = plan_prompts(fixture_run, "label", **_opts(fixture_session, max_steps=3))
+    assert p["plan"]["calls"] == 3
+    replies = {"hash": p["hash"], "replies": [{"index": 0, "error": "api-error 529"}, {"index": 2, "text": LABEL}]}
+    out = apply_replies(fixture_run, "label", replies,
+                        **_apply_opts(fixture_session, tmp_artifacts / "labels.json", max_steps=3))
+    assert out["errors"] == ["prompt 0: api-error 529", "prompt 1: no reply"]
+    assert "api-error 529" in out["text"] and out["summary"]["classified"] == 1
 
 
 def test_analyze_reply_error_is_reported(fixture_run, fixture_session, tmp_artifacts):
@@ -128,6 +138,47 @@ def test_direct_needs_configuration(fixture_run, fixture_session, tmp_artifacts,
     with pytest.raises(BridgeError) as exc:
         direct(fixture_run, "fixes", **_apply_opts(fixture_session, tmp_artifacts / "unused.json"))
     assert exc.value.code == "llm_not_configured" and exc.value.extra["missing"]
+
+
+@pytest.fixture
+def label_endpoint(tmp_path, monkeypatch, no_llm_env):
+    """LABEL_* set, no .env, and the labeler's HTTP call replaced: ``calls`` lists each step message sent."""
+    import agent_trajviz.labeling.llm as label_llm
+
+    monkeypatch.chdir(tmp_path)
+    for name, value in (("LABEL_BASE_URL", "http://127.0.0.1:9"), ("LABEL_API_KEY", "k"), ("LABEL_MODEL", "m")):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr("agent_trajviz.labeling.labeler.time.sleep", lambda seconds: None)
+    endpoint = {"calls": [], "fail": set()}
+
+    def call_llm(base_url, api_key, model, system_prompt, user_message, provider="openai", temperature=None,
+                 max_tokens=None, timeout=120):
+        endpoint["calls"].append(user_message)
+        if len(endpoint["calls"]) in endpoint["fail"]:
+            raise ConnectionError("refused")
+        return LABEL
+
+    monkeypatch.setattr(label_llm, "call_llm", call_llm)
+    return endpoint
+
+
+def test_direct_label_labels_the_first_max_steps(fixture_run, fixture_session, tmp_artifacts, label_endpoint):
+    planned = plan_prompts(fixture_run, "label", **_opts(fixture_session))["plan"]["calls"]
+    assert planned > 2
+    sidecar = tmp_artifacts / "labels.json"
+    out = direct(fixture_run, "label", **_apply_opts(fixture_session, sidecar, max_steps=2))
+    assert len(label_endpoint["calls"]) == 2 and out["summary"]["classified"] == 2 and out["errors"] == []
+    assert out["path"] == str(sidecar) and json.loads(sidecar.read_text())["model"] == "m"
+
+
+def test_direct_label_retry_is_one_step_and_failures_are_reported(fixture_run, fixture_session, tmp_artifacts,
+                                                                  label_endpoint):
+    label_endpoint["fail"] = {1, 3, 4}  # step 0 fails then succeeds on retry; step 1 fails twice
+    out = direct(fixture_run, "label", **_apply_opts(fixture_session, tmp_artifacts / "labels.json", max_steps=3))
+    messages = label_endpoint["calls"]
+    assert len(messages) == 5 and messages[0] == messages[1] and messages[2] == messages[3]  # step 3: past the cap
+    assert len(set(messages)) == 3
+    assert out["errors"] == ["prompt 1: ConnectionError"] and out["summary"]["classified"] == 2
 
 
 def test_cli_prompt_then_apply(run_cli, fixture_session, tmp_artifacts):

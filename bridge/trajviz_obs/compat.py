@@ -8,6 +8,8 @@ The plugin ships against the published ``agent-trajviz>=0.2.0,<0.3``. Two things
    against it (TrajViz then calls it ``declared``; :func:`window_info` reports ``override``).
 2. **Session-mode labeling.** ``label_trajectory()`` has no ``chat=``; :func:`labeler_chat` patches the
    labeler's ``call_llm`` (and its retry sleep) for the duration of a capture or replay.
+3. **A step cap on env-mode labeling.** ``label_trajectory()`` labels every step; :func:`labeler_step_cap`
+   wraps its real ``call_llm`` so only the first steps reach the endpoint, as session mode labels them.
 """
 
 from __future__ import annotations
@@ -125,3 +127,44 @@ def labeler_chat(chat: Callable[[str, str], str]) -> Iterator[None]:
         yield
     finally:
         llm.call_llm, labeler.time = original_call, original_time
+
+
+@contextlib.contextmanager
+def labeler_step_cap(max_steps: int, fallback: str) -> Iterator[list[str]]:
+    """Let the labeler's real ``call_llm`` classify only its first *max_steps* steps; later steps get *fallback*.
+
+    A step is one step message: the labeler's retry resends the same message (each starts ``Step #<index>``),
+    so it counts as the same step, and step *i* is session mode's prompt *i*. Yields a list that, on exit,
+    holds ``"prompt <i>: <error class>"`` for each step whose last call raised (the class only, as the labeler
+    logs it: a provider error can echo credentials or prompt text).
+    """
+    check_supported()
+    from agent_trajviz.labeling import llm
+
+    original_call = llm.call_llm
+    signature = inspect.signature(original_call)
+    state: dict[str, Any] = {"step": -1, "message": None}
+    failures: dict[int, str] = {}
+    errors: list[str] = []
+
+    def call_llm(*args: Any, **kwargs: Any) -> str:
+        message = signature.bind(*args, **kwargs).arguments["user_message"]
+        if message != state["message"]:
+            state["step"], state["message"] = state["step"] + 1, message
+        step = state["step"]
+        if step >= max_steps:
+            return fallback
+        try:
+            reply = original_call(*args, **kwargs)
+        except Exception as exc:
+            failures[step] = type(exc).__name__
+            raise
+        failures.pop(step, None)
+        return reply
+
+    llm.call_llm = call_llm
+    try:
+        yield errors
+    finally:
+        llm.call_llm = original_call
+        errors.extend(f"prompt {step}: {name}" for step, name in sorted(failures.items()))

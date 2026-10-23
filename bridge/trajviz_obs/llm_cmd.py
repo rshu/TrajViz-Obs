@@ -8,7 +8,8 @@ replies; ``llm-apply`` re-runs the same call with a ``chat`` answering reply *i*
 fixed for the same transcript, which the hash checks) and returns TrajViz's own result.
 
 Env mode (``ask``, ``fixes``, ``label``) runs the same features through TrajViz's own HTTP client with the
-``ANALYZE_*`` / ``LABEL_*`` settings (``.env`` in the working directory included).
+``ANALYZE_*`` / ``LABEL_*`` settings (``.env`` in the working directory included); ``label`` sends only the
+first ``max_steps`` steps (:func:`compat.labeler_step_cap`), as session mode plans them.
 
 ``agent_trajviz.llm`` needs the ``llm`` extra, so it is imported only when a feature runs.
 """
@@ -29,7 +30,7 @@ from agent_trajviz import Trajectory
 
 from .cli import register
 from .compare_cmd import label_views_payload
-from .compat import EmptySession, labeler_chat
+from .compat import EmptySession, labeler_chat, labeler_step_cap
 from .errors import BridgeError
 from .sessions import _positive_int
 from .text import LINE_CHARS, _clip
@@ -124,9 +125,11 @@ def _fixes_text(issues: list[dict], errors: list[str]) -> str:
             continue
         lines.append(_clip(f"{head} (confidence {judgment.get('confidence')})", LINE_CHARS))
         lines += [_clip(f"   {key}: {judgment[key]}", LINE_CHARS) for key in ("where", "fix", "also") if judgment.get(key)]
-    if errors:
-        lines += ["", "Errors:", *(_clip(f"- {error}", LINE_CHARS) for error in errors)]
-    return "\n".join(lines)
+    return "\n".join(lines + _errors_lines(errors))
+
+
+def _errors_lines(errors: list[str]) -> list[str]:
+    return ["", "Errors:", *(_clip(f"- {error}", LINE_CHARS) for error in errors)] if errors else []
 
 
 def _label(transcript_path: str, out_path: Path, *, assistant_only: bool, model: str, **client: Any) -> dict:
@@ -175,7 +178,8 @@ def _capture(run: Trajectory, feature: str, *, transcript_path: str, question: s
     return calls
 
 
-def _result(feature: str, out: Any, *, history_path: Path | None, limit: int, out_path: Path) -> dict:
+def _result(feature: str, out: Any, *, history_path: Path | None, limit: int, out_path: Path,
+            label_errors: list[str] | None = None) -> dict:
     if feature == "analyze":
         if history_path is not None:
             history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -185,8 +189,9 @@ def _result(feature: str, out: Any, *, history_path: Path | None, limit: int, ou
         issues, errors = out
         judged = issues[:limit]
         return {"issues": judged, "errors": errors, "text": _fixes_text(judged, errors)}
-    views = label_views_payload(str(out_path), None)
-    return {"path": str(out_path), "summary": views["summary"], "text": views["text"]}
+    views, errors = label_views_payload(str(out_path), None), list(label_errors or [])
+    return {"path": str(out_path), "summary": views["summary"],
+            "text": "\n".join([views["text"], *_errors_lines(errors)]), "errors": errors}
 
 
 # -- session mode ----------------------------------------------------------------
@@ -236,33 +241,38 @@ def apply_replies(run: Trajectory, feature: Feature, replies: dict, *, transcrip
     """TrajViz's result of *feature* with the model's *replies* to :func:`plan_prompts`'s prompts.
 
     ``analyze`` → ``{"reply", "history_path"}`` (plus ``error`` when the reply failed), the exchange appended
-    to *history_path*; ``fixes`` → ``{"issues", "errors", "text"}``; ``label`` → ``{"path", "summary", "text"}``
-    with the sidecar at *out_path* (*model* names the labelling model in it). A reply ``{"index", "error"}`` is
-    a failed call: TrajViz's error for ``analyze`` and ``fixes``, an ``unknown`` label for ``label``, as is a
-    step past *max_steps*. Replies made for other prompts (another transcript, feature, question or limit)
-    raise ``BridgeError("stale_prompts")``.
+    to *history_path*; ``fixes`` → ``{"issues", "errors", "text"}``; ``label`` → ``{"path", "summary", "text",
+    "errors"}`` with the sidecar at *out_path* (*model* names the labelling model in it). A reply
+    ``{"index", "error"}`` (or none for a planned prompt) is a failed call: TrajViz's error for ``analyze`` and
+    ``fixes``; for ``label`` an ``unknown`` label and ``"prompt <i>: <error>"`` in ``errors``. A step past
+    *max_steps* is labelled ``unknown`` too, but was never planned, so it is no error. Replies made for other
+    prompts (another transcript, feature, question or limit) raise ``BridgeError("stale_prompts")``.
     """
     _feature(feature)
     question = _question(question, language) if feature == "analyze" else None
     if not isinstance(replies, dict) or replies.get("hash") != _hash(run, feature, question, limit):
         raise BridgeError("stale_prompts", "These replies were made for other prompts (the session changed since "
                                            "they were planned); plan the prompts again.")
-    by_index, counter, failed = _replies_by_index(replies), itertools.count(), []
+    by_index, counter, failed, label_errors = _replies_by_index(replies), itertools.count(), [], []
 
     def chat(system: str, messages: Any) -> str:
         i = next(counter)
-        reply = by_index.get(i) if feature != "label" or i < max_steps else None
-        if reply is not None and "text" in reply:
+        if feature == "label" and i >= max_steps:
+            return PLACEHOLDERS["label"]  # past the cap: never planned, so no reply is expected
+        reply = by_index.get(i)
+        if reply is not None and isinstance(reply.get("text"), str):
             return reply["text"]
-        failed.append(reply["error"] if reply is not None and "error" in reply else f"no reply to prompt {i}")
         if feature == "label":
+            label_errors.append(f"prompt {i}: {reply['error'] if reply is not None else 'no reply'}")
             return PLACEHOLDERS["label"]
+        failed.append(reply["error"] if reply is not None else f"no reply to prompt {i}")
         raise ReplyError(failed[-1])
 
     out = _run(run, feature, chat=chat, config=None, transcript_path=transcript_path, question=question or "",
                history=_read_history(history_path) if feature == "analyze" else [], limit=limit,
                language=language, out_path=out_path, assistant_only=assistant_only, model=model or SESSION_MODEL)
-    result = _result(feature, out, history_path=history_path, limit=limit, out_path=out_path)
+    result = _result(feature, out, history_path=history_path, limit=limit, out_path=out_path,
+                     label_errors=label_errors)
     if feature == "analyze" and failed:
         result["error"] = failed[0]
     return result
@@ -294,8 +304,9 @@ def direct(run: Trajectory, feature: Feature, *, transcript_path: str, question:
            assistant_only: bool, model: str | None = None) -> dict:
     """:func:`apply_replies`'s result, the model called through TrajViz's own client (``ANALYZE_*``/``LABEL_*``).
 
-    Missing settings raise ``BridgeError("llm_not_configured", missing=[names])``; labeling more than
-    *max_steps* steps raises ``BridgeError("over_cap")`` before any call.
+    Missing settings raise ``BridgeError("llm_not_configured", missing=[names])``. ``label`` sends the first
+    *max_steps* steps to the endpoint and labels the rest ``unknown`` without a call, as session mode does; a
+    step whose call failed (after the labeler's retry) is ``"prompt <i>: <error class>"`` in ``errors``.
     """
     from agent_trajviz import llm
 
@@ -306,17 +317,16 @@ def direct(run: Trajectory, feature: Feature, *, transcript_path: str, question:
         raise _not_configured(list(config.missing))
     question = _question(question, language) if feature == "analyze" else None
     history = _read_history(history_path) if feature == "analyze" else []
-    if feature == "label":
-        calls = len(_capture(run, feature, transcript_path=transcript_path, question="", history=[], limit=limit,
-                             language=language))
-        if calls > max_steps:
-            raise BridgeError("over_cap", f"Labeling this session takes {calls} model calls, over the cap of "
-                                          f"{max_steps}; pass --max-steps {calls} to label every step.",
-                              calls=calls, max_steps=max_steps)
-    out = _run(run, feature, chat=None, config=config, transcript_path=transcript_path, question=question or "",
-               history=history, limit=limit, language=language, out_path=out_path, assistant_only=assistant_only,
-               model=label_model, label_client=client)
-    return _result(feature, out, history_path=history_path, limit=limit, out_path=out_path)
+    options = {"chat": None, "config": config, "transcript_path": transcript_path, "question": question or "",
+               "history": history, "limit": limit, "language": language, "out_path": out_path,
+               "assistant_only": assistant_only, "model": label_model, "label_client": client}
+    if feature != "label":
+        return _result(feature, _run(run, feature, **options), history_path=history_path, limit=limit,
+                       out_path=out_path)
+    with labeler_step_cap(max_steps, PLACEHOLDERS["label"]) as label_errors:
+        out = _run(run, feature, **options)
+    return _result(feature, out, history_path=history_path, limit=limit, out_path=out_path,
+                   label_errors=label_errors)
 
 
 # -- subcommands -----------------------------------------------------------------
