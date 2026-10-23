@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import agent_trajviz
+import pytest
 
 BRIDGE = Path(__file__).resolve().parents[1]
 
@@ -212,3 +213,25 @@ def test_doctor_survives_a_failing_plugin(run_cli, fake_plugins):
     code, out = run_cli(["doctor"])
     assert code == 0 and out["plugins"]["loaded"] == []
     assert "'broken'" in out["plugins"]["error"] and "boom" in out["plugins"]["error"]
+
+
+@pytest.mark.parametrize("trajviz", ["missing", "broken"])
+def test_launcher_answers_in_json_without_a_working_trajviz(tmp_path, trajviz):
+    if trajviz == "missing":
+        setup = "sys.modules['agent_trajviz'] = None\n"
+    else:  # a half-installed package that raises on import, found before the venv's own
+        package = tmp_path / "fake" / "agent_trajviz"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("raise RuntimeError('half installed')\n")
+        setup = f"sys.path.insert(0, {str(tmp_path / 'fake')!r})\n"
+    shim = tmp_path / "shim.py"
+    shim.write_text(f"import runpy, sys\n{setup}sys.argv = [{str(BRIDGE / 'trajviz_obs_cli.py')!r}, *sys.argv[1:]]\n"
+                    "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+    proc = subprocess.run([sys.executable, "-I", str(shim), "doctor"], cwd=tmp_path, capture_output=True, text=True,
+                          timeout=120, check=False)
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    (line,) = proc.stdout.splitlines()
+    error = json.loads(line)["error"]
+    assert error["code"] == "internal"
+    assert ("agent_trajviz" if trajviz == "missing" else "RuntimeError: half installed") in error["message"]
+    assert "Traceback" in proc.stderr
