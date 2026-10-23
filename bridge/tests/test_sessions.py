@@ -182,3 +182,20 @@ def test_sessions_subcommand(run_cli, fake_projects):
     assert code == 0
     assert out["project_dir"] == str(fake_projects.project)
     assert [row["id"] for row in out["sessions"]] == [BBB3, AAA2]
+
+
+def test_sessions_limit_is_capped_at_500(run_cli, fake_projects):
+    base = ["sessions", "--cwd", fake_projects.cwd, "--config-dir", str(fake_projects.config)]
+    code, out = run_cli([*base, "--limit", "501"])
+    assert code == 2 and out["error"]["code"] == "usage" and "500" in out["error"]["message"]
+    code, out = run_cli([*base, "--limit", "500"])
+    assert code == 0 and len(out["sessions"]) == 3 and "cut" not in out
+
+
+def test_sessions_are_cut_to_the_byte_budget(run_cli, fake_projects, monkeypatch):
+    from trajviz_obs import sessions
+
+    rows = list_sessions(cwd=fake_projects.cwd, config_dir=fake_projects.config, limit=3)
+    monkeypatch.setattr(sessions, "LIST_BYTES", len(json.dumps(rows[:2])))
+    code, out = run_cli(["sessions", "--cwd", fake_projects.cwd, "--config-dir", str(fake_projects.config)])
+    assert code == 0 and out["sessions"] == rows[:2] and out["cut"] == 1

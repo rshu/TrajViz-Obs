@@ -19,6 +19,10 @@ from .errors import BridgeError
 
 #: Lines read from the top of a transcript when looking for its start time.
 STARTED_LINES = 50
+#: Most rows one ``--limit`` asks for (``sessions``, and ``view`` which pages on with ``--offset``).
+MAX_LIMIT = 500
+#: Most bytes the listed sessions take in the stdout JSON; later rows are left out and counted in ``cut``.
+LIST_BYTES = 200 * 1024
 
 _CHUNK = 1 << 20
 
@@ -143,6 +147,28 @@ def _positive_int(text: str) -> int:
     return value
 
 
+def page_limit(text: str) -> int:
+    """``--limit`` (an argparse type): a whole number from 1 to :data:`MAX_LIMIT`."""
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if not 1 <= value <= MAX_LIMIT:
+        raise argparse.ArgumentTypeError(f"expected a whole number from 1 to {MAX_LIMIT}, got {text!r}")
+    return value
+
+
+def _within(rows: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
+    """The first *rows* whose JSON list (as the CLI prints it) takes at most *budget* bytes."""
+    shown, used = [], 0
+    for row in rows:
+        used += len(json.dumps(row)) + 2  # the row and its ", " (or the list's brackets)
+        if used > budget:
+            break
+        shown.append(row)
+    return shown
+
+
 def _add_location(p: argparse.ArgumentParser) -> None:
     p.add_argument("--cwd", default=None, help="The session's working directory (default: CWD).")
     p.add_argument("--config-dir", default=None,
@@ -162,7 +188,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     spec.add_argument("--session-id", help="An exact session id, searched in every project's folder.")
     p = sub.add_parser("sessions", help="List this project's sessions, newest first.")
     _add_location(p)
-    p.add_argument("--limit", type=_positive_int, default=20, help="Most sessions to list (default: 20).")
+    p.add_argument("--limit", type=page_limit, default=20,
+                   help=f"Most sessions to list (default: 20, at most {MAX_LIMIT}).")
 
 
 @register("resolve")
@@ -176,5 +203,9 @@ def _resolve(args: argparse.Namespace) -> dict:
 @register("sessions")
 def _sessions(args: argparse.Namespace) -> dict:
     cwd, config = _location(args)
-    return {"project_dir": str(_project_dir(cwd, config)),
-            "sessions": list_sessions(cwd=cwd, config_dir=config, limit=args.limit)}
+    rows = list_sessions(cwd=cwd, config_dir=config, limit=args.limit)
+    shown = _within(rows, LIST_BYTES)
+    out: dict[str, Any] = {"project_dir": str(_project_dir(cwd, config)), "sessions": shown}
+    if len(shown) < len(rows):
+        out["cut"] = len(rows) - len(shown)
+    return out

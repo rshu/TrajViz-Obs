@@ -228,3 +228,52 @@ def test_sparkline_lines_page_by_limit(tmp_path, tmp_artifacts):
     lines = p["inline"]["series"].splitlines()
     assert [line.split()[:2] for line in lines[:2]] == [["Worker", "0"], ["Worker", "1"]]
     assert len(lines) == 3 and lines[-1].endswith(" · lines 2–3 of 6") and lines[-1].startswith(f"{p['rows_total']} points")
+
+
+# The output-size rule: --limit is capped, and the inline part never passes INLINE_STDOUT_BYTES on stdout.
+
+
+def test_cli_view_limit_is_capped_at_500(run_cli, fixture_session, tmp_artifacts):
+    base = ["view", "--transcript", str(fixture_session), "--artifacts", str(tmp_artifacts), "steps"]
+    code, out = run_cli([*base, "--limit", "501"])
+    assert code == 2 and out["error"]["code"] == "usage" and "500" in out["error"]["message"]
+    assert run_cli([*base, "--limit", "500"])[0] == 0
+
+
+def test_inline_table_is_cut_to_the_byte_budget(synthetic_run, tmp_artifacts, monkeypatch):
+    monkeypatch.setattr(views_cmd, "INLINE_STDOUT_BYTES", 4096)
+    p = view_payload(synthetic_run, "steps", {}, limit=60, offset=5, out_dir=tmp_artifacts, inline_json=False)
+    text, page = p["inline"]["table"], min(60, p["rows_total"] - 5)
+    *table, footer, marker = text.splitlines()
+    shown = len(table) - 3  # the header, its rule and the blank line before the footer
+    assert len(json.dumps(text)) <= 4096 and 0 < shown < page
+    assert footer == f"rows 6–{5 + shown} of {p['rows_total']}"
+    assert marker.startswith(f"… {page - shown} more rows cut") and marker.endswith(p["path"])
+
+
+def test_inline_series_is_cut_to_the_byte_budget(tmp_path, tmp_artifacts, monkeypatch):
+    run = load_run(make_session(tmp_path, steps=60))
+    monkeypatch.setattr(views_cmd, "INLINE_STDOUT_BYTES", 900)
+    p = view_payload(run, "token_usage", {}, limit=25, offset=0, out_dir=tmp_artifacts, inline_json=False)
+    *lines, footer, marker = p["inline"]["series"].splitlines()
+    assert len(json.dumps(p["inline"]["series"])) <= 900 and 0 < len(lines) < 6
+    assert footer.endswith(f" · lines 1–{len(lines)} of 6") and marker.startswith(f"… {6 - len(lines)} more line")
+
+
+def test_inline_json_needs_room_on_stdout(fixture_run, tmp_artifacts, monkeypatch):
+    monkeypatch.setattr(views_cmd, "INLINE_STDOUT_BYTES", 200)
+    p = view_payload(fixture_run, "health", {}, limit=25, offset=0, out_dir=tmp_artifacts, inline_json=True)
+    assert set(p["inline"]) == {"table"} and p["bytes"] <= views_cmd.INLINE_JSON_BYTES
+
+
+def test_cli_view_of_wide_rows_stays_under_256_kb(tmp_path, tmp_artifacts, capsys):
+    from trajviz_obs import cli
+
+    path = Path(make_session(tmp_path, steps=600))
+    # A model id of non-ASCII text: each character is 6 bytes on stdout (\uXXXX), so 500 rows pass 256 KB.
+    path.write_text(path.read_text().replace('"model": "claude-test"', '"model": ' + json.dumps("模型" * 60)))
+    code = cli.main(["view", "--transcript", str(path), "--artifacts", str(tmp_artifacts), "steps", "--limit", "500"])
+    text = capsys.readouterr().out
+    assert code == 0 and len(text.encode()) <= 256 * 1024
+    out = json.loads(text)
+    assert out["rows_total"] > 500 and "more rows cut" in out["inline"]["table"].splitlines()[-1]

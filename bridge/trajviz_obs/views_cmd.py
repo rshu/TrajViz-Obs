@@ -3,7 +3,8 @@
 ``view`` always writes the full view to ``<out_dir>/<id>.json`` (the layout :func:`agent_trajviz.export_json`
 writes) and prints only a page of it: a markdown table for table and summary views, text sparklines or bars
 for the charts that have them, else the chart's rows as a table; with ``--json``, the data itself when the file
-is at most :data:`INLINE_JSON_BYTES`.
+is at most :data:`INLINE_JSON_BYTES`. A page is at most ``MAX_LIMIT`` rows, and the inline part takes at most
+:data:`INLINE_STDOUT_BYTES` on stdout: a longer page is cut, with a last line naming how many rows were cut.
 """
 
 from __future__ import annotations
@@ -24,11 +25,14 @@ from . import paths
 from .cli import register
 from .compat import EmptySession, load_run
 from .errors import BridgeError
-from .sessions import _positive_int
+from .sessions import MAX_LIMIT, _positive_int, page_limit
 from .text import _clip, _num, render_series, render_table
 
 #: Largest view file whose data ``--json`` puts inline (the output-size rule for stdout).
 INLINE_JSON_BYTES = 256 * 1024
+#: Most bytes the inline part (``table``, ``series`` or ``data``) takes in the stdout JSON, escapes included; the
+#: rest of the document is small, so the answer stays under the 256 KB output rule.
+INLINE_STDOUT_BYTES = 200 * 1024
 #: Longest bar, and longest bar label.
 BAR_WIDTH, LABEL_CHARS = 30, 40
 
@@ -137,13 +141,18 @@ def _rows(view_id: str, data: Any) -> list[dict]:
     return [row if isinstance(row, dict) else {"value": row} for row in data]
 
 
-def _sparklines(rows: list[dict], group: str | None, fields: tuple[str, ...], *, limit: int, offset: int) -> str:
-    """One sparkline per field (per group), lines ``offset`` to ``offset + limit``, then a points footer."""
+def _groups(rows: list[dict], group: str | None) -> dict[str, list[dict]]:
+    """*rows* by their *group* value (one group of all rows when *group* is None)."""
     groups: dict[str, list[dict]] = {}
     for row in rows:
         groups.setdefault(str(row.get(group)) if group else "", []).append(row)
+    return groups
+
+
+def _sparklines(rows: list[dict], group: str | None, fields: tuple[str, ...], *, limit: int, offset: int) -> str:
+    """One sparkline per field (per group), lines ``offset`` to ``offset + limit``, then a points footer."""
     lines = []
-    for name, members in groups.items():
+    for name, members in _groups(rows, group).items():
         for field in fields:
             values = [row.get(field) for row in members]
             present = [v for v in values if isinstance(v, int | float) and not isinstance(v, bool)]
@@ -182,23 +191,57 @@ def _write_json(path: Path, payload: Any) -> int:
     return path.stat().st_size
 
 
+def _stdout_bytes(value: Any) -> int:
+    """Bytes *value* takes in the stdout JSON (the CLI's ``json.dumps`` writes non-ASCII as ``\\uXXXX``)."""
+    return len(json.dumps(value))
+
+
+def _fit(render: Callable[[int], str], items: int, *, limit: int, offset: int, unit: str, path: Path) -> str:
+    """``render(limit)``, a page of *items* rows (or lines) from *offset*; when that takes more than
+    :data:`INLINE_STDOUT_BYTES` on stdout, the most of the page that fits, then a line naming how many were cut."""
+    text = render(limit)
+    if _stdout_bytes(text) <= INLINE_STDOUT_BYTES:
+        return text
+    page = max(0, min(limit, items - offset))
+
+    def cut(shown: int) -> str:
+        n = page - shown
+        marker = (f"… {n} more {unit}{'' if n == 1 else 's'} cut (inline text is capped at "
+                  f"{INLINE_STDOUT_BYTES // 1024} KB); the whole view is in {path}")
+        return f"{render(shown)}\n{marker}" if shown else marker
+
+    low, high = 0, page - 1  # the whole page does not fit; find the most rows that do, marker included
+    while low < high:
+        mid = (low + high + 1) // 2
+        if _stdout_bytes(cut(mid)) <= INLINE_STDOUT_BYTES:
+            low = mid
+        else:
+            high = mid - 1
+    return cut(low)
+
+
 def view_payload(run: Trajectory, view_id: str, options: dict, *, limit: int, offset: int, out_dir: Path,
                  inline_json: bool) -> dict:
-    """One view (*options* already coerced): written whole to ``out_dir/<id>.json``, a page of it inline."""
+    """One view (*options* already coerced): written whole to ``out_dir/<id>.json``, a page of it inline (at most
+    :data:`INLINE_STDOUT_BYTES` on stdout)."""
     _options_help(view_id)
     view = run.view(view_id, **options)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{view_id}.json"
     size = _write_json(path, view.to_dict())
     rows = _rows(view_id, view.data)
-    if inline_json and size <= INLINE_JSON_BYTES:
+    paging = {"limit": limit, "offset": offset, "path": path}
+    if inline_json and size <= INLINE_JSON_BYTES and _stdout_bytes(view.data) <= INLINE_STDOUT_BYTES:
         inline: dict[str, Any] = {"data": view.data}
     elif view.kind == "chart" and view_id in _SPARKS:
-        inline = {"series": _sparklines(rows, *_SPARKS[view_id], limit=limit, offset=offset)}
+        group, fields = _SPARKS[view_id]
+        inline = {"series": _fit(lambda n: _sparklines(rows, group, fields, limit=n, offset=offset),
+                                 len(_groups(rows, group)) * len(fields), unit="line", **paging)}
     elif view.kind == "chart" and view_id in _BARS:
-        inline = {"series": _bars(rows, *_BARS[view_id], limit=limit, offset=offset)}
+        inline = {"series": _fit(lambda n: _bars(rows, *_BARS[view_id], limit=n, offset=offset), len(rows),
+                                 unit="row", **paging)}
     else:
-        inline = {"table": render_table(rows, limit=limit, offset=offset)}
+        inline = {"table": _fit(lambda n: render_table(rows, limit=n, offset=offset), len(rows), unit="row", **paging)}
     return {"view": {"id": view.id, "title": view.title, "kind": view.kind, "description": view.description},
             "path": str(path), "bytes": size, "rows_total": len(rows), "inline": inline}
 
@@ -262,9 +305,11 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     _session_args(p)
     p.add_argument("view_id", nargs="?", metavar="ID", help="The view (default: list the catalog).")
     p.add_argument("--option", action="append", default=[], metavar="K=V", help="A view option (repeatable).")
-    p.add_argument("--limit", type=_positive_int, default=25, help="Rows drawn inline (default: 25).")
+    p.add_argument("--limit", type=page_limit, default=25,
+                   help=f"Rows drawn inline (default: 25, at most {MAX_LIMIT}; --offset pages on).")
     p.add_argument("--offset", type=_offset, default=0, help="First row drawn inline (default: 0).")
-    p.add_argument("--json", action="store_true", help="The view's data inline when its file is at most 256 KB.")
+    p.add_argument("--json", action="store_true",
+                   help="The view's data inline when its file is at most 256 KB (and it fits in 200 KB on stdout).")
 
     p = sub.add_parser("json", help="Every view (or the named ones) as <id>.json plus index.json.")
     _session_args(p)
