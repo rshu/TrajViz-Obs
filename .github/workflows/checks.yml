@@ -1,0 +1,63 @@
+name: Checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bridge:
+    name: Bridge / Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+          cache-dependency-glob: bridge/uv.lock
+      - name: Install locked development environment
+        run: uv sync --project bridge --locked --extra dev
+      - name: Run bridge tests and lint
+        run: uv run --project bridge --locked --extra dev python scripts/check.py --bridge-only
+
+  minimal-runtime:
+    name: Minimal runtime / Python 3.11
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Install only the managed runtime dependencies and test runner
+        run: |
+          uv venv bridge/.venv
+          uv pip install --python bridge/.venv/bin/python 'agent-trajviz[llm,charts]>=0.2.0,<0.3' 'pytest>=8'
+      - name: Smoke every entrypoint without the app extra
+        run: bridge/.venv/bin/python -m pytest bridge/tests/test_minimal_runtime.py -q
+
+  bootstrap-windows:
+    name: Immutable environment worker / Windows
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: "3.11"
+      - name: Test native locking, atomic publication, and installer process cleanup
+        run: uv run --no-project --python 3.11 -- python -m unittest discover -s bridge/tests -p test_bootstrap.py -v

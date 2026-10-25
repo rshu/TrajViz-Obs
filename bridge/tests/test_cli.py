@@ -70,6 +70,28 @@ def test_doctor_missing_cwd_is_not_found(run_cli, tmp_path):
     assert code == 1 and out["error"]["code"] == "not_found" and out["error"]["path"] == str(missing)
 
 
+def test_doctor_works_without_chart_or_dashboard_extras(tmp_path):
+    """Run a fresh interpreter: imports cached by this all-extras test environment must not hide the bug."""
+    script = f"""
+import importlib.abc
+import sys
+sys.path.insert(0, {str(BRIDGE)!r})
+class MinimalExtras(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {{'pygments', 'plotly', 'gradio'}}:
+            raise ModuleNotFoundError('Optional package disabled: ' + fullname, name=fullname)
+sys.meta_path.insert(0, MinimalExtras())
+from trajviz_obs.cli import main
+sys.exit(main(['doctor', '--cwd', {str(tmp_path)!r}]))
+"""
+    proc = subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, text=True, timeout=30,
+                          check=False)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["extras"] == {"charts": False, "llm": True, "app": False}
+    assert out["llm_env"]["available"] is True
+
+
 def test_extras_import_names_match_trajviz():
     from agent_trajviz import _extras
 

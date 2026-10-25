@@ -68,6 +68,61 @@ def test_hash_follows_the_transcript(tmp_path):
     assert grown == path and plan_prompts(load_run(path), "fixes", **_opts(Path(path)))["hash"] != before
 
 
+def test_apply_refuses_changed_analysis_history(fixture_run, fixture_session, tmp_artifacts):
+    """The same question with a changed exchange is a different model request."""
+    history = tmp_artifacts / "analyze.json"
+    opts = _opts(fixture_session, question="Why?", history_path=history)
+    plan = plan_prompts(fixture_run, "analyze", **opts)
+    history.write_text(json.dumps({"history": [{"role": "assistant", "content": "A new prior answer."}]}))
+    with pytest.raises(BridgeError) as exc:
+        apply_replies(fixture_run, "analyze", _replies(plan, "Old answer"),
+                      **opts, out_path=tmp_artifacts / "unused.json")
+    assert exc.value.code == "stale_prompts"
+
+
+@pytest.mark.parametrize("feature", ["analyze", "fixes"])
+def test_hash_follows_prompt_language(fixture_run, fixture_session, feature):
+    english = plan_prompts(fixture_run, feature, **_opts(fixture_session, question="Why?", language="English"))
+    chinese = plan_prompts(fixture_run, feature, **_opts(fixture_session, question="Why?", language="Chinese"))
+    assert english["prompts"][0]["system"] != chinese["prompts"][0]["system"]
+    assert english["hash"] != chinese["hash"]
+
+
+def test_hash_follows_context_window(fixture_session):
+    plans = [plan_prompts(load_run(str(fixture_session), window_limit=window), "analyze",
+                          **_opts(fixture_session)) for window in (100_000, 1_000_000)]
+    assert plans[0]["hash"] != plans[1]["hash"]
+
+
+def test_hash_follows_label_step_cap(fixture_run, fixture_session):
+    short = plan_prompts(fixture_run, "label", **_opts(fixture_session, max_steps=1))
+    long = plan_prompts(fixture_run, "label", **_opts(fixture_session, max_steps=2))
+    assert short["hash"] != long["hash"]
+
+
+@pytest.mark.parametrize("indexes", [[0, 0], [-1], [True]])
+def test_apply_refuses_invalid_reply_indexes(fixture_run, fixture_session, tmp_artifacts, indexes):
+    plan = plan_prompts(fixture_run, "fixes", **_opts(fixture_session))
+    replies = {"hash": plan["hash"], "replies": [{"index": i, "text": JUDGMENT} for i in indexes]}
+    with pytest.raises(BridgeError) as exc:
+        apply_replies(fixture_run, "fixes", replies,
+                      **_apply_opts(fixture_session, tmp_artifacts / "unused.json"))
+    assert exc.value.code == "bad_replies"
+
+
+def test_cli_unicode_prompt_size_is_bounded(run_cli, fixture_session, tmp_artifacts, monkeypatch):
+    """The UTF-8 file can fit while the JSON stdout's Unicode escapes exceed its budget."""
+    from trajviz_obs import llm_cmd
+
+    monkeypatch.setattr(llm_cmd, "_capture", lambda *args, **kwargs: [("system", "界" * 60_000)])
+    code, out = run_cli(["llm-prompt", "--transcript", str(fixture_session), "--artifacts", str(tmp_artifacts),
+                         "--feature", "analyze"])
+    assert code == 0 and "prompts" not in out
+    assert out["bytes"] < llm_cmd.INLINE_JSON_BYTES
+    assert len(json.dumps(out)) < llm_cmd.INLINE_JSON_BYTES
+    assert json.loads(Path(out["path"]).read_text())["prompts"][0]["prompt"] == "界" * 60_000
+
+
 def test_analyze_history_round_trip(fixture_run, fixture_session, tmp_artifacts):
     history = tmp_artifacts / "analyze.json"
     first = plan_prompts(fixture_run, "analyze", **_opts(fixture_session, history_path=history))

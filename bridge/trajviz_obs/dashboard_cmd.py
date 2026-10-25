@@ -1,7 +1,8 @@
 """``dashboard`` and ``converge``: TrajViz's Insight and Converge dashboards on 127.0.0.1.
 
-Both print ``{"url": …}`` as their one stdout line once the server is up, then serve until stdin closes (the mod
-keeps the pipe open while the dashboard should run). The Insight dashboard opens with the session already
+Both print ``{"url": …}`` as their one stdout line once the server is up, then serve until terminated. Claude
+Code's process API starts children with stdin already closed, so EOF must not stop a managed dashboard.
+Standalone pipe owners can opt into EOF shutdown with ``--exit-on-stdin``. The Insight dashboard opens with the session already
 loaded: a page-load event sets the trajectory file control to the transcript and clicks the dashboard's own
 Load button. The transcript is served in place (a Gradio static path) rather than as a cache copy, so TrajViz
 reads it at its real path and finds ``<id>/subagents/`` beside it. A missing ``app`` extra is reported as
@@ -15,8 +16,10 @@ import argparse
 import contextlib
 import json
 import os
+import signal
 import socket
 import sys
+import threading
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING
@@ -99,15 +102,26 @@ def _announce(url: str, **extra: object) -> None:
     sys.stdout.flush()
 
 
-def _wait_for_eof() -> None:
-    if sys.stdin is None:
+def _wait_for_shutdown(*, exit_on_stdin: bool) -> None:
+    """Keep a managed child alive even with DEVNULL stdin; close its app cleanly on SIGTERM or Ctrl-C."""
+    if exit_on_stdin:
+        if sys.stdin is not None:
+            for _ in sys.stdin:
+                pass
         return
-    for _ in sys.stdin:
-        pass
+    stopped = threading.Event()
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        for sig in previous:
+            signal.signal(sig, lambda _signum, _frame: stopped.set())
+        stopped.wait()
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
-def serve_insight(transcript_path: str, port: int | None) -> None:
-    """Serve the preloaded Insight dashboard until stdin closes; ``{"url"}`` is the first stdout line.
+def serve_insight(transcript_path: str, port: int | None, *, exit_on_stdin: bool = False) -> None:
+    """Serve the preloaded Insight dashboard until terminated; ``{"url"}`` is the first stdout line.
 
     When the preload cannot be wired (a TrajViz release changed the upload row) the dashboard still starts and
     the line carries ``"preloaded": false``.
@@ -122,14 +136,14 @@ def serve_insight(transcript_path: str, port: int | None) -> None:
                                    allowed_paths=[os.path.dirname(transcript_path)],
                                    **dashboard.insight_presentation())
         _announce(url, **({} if preloaded else {"preloaded": False}))
-        _wait_for_eof()
+        _wait_for_shutdown(exit_on_stdin=exit_on_stdin)
     finally:
         with contextlib.redirect_stdout(sys.stderr):
             app.close()
 
 
-def serve_converge(data_root: str, port: int | None) -> None:
-    """Serve the Converge dashboard over *data_root* until stdin closes; ``{"url"}`` is the first stdout line."""
+def serve_converge(data_root: str, port: int | None, *, exit_on_stdin: bool = False) -> None:
+    """Serve the Converge dashboard over *data_root* until terminated; ``{"url"}`` is the first stdout line."""
     _check_port(port)
     dashboard = _dashboard()
     import gradio as gr
@@ -139,7 +153,7 @@ def serve_converge(data_root: str, port: int | None) -> None:
             _, url, _ = dashboard.launch_converge(host="127.0.0.1", port=port, data_root=data_root,
                                                   prevent_thread_lock=True, quiet=True)
         _announce(url)
-        _wait_for_eof()
+        _wait_for_shutdown(exit_on_stdin=exit_on_stdin)
     finally:
         with contextlib.redirect_stdout(sys.stderr):
             gr.close_all()
@@ -158,13 +172,16 @@ def _port(text: str) -> int:
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
     port_help = "The port, 1 to 65535 (default: Gradio's first free one from 7860)."
-    p = sub.add_parser("dashboard", help="The Insight dashboard with the session preloaded, until stdin closes.")
+    stdin_help = "Stop when stdin closes (standalone pipe use; default: serve until terminated)."
+    p = sub.add_parser("dashboard", help="The Insight dashboard with the session preloaded, until terminated.")
     p.add_argument("--transcript", required=True, help="The session transcript.")
     p.add_argument("--port", type=_port, default=None, help=port_help)
+    p.add_argument("--exit-on-stdin", action="store_true", help=stdin_help)
 
-    p = sub.add_parser("converge", help="The Converge comparison dashboard, until stdin closes.")
+    p = sub.add_parser("converge", help="The Converge comparison dashboard, until terminated.")
     p.add_argument("--data-root", required=True, help="The folder batch manifests may name files in.")
     p.add_argument("--port", type=_port, default=None, help=port_help)
+    p.add_argument("--exit-on-stdin", action="store_true", help=stdin_help)
 
 
 @register("dashboard")
@@ -174,7 +191,7 @@ def _serve_dashboard(args: argparse.Namespace) -> None:
     if not path.is_file():
         raise BridgeError("not_found", f"No such transcript: {path}", path=str(path))
     load_plugins()  # as TrajViz's own dashboard command does on start, so the app reads plugins' formats
-    serve_insight(str(path), args.port)
+    serve_insight(str(path), args.port, exit_on_stdin=args.exit_on_stdin)
 
 
 @register("converge")
@@ -183,4 +200,4 @@ def _serve_converge(args: argparse.Namespace) -> None:
     root = Path(args.data_root).resolve()
     if not root.is_dir():
         raise BridgeError("not_found", f"No such folder: {root}", path=str(root))
-    serve_converge(str(root), args.port)
+    serve_converge(str(root), args.port, exit_on_stdin=args.exit_on_stdin)

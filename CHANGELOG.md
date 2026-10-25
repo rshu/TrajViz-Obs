@@ -1,0 +1,13 @@
+# Changelog
+
+## 0.1.0 — 2026-10-25
+
+- Added the immediate `/obs` command, snapshot cards, seven-tab pane, post-turn watch, and optional status line for Claude Code's function hooks API.
+- Connected TrajViz's diagnostics, view catalog, reports, JSON exports, session bundles, comparisons, and local dashboards through a Python bridge.
+- Added explicit model analysis, fix suggestions, and step labeling through the session client or TrajViz's environment-configured client.
+- Added managed Python setup, optional extras, session discovery, the deferred `obs` tool, and doctor output.
+- Hardened live model requests with immutable inputs, setup with locked environment generations, and dashboard lifetime and cancellation.
+- Added output bounds, source-file protection, saved-session action targeting, and native MCP result validation.
+- Added hook and Python tests, locked dependencies, CI, a real-session E2E harness, packaging metadata, and developer documentation.
+
+Developed against Claude Code 2.1.304; validated on 2.1.308. Supports `agent-trajviz>=0.2.0,<0.3`.

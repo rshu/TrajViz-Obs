@@ -48,6 +48,8 @@ TIMELINE_STEPS = 60
 ROW_STEPS = 50
 #: Longest agent label taken from a ``.meta.json`` description, and longest timeline preview.
 LABEL_CHARS, PREVIEW_CHARS, EVIDENCE_CHARS = 40, 120, 80
+#: Text copied from engine views is a display preview. Commands and errors can be megabytes long.
+DISPLAY_TEXT_CHARS = 512
 #: Tool-call input keys tried, in order, for an issue's evidence excerpt.
 EVIDENCE_KEYS = ("command", "file_path", "path", "notebook_path", "pattern", "url", "query")
 #: Segment budget shared by the swimlane's lanes, as a multiple of ``max_points``.
@@ -244,6 +246,28 @@ def _artifacts(folder: Path | None) -> dict:
             "views": existing(root and root / "views"), "labels": existing(root and root / "labels.json")}
 
 
+def _display_previews(value: Any, path: tuple[str | int, ...], clipped: list[str]) -> Any:
+    """Bound display text recursively without changing numbers, keys, routing ids or provenance paths.
+
+    A native failed Bash command can become a tool label and a pattern signature. Limiting only the number
+    of rows therefore leaves several copies of an arbitrarily large command in a small snapshot. Keep the
+    full data in the engine/export; this makes independent preview copies for the card and pane.
+    """
+    if isinstance(value, str):
+        if (path[0] in {"transcript", "artifacts"}
+                or path[-1] in {"id", "agent_id", "session_id", "sha256"}):
+            return value
+        if len(value) > DISPLAY_TEXT_CHARS:
+            clipped.append(".".join(str(part)[:80] for part in path))
+            return _clip(value, DISPLAY_TEXT_CHARS)
+        return value
+    if isinstance(value, dict):
+        return {key: _display_previews(item, (*path, key), clipped) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_display_previews(item, (*path, index), clipped) for index, item in enumerate(value)]
+    return value
+
+
 def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFacts,
                    agents_meta: dict[str, AgentMeta], artifacts: Path | None, max_points: int = 400,
                    duration_ms: int = 0) -> dict:
@@ -324,6 +348,12 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
         "artifacts": _artifacts(artifacts),
         "text": "",
     }
+    clipped: list[str] = []
+    snap = _display_previews(snap, (), clipped)
+    if clipped:
+        fields = ", ".join(clipped[:4]) + (f" (+{len(clipped) - 4} more)" if len(clipped) > 4 else "")
+        snap["trajviz"]["warnings"].append(
+            f"Snapshot preview text clipped; full data: /obs view or /obs json. Fields: {fields}.")
     snap["text"] = render_overview(snap)
     snap["duration_ms"] = duration_ms + int((time.monotonic() - started) * 1000)
     return snap

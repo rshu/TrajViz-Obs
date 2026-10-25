@@ -1,0 +1,216 @@
+// A bridge `snapshot` document following the contract in types/index.d.ts:
+// 2 agents, 4 health rows, 3 issues with evidence, one TrajViz warning and
+// series of 40 points. Hand-written; to be regenerated from the bridge on
+// the fixture session once the bridge's Task 12 exists.
+import type { Snapshot } from '../../types'
+
+const N = 40
+
+/** `n` numbers from `fn(i)`, the series' shape without listing every value. */
+const series = (n: number, fn: (i: number) => number): number[] => Array.from({ length: n }, (_, i) => fn(i))
+
+const steps = series(N, i => i * 8 + 1)
+
+export const SNAPSHOT: Snapshot = {
+  schema_version: 1,
+  generated_at: '2026-10-22T16:40:12Z',
+  duration_ms: 842,
+  transcript: {
+    path: '/Users/me/.claude/projects/-Users-me-p/abc.jsonl',
+    session_id: 'abc',
+    size: 1_204_377,
+    mtime_ms: 1_792_000_000_000,
+    sha256: 'c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00',
+  },
+  trajviz: {
+    version: '0.2.0',
+    format: 'claude_code',
+    format_label: 'Claude Code',
+    warnings: ['skipped sub-agent log agent-9f3c.jsonl: unterminated last record'],
+  },
+  title: 'Build the obs plugin',
+  task: 'Implement the /obs plugin per the spec',
+  counts: { records: 402, assistant_steps: 311, user_records: 91, prompts: 7, compactions: 1, agents: 2, tool_calls: 196 },
+  tokens: { total: 4_812_330, input: 118_204, output: 61_020, cache_read: 4_520_106, cache_write: 113_000, reasoning: 8_400 },
+  timing: {
+    wall_clock_s: 3_122.4,
+    started_at: '2026-10-22T15:48:10Z',
+    finished_at: '2026-10-22T16:40:12Z',
+    avg_step_s: 6.8,
+    p95_step_s: 31.2,
+    output_tokens_per_sec: 19.5,
+    tool_wait_share: 0.41,
+  },
+  tools: {
+    success_rate: 96.4,
+    calls: 196,
+    failed: 7,
+    by_tool: [
+      { tool: 'Bash', calls: 88, errors: 5 },
+      { tool: 'Read', calls: 51, errors: 0 },
+      { tool: 'Edit', calls: 34, errors: 2 },
+      { tool: 'Grep', calls: 14, errors: 0 },
+      { tool: 'Write', calls: 9, errors: 0 },
+    ],
+  },
+  health: [
+    { metric: 'tool_success', status: 'ok', label: '96%', detail: '7 of 196 tool calls failed' },
+    { metric: 'context', status: 'warn', label: '71%', detail: 'the main agent is at 71% of its window after one compaction' },
+    { metric: 'loops', status: 'warn', label: '2', detail: 'two edit-thrash loops on the same file' },
+    { metric: 'pace', status: 'ok', label: '6.8s', detail: 'average step 6.8 s, p95 31.2 s' },
+  ],
+  issues: [
+    {
+      kind: 'edit_thrash',
+      title: 'Edit loop on hooks/lib/state.ts',
+      detail: 'The same file was edited 6 times in 9 steps without a passing test between.',
+      why: 'Run the test after each edit, or read the validate message before the next change.',
+      steps: [140, 142, 144, 147, 149, 151],
+      evidence: 'Edit: hooks/lib/state.ts',
+    },
+    {
+      kind: 'repeated_failure',
+      title: 'claude plugin validate failed 4 times in a row',
+      detail: 'Steps 139-152 repeat the same command with the same error.',
+      why: 'Read the refusal line; the fix is in the file the message names.',
+      steps: [139, 143, 146, 152],
+      evidence: 'Bash: claude plugin validate --strict .',
+    },
+    {
+      kind: 'premature_compaction',
+      title: 'Compaction at 62% of the window',
+      detail: 'The context was compacted at step 208 with 38% still free.',
+      why: 'A smaller tool output (a --limit, a head) would have kept the window.',
+      steps: [208],
+      evidence: 'Read: docs/superpowers/specs/2026-10-22-obs-plugin-design.md',
+    },
+  ],
+  bottlenecks: [
+    { step: 231, duration_s: 184.2, cause: 'tool', title: 'claude plugin test .', detail: 'the whole suite, 184 s' },
+    { step: 96, duration_s: 61.0, cause: 'generation', title: 'long answer', detail: '4,120 output tokens' },
+  ],
+  context: {
+    window: 1_000_000,
+    window_source: 'engine',
+    window_note: null,
+    current_occupancy: 712_400,
+    current_pct: 71.2,
+    peak_occupancy: 744_900,
+    peak_pct: 74.5,
+    compaction_count: 1,
+    largest_drop: 402_300,
+  },
+  series: {
+    tokens: {
+      steps,
+      fresh: series(N, i => 1_800 + ((i * 37) % 11) * 240),
+      cache_read: series(N, i => 60_000 + i * 2_900 - (i > 26 ? 40_000 : 0)),
+      cache_write: series(N, i => (i % 5 === 0 ? 3_200 : 400)),
+      output: series(N, i => 90 + ((i * 53) % 17) * 60),
+    },
+    durations: {
+      steps,
+      seconds: series(N, i => (i === 29 ? 184.2 : i === 12 ? 61.0 : 2.5 + ((i * 7) % 9))),
+      outliers: [12, 29],
+    },
+    context: {
+      turns: series(N, i => i * 8 + 1),
+      occupancy: series(N, i => (i > 26 ? 340_000 + (i - 26) * 28_000 : 120_000 + i * 24_000)),
+      compactions: [209],
+    },
+  },
+  phases: [
+    { name: 'explore', start: 1, end: 40 },
+    { name: 'implement', start: 41, end: 230 },
+    { name: 'verify', start: 231, end: 311 },
+  ],
+  agents: [
+    {
+      id: '__main__',
+      label: 'main',
+      type: null,
+      description: null,
+      steps: 262,
+      tokens: 4_120_000,
+      tool_calls: 160,
+      errors: 6,
+      duration_s: 3_122.4,
+      cache_pct: 93.9,
+      gen_tps: 19.1,
+    },
+    {
+      id: 'agent-7b2e',
+      label: 'Builder check',
+      type: 'general-purpose',
+      description: 'Builder check: run the suite and report',
+      steps: 49,
+      tokens: 692_330,
+      tool_calls: 36,
+      errors: 1,
+      duration_s: 412.0,
+      cache_pct: 91.2,
+      gen_tps: 22.4,
+    },
+  ],
+  swimlane: {
+    total_steps: 311,
+    lanes: [
+      { id: '__main__', label: 'main', segments: [{ start: 1, end: 180 }, { start: 230, end: 311 }] },
+      { id: 'agent-7b2e', label: 'Builder check', segments: [{ start: 181, end: 229 }] },
+    ],
+  },
+  patterns: {
+    tool_sequences: [{ sequence: ['Read', 'Edit', 'Bash'], count: 23 }],
+    failure_patterns: [{ tool: 'Bash', pattern: 'validate refused', count: 4 }],
+    error_clusters: [{ steps: [139, 143, 146, 152], tool: 'Bash', message: 'Found 1 error' }],
+    failure_chains: [],
+    fruitless_streaks: [{ start: 139, end: 152, length: 14 }],
+    tool_selection: [],
+    edit_thrash: [{ file: 'hooks/lib/state.ts', edits: 6, span: [140, 151] }],
+    repeated_searches: [{ query: 'memberOf', count: 3 }],
+    phase_regressions: [],
+    premature_compactions: [{ step: 208, pct: 62 }],
+    hotspots: [{ file: 'hooks/lib/state.ts', touches: 11 }],
+  },
+  timeline: series(6, i => 306 + i).map(step => ({
+    step,
+    role: 'assistant',
+    category: step % 2 ? 'tool' : 'text',
+    agent: '__main__',
+    errors: 0,
+    tool_calls: step % 2,
+    duration_s: 3.2,
+    tokens: 410,
+    preview: step % 2 ? 'Bash: claude plugin test .' : 'The suite passes.',
+  })),
+  diagnostics: { summary: 'two loops, one early compaction', score: 72 },
+  files: {
+    unique: 23,
+    reads: 51,
+    writes: 43,
+    searches: 14,
+    top: [
+      { file: 'hooks/lib/state.ts', reads: 4, writes: 7 },
+      { file: 'hooks/register.tsx', reads: 3, writes: 4 },
+      { file: 'hooks/bridge.test.ts', reads: 2, writes: 3 },
+    ],
+  },
+  plan: { items: 5, done: 4, stalled: 0 },
+  skills: [{ skill: 'superpowers:test-driven-development', calls: 1 }],
+  artifacts: { dir: '/Users/me/.cache/trajviz-obs/sessions/abc', report: null, views: null, labels: null },
+  text: [
+    'Health: tool_success ok (96%) · context warn (71%) · loops warn (2) · pace ok (6.8s)',
+    '311 assistant steps · 7 prompts · 2 agents · 4.8M tokens (118k fresh / 4.5M cache / 61k out) · 196 tool calls, 96% ok · 52m02s',
+    'Context: 71% of 1,000,000 (peak 75%), 1 compaction',
+    'Issues:',
+    '1. Edit loop on hooks/lib/state.ts (steps 140, 142, 144, 147, 149, 151) — Edit: hooks/lib/state.ts',
+    '2. claude plugin validate failed 4 times in a row (steps 139, 143, 146, 152) — Bash: claude plugin validate --strict .',
+    '3. Compaction at 62% of the window (step 208) — Read: docs/superpowers/specs/2026-10-22-obs-plugin-design.md',
+    'Bottlenecks: step 231 184.2s (claude plugin test .) · step 96 61.0s (long answer)',
+    'Hints:',
+    '- Run the test after each edit, or read the validate message before the next change.',
+    '- Read the refusal line; the fix is in the file the message names.',
+    '- A smaller tool output (a --limit, a head) would have kept the window.',
+    'Warnings: skipped sub-agent log agent-9f3c.jsonl: unterminated last record',
+  ].join('\n'),
+}

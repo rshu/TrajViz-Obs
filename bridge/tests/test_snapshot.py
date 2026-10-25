@@ -12,6 +12,7 @@ from conftest import make_session
 from trajviz_obs.compat import load_run
 from trajviz_obs.sidecars import agent_meta, scan_transcript
 from trajviz_obs.snapshot import build_snapshot, downsample, empty_snapshot
+from trajviz_obs.views_cmd import export
 
 CONTRACT_KEYS = {
     "schema_version", "generated_at", "duration_ms", "transcript", "trajviz", "title", "task", "counts", "tokens",
@@ -58,6 +59,66 @@ def test_snapshot_issue_evidence(fixture_session):
     assert issue["evidence"] == "Read: /home/user/workdirs/django__django-11477/claude_code/tests/i18n/patterns/urls"
     assert snap["tools"]["by_tool"][0] == {"tool": "Grep", "calls": 6, "errors": 0}
     assert snap["context"]["window_source"] == "model" and snap["context"]["current_pct"] is not None
+
+
+def test_snapshot_bounds_megabyte_failed_command_previews_without_changing_full_views(tmp_path):
+    """A long failed command becomes tool labels/signatures in several views, despite a small row count."""
+    path = Path(make_session(tmp_path, steps=6))
+    command = "failed-command-" + "x" * 1_050_000
+    displayed_path = "/invalid-input-path-" + "z" * 1_050_000
+    error = "Error: failed to run " + command
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    for record in records:
+        for block in (record.get("message") or {}).get("content", []):
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash":
+                block["input"]["command"] = command
+            elif isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Read":
+                block["input"]["file_path"] = displayed_path
+            elif isinstance(block, dict) and block.get("type") == "tool_result":
+                block.update(content=error, is_error=True)
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    run = load_run(str(path))
+    summary, metrics = run.view("summary").data, run.view("metrics").data
+    snap = build_snapshot(run, transcript_path=str(path), facts=scan_transcript(str(path)), agents_meta={},
+                          artifacts=None)
+    assert len(json.dumps(snap).encode()) < 300_000
+    assert snap["counts"]["assistant_steps"] == summary["assistant_steps"] == 6
+    assert snap["counts"]["tool_calls"] == summary["tool_calls"] == 6
+    assert snap["tools"]["failed"] == metrics["tool_fail"] == 6
+    assert snap["tokens"] == {key: summary["tokens"].get(key) for key in snap["tokens"]}
+    assert any("Snapshot preview text clipped" in warning and "/obs json" in warning
+               for warning in snap["trajviz"]["warnings"])
+    assert all(len(row["tool"]) <= 512 for row in snap["tools"]["by_tool"])
+    # Snapshot previews are independent copies; the full engine view/export must retain the original text.
+    original_tools = run.view("tool_usage").data
+    assert any(len(row["tool"]) > 1_000_000 for row in original_tools["tools"])
+    folder = tmp_path / "full-views"
+    export(run, folder, only=["tool_usage", "file_interactions"], with_trajectory=False)
+    written = json.loads((folder / "tool_usage.json").read_text())
+    assert written["data"] == original_tools
+    assert (folder / "tool_usage.json").stat().st_size > 1_000_000
+    files = json.loads((folder / "file_interactions.json").read_text())
+    assert any(item["path"] == displayed_path for item in files["data"]["interactions"])
+    assert all(len(row["file"]) <= 512 for row in snap["files"]["top"])
+
+
+def test_snapshot_keeps_long_provenance_and_artifact_paths_exact(tmp_path):
+    source = Path(make_session(tmp_path, steps=3))
+    nested = tmp_path.joinpath(*["valid-folder-" + "x" * 70 + str(index) for index in range(7)])
+    nested.mkdir(parents=True)
+    transcript = nested / source.name
+    source.rename(transcript)
+    artifacts = nested / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "report.html").write_text("report")
+    run = load_run(str(transcript))
+    snap = build_snapshot(run, transcript_path=str(transcript), facts=scan_transcript(str(transcript)),
+                          agents_meta={}, artifacts=artifacts)
+    assert len(str(transcript)) > 512
+    assert snap["transcript"]["path"] == str(transcript)
+    assert snap["transcript"]["sha256"] == run.sha256
+    assert snap["artifacts"]["dir"] == str(artifacts)
+    assert snap["artifacts"]["report"] == str(artifacts / "report.html")
 
 
 def test_snapshot_cli_empty_current(run_cli, tmp_path):

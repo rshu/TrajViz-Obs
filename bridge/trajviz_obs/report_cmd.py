@@ -17,8 +17,9 @@ import agent_trajviz as tv
 from agent_trajviz import ReportError, Trajectory
 
 from .cli import register
-from .compat import EmptySession
+from .compat import EmptySession, protect_run_outputs
 from .errors import BridgeError
+from .outputs import protect_inputs, session_files
 from .views_cmd import _artifacts, _load, _session_args
 
 #: Most member names ``bundle`` lists on stdout.
@@ -49,6 +50,7 @@ def write_report_file(run: Trajectory, dest: Path, *, dark: bool, offline: bool)
     ``MissingExtraError`` (no ``charts`` extra) propagates; TrajViz's ``ReportError`` becomes
     ``BridgeError("report_failed")``.
     """
+    protect_run_outputs(run, [dest])
     dest = _file_dest(dest)
     tmp = dest.with_name(dest.name + ".tmp")
     try:
@@ -62,17 +64,6 @@ def write_report_file(run: Trajectory, dest: Path, *, dark: bool, offline: bool)
     return {"path": str(dest), "bytes": _replace(tmp, dest)}
 
 
-def _subagent_files(root: Path) -> list[Path]:
-    """Every regular file below *root*, sorted, never following or including a symlink."""
-    if root.is_symlink() or not root.is_dir():
-        return []
-    found: list[Path] = []
-    for folder, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(folder, d))]
-        found += [Path(folder, f) for f in files if not os.path.islink(os.path.join(folder, f))]
-    return sorted(found)
-
-
 def bundle_session(transcript_path: str, dest: Path) -> dict:
     """The transcript and every file under ``<id>/subagents/`` as a ZIP at *dest*: ``{"path", "bytes", "members",
     "members_total"}``.
@@ -84,9 +75,9 @@ def bundle_session(transcript_path: str, dest: Path) -> dict:
     transcript = Path(transcript_path)
     if not transcript.is_file():
         raise BridgeError("not_found", f"No such transcript: {transcript}", path=str(transcript))
-    session = transcript.with_suffix("")
-    files = [transcript] if session.is_symlink() else [transcript, *_subagent_files(session / "subagents")]
+    files = session_files(transcript)
     members = [path.relative_to(transcript.parent).as_posix() for path in files]
+    protect_inputs([dest], files)
     dest = _file_dest(dest)
     tmp = dest.with_name(dest.name + ".tmp")
     try:

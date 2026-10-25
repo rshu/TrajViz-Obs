@@ -19,8 +19,9 @@ import agent_trajviz as tv
 from agent_trajviz import Trajectory
 
 from .cli import register
-from .compat import EmptySession, load_plugins, load_run
+from .compat import EmptySession, load_plugins, load_run, protect_run_outputs
 from .errors import BridgeError
+from .outputs import protect_inputs, session_files
 from .text import LINE_CHARS, _cell, _clip, _duration, _num
 from .views_cmd import _artifacts, _load, _session_args, _write_json
 
@@ -120,13 +121,18 @@ def compare_sessions(current: Trajectory, other_path: str, *, anchor_patch: str 
     if anchor_patch is not None and not Path(anchor_patch).is_file():
         raise BridgeError("not_found", f"No such anchor patch: {anchor_patch}", path=anchor_patch)
     other = load_run(other_path)
+    destination = out_dir / "compare" / f"{Path(other_path).stem}.json"
+    protect_run_outputs(current, [destination])
+    protect_run_outputs(other, [destination])
+    if anchor_patch is not None:
+        protect_inputs([destination], [Path(anchor_patch)])
     (reference, ref_path), (compared, cmp_path) = (other, other_path), (current, current.source)
     if reverse:
         (reference, ref_path), (compared, cmp_path) = (compared, cmp_path), (reference, ref_path)
     report = tv.compare(reference=reference, compared=compared, fuzzy_commands=fuzzy, anchor_patch=anchor_patch)
     views = tv.comparison_views(report)
     orientation = {"reference": ref_path, "compared": cmp_path}
-    path = _views_file(out_dir / "compare" / f"{Path(other_path).stem}.json", views, orientation=orientation)
+    path = _views_file(destination, views, orientation=orientation)
     return {"path": path, "orientation": orientation, "summary": views["comparison_summary"].data,
             "text": _compare_text(views)}
 
@@ -165,12 +171,17 @@ def scorecard(current: Trajectory | None, others: list[str], *, fuzzy: bool, lab
     """
     load_plugins()  # TrajViz loads the others itself (and with --no-self nothing went through load_run)
     sources: list[Trajectory | str] = [*([] if no_self else [current]), *others]
+    destination = out_dir / "compare" / "scorecard.json"
+    if current is not None:
+        protect_run_outputs(current, [destination])
+    for other in others:
+        protect_inputs([destination], session_files(Path(other)))
     try:
         result = tv.compare_runs(sources, labels=labels, fuzzy_commands=fuzzy)
     except ValueError as exc:
         raise BridgeError("compare_failed", str(exc)) from exc
     views = tv.run_group_views(result)
-    path = _views_file(out_dir / "compare" / "scorecard.json", views)
+    path = _views_file(destination, views)
     return {"path": path, "rows": views["run_scorecard"].data, "text": _scorecard_text(views)}
 
 

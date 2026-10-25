@@ -5,9 +5,13 @@ from __future__ import annotations
 import errno
 import io
 import json
+import queue
 import socket
+import subprocess
 import sys
+import threading
 import urllib.request
+from pathlib import Path
 
 import gradio
 import pytest
@@ -90,7 +94,7 @@ def _free_port() -> int:
 @pytest.mark.parametrize("kind", ["dashboard", "converge"])
 def test_serves_until_stdin_closes(kind, explicit_port, fixture_session, tmp_path, monkeypatch):
     port = _free_port() if explicit_port else None
-    argv = [*_argv(kind, fixture_session, tmp_path), *(["--port", str(port)] if port else [])]
+    argv = [*_argv(kind, fixture_session, tmp_path), "--exit-on-stdin", *(["--port", str(port)] if port else [])]
     code, lines, stdin = _serve(monkeypatch, argv)
     assert code == 0
     assert len(lines) == 1
@@ -99,6 +103,34 @@ def test_serves_until_stdin_closes(kind, explicit_port, fixture_session, tmp_pat
     assert stdin.status == 200
     with pytest.raises(OSError):
         urllib.request.urlopen(url, timeout=5)
+
+
+@pytest.mark.parametrize("kind", ["dashboard", "converge"])
+def test_managed_process_survives_closed_stdin_and_stops_on_sigterm(kind, fixture_session, tmp_path):
+    """Claude Code's $.process.spawn does not supply stdin; the URL must remain usable after startup."""
+    launcher = Path(__file__).resolve().parents[1] / "trajviz_obs_cli.py"
+    argv = [sys.executable, "-I", str(launcher), *_argv(kind, fixture_session, tmp_path)]
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True)
+    first: queue.Queue[str] = queue.Queue()
+    threading.Thread(target=lambda: first.put(proc.stdout.readline()), daemon=True).start()
+    try:
+        line = first.get(timeout=60)
+        assert line, proc.stderr.read() if proc.poll() is not None else "No URL announced"
+        url = json.loads(line)["url"]
+        with urllib.request.urlopen(url, timeout=30) as response:
+            assert response.status == 200
+        assert proc.poll() is None
+        proc.terminate()
+        stdout, stderr = proc.communicate(timeout=30)
+        assert proc.returncode == 0, stderr
+        assert stdout == ""
+        with pytest.raises(OSError):
+            urllib.request.urlopen(url, timeout=5)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=10)
 
 
 def test_missing_app_extra_prints_only_the_error(fixture_session, run_cli, monkeypatch):

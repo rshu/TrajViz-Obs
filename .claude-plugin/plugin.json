@@ -1,0 +1,68 @@
+{
+  "name": "trajviz-obs",
+  "version": "0.1.0",
+  "description": "TrajViz observability for the current Claude Code session: /obs visualizes and diagnoses the session's trajectory",
+  "author": { "name": "Rui Shu" },
+  "homepage": "https://github.com/rshu/TrajViz-Obs#readme",
+  "repository": "https://github.com/rshu/TrajViz-Obs",
+  "license": "MIT",
+  "keywords": ["trajviz", "observability", "trajectory", "diagnostics"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "trajvizSource": {
+      "type": "string",
+      "title": "TrajViz source",
+      "description": "pip requirement or local checkout path for agent-trajviz",
+      "default": "agent-trajviz>=0.2.0,<0.3"
+    },
+    "python": {
+      "type": "string",
+      "title": "Python",
+      "description": "Interpreter to build the environment with (empty: uv, else the newest python3.11+ on PATH)",
+      "default": ""
+    },
+    "llm": {
+      "type": "string",
+      "title": "LLM",
+      "description": "How LLM features run: session (this session's model) or env (TrajViz's own HTTP client from ANALYZE_*/LABEL_*)",
+      "default": "session",
+      "options": ["session", "env"]
+    },
+    "analysisModel": {
+      "type": "string",
+      "title": "Analysis model",
+      "description": "Model for analyze and fixes (session = the session's model)",
+      "default": "sonnet"
+    },
+    "labelModel": {
+      "type": "string",
+      "title": "Label model",
+      "description": "Model for label",
+      "default": "haiku"
+    },
+    "labelMaxSteps": {
+      "type": "number",
+      "title": "Label max steps",
+      "description": "Labeling cap without a confirmation",
+      "default": 50
+    },
+    "watch": {
+      "type": "boolean",
+      "title": "Watch",
+      "description": "Live refresh while the pane is open",
+      "default": true
+    },
+    "statusline": {
+      "type": "boolean",
+      "title": "Status line",
+      "description": "The pinned summary line under the prompt",
+      "default": false
+    },
+    "openBrowser": {
+      "type": "boolean",
+      "title": "Open browser",
+      "description": "Open reports and dashboards in the browser",
+      "default": true
+    }
+  }
+}

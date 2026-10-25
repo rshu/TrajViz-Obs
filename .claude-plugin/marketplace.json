@@ -1,0 +1,18 @@
+{
+  "name": "trajviz-obs",
+  "description": "TrajViz observability for the current Claude Code session (/obs)",
+  "owner": { "name": "Rui Shu" },
+  "plugins": [
+    {
+      "name": "trajviz-obs",
+      "source": "./",
+      "version": "0.1.0",
+      "description": "Visualize and diagnose running Claude Code sessions with TrajViz",
+      "author": { "name": "Rui Shu" },
+      "homepage": "https://github.com/rshu/TrajViz-Obs#readme",
+      "repository": "https://github.com/rshu/TrajViz-Obs",
+      "license": "MIT",
+      "keywords": ["trajviz", "observability", "trajectory", "diagnostics"]
+    }
+  ]
+}

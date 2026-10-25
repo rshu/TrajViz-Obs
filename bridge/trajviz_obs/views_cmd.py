@@ -23,7 +23,7 @@ from agent_trajviz import Trajectory
 
 from . import paths
 from .cli import register
-from .compat import EmptySession, load_plugins, load_run
+from .compat import EmptySession, load_plugins, load_run, protect_run_outputs
 from .errors import BridgeError
 from .sessions import MAX_LIMIT, _positive_int, page_limit
 from .text import _clip, _num, render_series, render_table
@@ -229,8 +229,9 @@ def view_payload(run: Trajectory, view_id: str, options: dict, *, limit: int, of
     :data:`INLINE_STDOUT_BYTES` on stdout)."""
     _options_help(view_id)
     view = run.view(view_id, **options)
-    out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{view_id}.json"
+    protect_run_outputs(run, [path])
+    out_dir.mkdir(parents=True, exist_ok=True)
     size = _write_json(path, view.to_dict())
     rows = _rows(view_id, view.data)
     paging = {"limit": limit, "offset": offset, "path": path}
@@ -254,6 +255,9 @@ def export(run: Trajectory, out_dir: Path, *, only: list[str] | None, with_traje
     *with_trajectory* (it is tens of MB for a long session)."""
     for view_id in only or ():
         _options_help(view_id)
+    names = [f"{view_id}.json" for view_id in (only if only is not None else tv.VIEW_CATALOG)]
+    protect_run_outputs(run, [out_dir / name for name in [*names, "index.json",
+                                                        *(["trajectory.json"] if with_trajectory else [])]])
     written = tv.export_json(run if with_trajectory else run.views(only=only), out_dir,
                              only=only if with_trajectory else None)
     return {"path": str(out_dir), "files": [p.name for p in written], "bytes": sum(p.stat().st_size for p in written)}

@@ -21,6 +21,7 @@ import hashlib
 import itertools
 import json
 import os
+import re
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -30,11 +31,20 @@ from agent_trajviz import Trajectory
 
 from .cli import register
 from .compare_cmd import label_views_payload
-from .compat import EmptySession, labeler_chat, labeler_step_cap
+from .compat import (
+    EmptySession,
+    check_supported,
+    labeler_chat,
+    labeler_run,
+    labeler_step_cap,
+    load_plugins,
+    protect_run_outputs,
+    window_info,
+)
 from .errors import BridgeError
 from .sessions import _positive_int
 from .text import LINE_CHARS, _clip
-from .views_cmd import INLINE_JSON_BYTES, _artifacts, _load, _session_args, _write_json
+from .views_cmd import INLINE_JSON_BYTES, _artifacts, _load, _session_args, _stdout_bytes, _write_json
 
 Feature = Literal["analyze", "fixes", "label"]
 FEATURES: tuple[str, ...] = get_args(Feature)
@@ -78,9 +88,14 @@ def _question(question: str | None, language: str | None) -> str:
     return (question or "").strip() or llm.first_question(language)
 
 
-def _hash(run: Trajectory, feature: str, question: str | None, limit: int) -> str:
-    """sha256 of (the transcript's sha256, feature, question, limit): what the replies were made for."""
-    payload = json.dumps([run.sha256, feature, question, limit], ensure_ascii=False)
+def _hash(run: Trajectory, feature: str, question: str | None, limit: int, prompts: list[dict]) -> str:
+    """Bind replies to the exact requests, including history, language, call limits and the real window.
+
+    The transcript hash alone is insufficient: history can change without another transcript record, and
+    overrides or a language change can produce different requests from the same session bytes.
+    """
+    payload = json.dumps([run.sha256, window_info(run)["window"], feature, question, limit, prompts],
+                         ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -155,10 +170,11 @@ def _run(run: Trajectory, feature: str, *, chat: Chat | None, config: Any, trans
         return llm.ask(run, question, history, config=config, chat=chat, language=language)
     if feature == "fixes":
         return llm.suggest_fixes(run, config=config, chat=chat, language=language, limit=limit)
-    if chat is None:
-        return _label(transcript_path, out_path, assistant_only=assistant_only, model=model, **(label_client or {}))
-    with labeler_chat(chat):
-        return _label(transcript_path, out_path, assistant_only=assistant_only, model=model)
+    with labeler_run(run):
+        if chat is None:
+            return _label(transcript_path, out_path, assistant_only=assistant_only, model=model, **(label_client or {}))
+        with labeler_chat(chat):
+            return _label(transcript_path, out_path, assistant_only=assistant_only, model=model)
 
 
 def _capture(run: Trajectory, feature: str, *, transcript_path: str, question: str, history: list[dict],
@@ -217,7 +233,7 @@ def plan_prompts(run: Trajectory, feature: Feature, *, transcript_path: str, que
     prompts = [{"index": i, "system": system, "prompt": prompt, "max_tokens": max_tokens, "timeout_s": timeout_s}
                for i, (system, prompt) in enumerate(calls)]
     chars = sum(len(system) + len(prompt) for system, prompt in calls)
-    return {"feature": feature, "hash": _hash(run, feature, question, limit),
+    return {"feature": feature, "hash": _hash(run, feature, question, limit, prompts),
             "plan": {"calls": len(prompts), "approx_input_tokens": -(-chars // 4)}, "prompts": prompts}
 
 
@@ -227,10 +243,12 @@ def _replies_by_index(replies: dict) -> dict[int, dict]:
         raise BridgeError("bad_replies", 'Replies are {"hash", "replies": [{"index", "text"} | {"index", "error"}]}.')
     out: dict[int, dict] = {}
     for item in items:
-        ok = (isinstance(item, dict) and isinstance(item.get("index"), int)
+        ok = (isinstance(item, dict) and type(item.get("index")) is int and item["index"] >= 0
               and (isinstance(item.get("text"), str) or isinstance(item.get("error"), str)))
         if not ok:
             raise BridgeError("bad_replies", f"Not a reply: {json.dumps(item)[:200]}")
+        if item["index"] in out:
+            raise BridgeError("bad_replies", f"More than one reply for prompt {item['index']}.")
         out[item["index"]] = item
     return out
 
@@ -246,11 +264,17 @@ def apply_replies(run: Trajectory, feature: Feature, replies: dict, *, transcrip
     ``{"index", "error"}`` (or none for a planned prompt) is a failed call: TrajViz's error for ``analyze`` and
     ``fixes``; for ``label`` an ``unknown`` label and ``"prompt <i>: <error>"`` in ``errors``. A step past
     *max_steps* is labelled ``unknown`` too, but was never planned, so it is no error. Replies made for other
-    prompts (another transcript, feature, question or limit) raise ``BridgeError("stale_prompts")``.
+    prompts (another transcript, history, language, context window or limit) raise
+    ``BridgeError("stale_prompts")``.
     """
     _feature(feature)
+    protect_run_outputs(run, [out_path] if feature == "label" else
+                        [history_path] if feature == "analyze" and history_path is not None else [])
     question = _question(question, language) if feature == "analyze" else None
-    if not isinstance(replies, dict) or replies.get("hash") != _hash(run, feature, question, limit):
+    plan = plan_prompts(run, feature, transcript_path=transcript_path, question=question,
+                        history_path=history_path, limit=limit, language=language, max_steps=max_steps,
+                        assistant_only=assistant_only)
+    if not isinstance(replies, dict) or replies.get("hash") != plan["hash"]:
         raise BridgeError("stale_prompts", "These replies were made for other prompts (the session changed since "
                                            "they were planned); plan the prompts again.")
     by_index, counter, failed, label_errors = _replies_by_index(replies), itertools.count(), [], []
@@ -312,6 +336,8 @@ def direct(run: Trajectory, feature: Feature, *, transcript_path: str, question:
 
     _feature(feature)
     config = llm.config_from_env(load_dotenv=True)
+    protect_run_outputs(run, [out_path] if feature == "label" else
+                        [history_path] if feature == "analyze" and history_path is not None else [])
     label_model, client = _label_client(config, model) if feature == "label" else (SESSION_MODEL, None)
     if feature != "label" and not config.ready:
         raise _not_configured(list(config.missing))
@@ -412,6 +438,52 @@ def _read_replies(path: Path) -> dict:
         raise BridgeError("bad_replies", f"Cannot read the replies {path}: {exc}", path=str(path)) from exc
 
 
+def _input_identity(path: str) -> str:
+    return os.path.abspath(os.path.expanduser(path))
+
+
+def _freeze_current(args: argparse.Namespace, run: Trajectory, plan: dict) -> dict:
+    """Persist a request's immutable run under its opaque hash before the host adds model/UI records."""
+    folder = _artifacts(args) / "plans" / plan["hash"]
+    trajectory, manifest = folder / "trajectory.json", folder / "transaction.json"
+    protect_run_outputs(run, [trajectory, manifest])
+    folder.mkdir(parents=True, exist_ok=True)
+    source = {"path": args.transcript, "sha256": run.sha256, "frozen": True}
+    _write_json(trajectory, run.to_dict(include_raw=True))
+    _write_json(manifest, {"schema_version": 1, "hash": plan["hash"], "feature": args.feature,
+                           "transcript": _input_identity(args.transcript), "source": source})
+    return source
+
+
+def _frozen_current(args: argparse.Namespace, replies: dict) -> tuple[Trajectory, dict]:
+    """Load only this artifact directory's saved request; reply data never supplies a filesystem path."""
+    fingerprint = replies.get("hash") if isinstance(replies, dict) else None
+    if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
+        raise BridgeError("stale_prompts", "These replies have no valid saved prompt hash; plan the prompts again.")
+    folder = _artifacts(args) / "plans" / fingerprint
+    try:
+        manifest = json.loads((folder / "transaction.json").read_text(encoding="utf-8"))
+        valid = (isinstance(manifest, dict) and manifest.get("schema_version") == 1
+                 and manifest.get("hash") == fingerprint and manifest.get("feature") == args.feature
+                 and manifest.get("transcript") == _input_identity(args.transcript))
+        if not valid:
+            raise ValueError("the saved request belongs to a different transcript or feature")
+        check_supported()
+        load_plugins()
+        captured = json.loads((folder / "trajectory.json").read_text(encoding="utf-8"))
+        # Preserve the caller's original provenance, never an embedded export path or the cache filename.
+        if isinstance(captured, dict):
+            captured["source"] = args.transcript
+        run = Trajectory.from_dict(captured)
+        source = manifest.get("source")
+        if not isinstance(source, dict) or source.get("sha256") != run.sha256:
+            raise ValueError("the saved trajectory identity changed")
+        return run, {"path": args.transcript, "sha256": run.sha256, "frozen": True}
+    except (OSError, ValueError, TypeError) as exc:
+        raise BridgeError("stale_prompts", f"Cannot read the saved input for these replies ({exc}); "
+                          "plan the prompts again.") from exc
+
+
 @register("llm-prompt")
 def _llm_prompt(args: argparse.Namespace) -> dict:
     try:
@@ -419,11 +491,14 @@ def _llm_prompt(args: argparse.Namespace) -> dict:
     except EmptySession as exc:
         return {"empty": True, "reason": exc.reason}
     plan = plan_prompts(run, args.feature, **_options(args, args.feature))
+    if args.kind == "current":
+        plan["source"] = _freeze_current(args, run, plan)
     path = _artifacts(args) / f"prompts-{args.feature}.json"
+    protect_run_outputs(run, [path])
     path.parent.mkdir(parents=True, exist_ok=True)
     size = _write_json(path, plan)
     out = {**plan, "path": str(path), "bytes": size}
-    if size > INLINE_JSON_BYTES:
+    if size > INLINE_JSON_BYTES or _stdout_bytes(out) > INLINE_JSON_BYTES:
         del out["prompts"]
     return out
 
@@ -431,12 +506,19 @@ def _llm_prompt(args: argparse.Namespace) -> dict:
 @register("llm-apply")
 def _llm_apply(args: argparse.Namespace) -> dict:
     replies = _read_replies(args.replies)
-    try:
-        run = _load(args)
-    except EmptySession as exc:
-        return {"empty": True, "reason": exc.reason}
-    return apply_replies(run, args.feature, replies, **_options(args, args.feature), out_path=_out(args),
-                         model=args.model)
+    source = None
+    if args.kind == "current":
+        run, source = _frozen_current(args, replies)
+    else:
+        try:
+            run = _load(args)
+        except EmptySession as exc:
+            return {"empty": True, "reason": exc.reason}
+    result = apply_replies(run, args.feature, replies, **_options(args, args.feature), out_path=_out(args),
+                           model=args.model)
+    if source is not None:
+        result["source"] = source
+    return result
 
 
 def _direct(args: argparse.Namespace, feature: str) -> dict:

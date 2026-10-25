@@ -1,0 +1,372 @@
+import { expect, mock, test, type Engine } from 'claude-code/testing'
+import type { On, PaneOpenArgs, RenderSurface, UiOpenResult } from 'claude-code'
+import { parseArgs } from './lib/args'
+import { SNAPSHOT } from './testdata/snapshot'
+
+const HOME = '/Users/me'
+const CWD = '/Users/me/p'
+const CACHE = `${HOME}/.cache/trajviz-obs`
+const VENV_PY = `${CACHE}/venv/bin/python`
+const STATE_PATH = `${CACHE}/state.json`
+const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
+const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
+const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 24 }, rateLimits: [], cost: { usd: 1.25 } }
+const BREAKDOWN = {
+  ...USAGE,
+  context: {
+    ...USAGE.context,
+    breakdown: {
+      categories: [
+        { name: 'System prompt', tokens: 12_000, color: 'promptBorder', isDeferred: false, kind: 'used' },
+        { name: 'Messages', tokens: 228_000, color: 'inactive', isDeferred: false, kind: 'used' },
+        { name: 'Free space', tokens: 760_000, color: 'permission', isDeferred: false, kind: 'free' },
+      ],
+      totalTokens: 240_000,
+      maxTokens: 1_000_000,
+      rawMaxTokens: 1_000_000,
+      autocompactSource: 'default',
+      percentage: 24,
+      gridRows: [],
+      model: 'claude-sonnet-4-5',
+      memoryFiles: [],
+      mcpTools: [],
+      agents: [],
+      isAutoCompactEnabled: true,
+    },
+  },
+}
+const NOW = 1_761_150_000_000
+
+/** A second snapshot, told from the fixture by its step count. */
+const SECOND = { ...SNAPSHOT, counts: { ...SNAPSHOT.counts, assistant_steps: 350 } }
+
+type RunAnswer = { exitCode: number; stdout: string }
+const json = (doc: unknown): RunAnswer => ({ exitCode: 0, stdout: `${JSON.stringify(doc)}\n` })
+
+type Host = { runs: string[]; opens: PaneOpenArgs[]; closes: string[]; snapshots: number; usageArgs: unknown[]; bridgeCalls: string[][] }
+
+/**
+ * The host beneath `/obs` and its pane: env, files, session, usage (the
+ * breakdown when asked), the bridge's `snapshot` answers in order (the last
+ * one repeats), and the engine's pane calls recorded.
+ */
+function host(on: On, snapshots: unknown[], placed: UiOpenResult = { isPlaced: true }): Host {
+  const h: Host = { runs: [], opens: [], closes: [], snapshots: 0, usageArgs: [], bridgeCalls: [] }
+  on('command.register', () => ({ value: { command: 'obs' } }))
+  on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: 'abc' }))
+  on('session.cwd', () => ({ value: CWD }))
+  on('session.usage', (_, e) => {
+    h.usageArgs.push(e)
+    return { value: e?.breakdown ? BREAKDOWN : USAGE }
+  })
+  mock.env(on, { HOME })
+  mock.clock(on, { now: NOW })
+  on('fs.read', (_, e) => (e.path === STATE_PATH ? { value: STATE_JSON } : { deny: `ENOENT: ${e.path}` }))
+  on('fs.exists', (_, e) => ({ value: e.path === VENV_PY || e.path === DERIVED }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.open', (_, e) => {
+    h.opens.push(e)
+    return { value: placed }
+  })
+  on('ui.close', (_, e) => {
+    h.closes.push(e.id)
+    return { value: undefined }
+  })
+  on('process.run', (_, e) => {
+    h.bridgeCalls.push(e.argv.slice(3))
+    if (e.argv[3] === 'resolve') return { value: { exitCode: 0, stdout: JSON.stringify({ path: '/outside/my run.jsonl', session_id: 'other', kind: 'file' }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (e.argv[3] !== 'snapshot') return { deny: `cannot start ${e.argv[0]}` }
+    const a = json(snapshots[Math.min(h.snapshots++, snapshots.length - 1)])
+    return { value: { exitCode: a.exitCode, stdout: a.stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  // A button's `$.command.run` lands here when nothing above answers it: the args are what the press sent.
+  on('command.run', (_, e) => {
+    h.runs.push(e.args)
+    return { text: 'ran' }
+  })
+  return h
+}
+
+type Presentation = { isFullscreen: boolean; columns: number }
+const MAIN: Presentation = { isFullscreen: false, columns: 80 }
+const WIDE: Presentation = { isFullscreen: true, columns: 160 }
+
+const obs = ($: { command: { run: (args: never) => Promise<{ text?: string }> } }, args = '', presentation: Presentation = MAIN): Promise<string> =>
+  $.command.run({ command: 'obs', args, origin: { kind: 'composer' }, presentation } as never).then(r => r.text ?? '')
+
+/** The pane as a surface mounts it, `bodyColumns` wide. */
+const pane = (surface: RenderSurface, bodyColumns: number) =>
+  ({
+    plugin: 'trajviz-obs',
+    surface,
+    component: 'Pane',
+    requestId: 'obs',
+    props: { title: 'obs', isFocused: true, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+  }) as const
+
+const TABS = ['Overview', 'Tools', 'Issues', 'Patterns', 'Agents', 'Context', 'Timeline']
+
+test('the pane draws the latest snapshot with its tabs, on terminal and desktop', async ($, on) => {
+  host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount(pane(surface, 80))
+    // The tab bar: seven plain Buttons with hotkeys 1–7, the open one primary.
+    for (const [i, label] of TABS.entries()) {
+      const tab = await ui.find({ key: `tab:${i + 1}` })
+      expect(tab?.type).toBe('Button')
+      expect(tab?.props).toMatchObject({ label, hotkey: String(i + 1), plain: true })
+    }
+    expect((await ui.find({ key: 'tab:1' }))?.props['variant']).toBe('primary')
+    expect((await ui.find({ key: 'tab:3' }))?.props['dimColor']).toBe(true)
+    // The action row.
+    expect((await ui.find({ key: 'refresh' }))?.props).toMatchObject({ hotkey: 'r' })
+    expect((await ui.find({ key: 'watch' }))?.props).toMatchObject({ hotkey: 'w', label: 'Watch on' })
+    expect((await ui.find({ key: 'report' }))?.props).toMatchObject({ hotkey: 'o' })
+    expect((await ui.find({ key: 'dashboard' }))?.props).toMatchObject({ hotkey: 'd' })
+    // The overview: chips, KPIs with the live context, the series, the ribbon, the top issues and the warning.
+    expect((await ui.find({ type: 'Text', text: /tool success/ }))?.props['color']).toBe('success')
+    expect(await ui.find({ type: 'Text', text: /^311$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^24%$/ })).toBeDefined()
+    expect(await ui.find({ key: 'phases' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Edit loop on hooks\/lib\/state\.ts/ })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /skipped sub-agent log/ }))?.props['color']).toBe('warning')
+    // The series are sized to the body, Rasters on the terminal only.
+    if (surface === 'terminal') {
+      for (const key of ['tokens', 'durations', 'context']) expect((await ui.find({ key }))?.props).toMatchObject({ columns: 80 })
+      expect(await ui.findAll({ type: 'Raster' })).toHaveLength(3)
+    } else {
+      expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
+      expect((await ui.findAll({ type: 'Text', text: /[▁▂▃▄▅▆▇█·]{20,}/ })).length).toBeGreaterThanOrEqual(3)
+    }
+    // The footer names the snapshot.
+    expect(await ui.find({ type: 'Text', text: /311 steps · computed in 842 ms/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+/** Opens tab `n` as a hotkey does (a press on a mounted pane) and mounts the pane afresh on it. */
+async function openTab($: Engine, n: number, bodyColumns = 80) {
+  const before = await $.ui.mount(pane('terminal', bodyColumns))
+  expect(await before.press({ key: `tab:${n}` })).toEqual({ element: `tab:${n}` })
+  await before.unmount()
+  const ui = await $.ui.mount(pane('terminal', bodyColumns))
+  expect((await ui.find({ key: `tab:${n}` }))?.props['variant']).toBe('primary')
+  return ui
+}
+
+test('the hotkeys switch tabs, and each tab draws its own rows', async ($, on) => {
+  host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($)
+
+  // Issues: every issue with its steps, evidence and why, and the bottlenecks; no KPIs.
+  let ui = await openTab($, 3)
+  expect((await ui.find({ key: 'tab:1' }))?.props['dimColor']).toBe(true)
+  expect(await ui.findAll({ type: 'Text', text: /^\d\. / })).toHaveLength(3)
+  expect(await ui.find({ type: 'Text', text: /steps 140, 142, 144/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Edit: hooks\/lib\/state\.ts/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /step 231 184\.2s/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^311$/ })).toBeUndefined()
+  expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
+  await ui.unmount()
+
+  // Tools: the totals, the bars and the files.
+  ui = await openTab($, 2)
+  expect(await ui.find({ type: 'Text', text: /^196 calls · 96% ok · 7 failed$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Bash/ })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /5 err/ }))?.props['color']).toBe('error')
+  expect((await ui.find({ type: 'Markdown' }))?.text).toContain('| hooks/lib/state.ts | 4 | 7 |')
+  await ui.unmount()
+
+  // Patterns: one table per non-empty list, named, the empty ones left out.
+  ui = await openTab($, 4)
+  const tables = await ui.findAll({ type: 'Markdown' })
+  expect(tables.length).toBe(8)
+  expect(tables.some(t => t.text?.includes('| sequence | count |'))).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /^hotspots$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^failure chains$/ })).toBeUndefined()
+  await ui.unmount()
+
+  // Agents: the table and the swimlane.
+  ui = await openTab($, 5)
+  expect((await ui.find({ type: 'Markdown' }))?.text).toContain('| Builder check | general-purpose | 49 |')
+  expect((await ui.find({ key: 'swimlane' }))?.type).toBe('Raster')
+  await ui.unmount()
+
+  // Context: TrajViz's numbers and series beside the engine's own breakdown.
+  ui = await openTab($, 6)
+  expect(await ui.find({ type: 'Text', text: /window 1M \(engine\) · now 71% \(712k\) · peak 75% \(745k\) · 1 compactions · largest drop 402k/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /compactions at turns 209/ })).toBeDefined()
+  expect((await ui.find({ key: 'context' }))?.type).toBe('Raster')
+  expect(await ui.find({ type: 'Text', text: /^engine context · 24% of 1M$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^System prompt\s+12k$/ })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^Free space\s+760k$/ }))?.props['dimColor']).toBe(true)
+  await ui.unmount()
+
+  // Timeline: the last steps as a table.
+  ui = await openTab($, 7)
+  const timeline = await ui.find({ type: 'Markdown' })
+  expect(timeline?.text).toContain('| step | role | category |')
+  expect(timeline?.text).toContain('| 311 | assistant | tool |')
+  expect(timeline?.text).toContain('Bash: claude plugin test .')
+  await ui.unmount()
+
+  // Back to the overview.
+  ui = await openTab($, 1)
+  expect(await ui.find({ type: 'Text', text: /^311$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('below 48 columns the overview is a KPI list and the drag line', async ($, on) => {
+  host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($)
+  const ui = await $.ui.mount(pane('terminal', 40))
+  expect((await ui.find({ type: 'Text', text: /Cache Efficiency/ }))?.text).toMatch(/^Cache Efficiency\s+95%  \(113k written\)$/)
+  const drag = await ui.find({ type: 'Text', text: /drag/i })
+  expect(drag?.text).toBe('Drag the dock wider for the tables and series.')
+  expect(drag?.props['dimColor']).toBe(true)
+  expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
+  expect(await ui.find({ key: 'phases' })).toBeUndefined()
+  // The tabs still switch.
+  expect((await ui.find({ key: 'tab:3' }))?.props['hotkey']).toBe('3')
+  await ui.unmount()
+})
+
+test('the action keys refresh, toggle watch, and run report and dashboard', async ($, on) => {
+  const h = host(on, [SNAPSHOT, SECOND])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($)
+  expect(h.snapshots).toBe(1)
+
+  let ui = await $.ui.mount(pane('terminal', 80))
+  expect(await ui.find({ type: 'Text', text: /^311$/ })).toBeDefined()
+  // `r`: one more snapshot through the bridge, stored as the latest, no `/obs` row.
+  await ui.press({ key: 'refresh' })
+  expect(h.snapshots).toBe(2)
+  expect(h.runs).toEqual([])
+  await ui.unmount()
+  ui = await $.ui.mount(pane('terminal', 80))
+  expect(await ui.find({ type: 'Text', text: /^350$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^311$/ })).toBeUndefined()
+  // `w`: watch off, then on again.
+  await ui.press({ key: 'watch' })
+  await ui.unmount()
+  ui = await $.ui.mount(pane('terminal', 80))
+  expect((await ui.find({ key: 'watch' }))?.props['label']).toBe('Watch off')
+  expect(await ui.find({ type: 'Text', text: /350 steps · computed in 842 ms · wall 52m02s · watch off$/ })).toBeDefined()
+  await ui.press({ key: 'watch' })
+  await ui.unmount()
+  ui = await $.ui.mount(pane('terminal', 80))
+  expect((await ui.find({ key: 'watch' }))?.props['label']).toBe('Watch on')
+  // `o` and `d` run their `/obs` forms.
+  await ui.press({ key: 'report' })
+  await ui.press({ key: 'dashboard' })
+  expect(h.runs).toEqual(['report', 'dashboard'])
+  await ui.unmount()
+  // The refresh's snapshot took id 2: the next `/obs` is 3.
+  expect(await obs($)).toMatch(/^obs snapshot 3 · /)
+})
+
+test('a running dashboard is named beside its key', async ($, on) => {
+  host(on, [SNAPSHOT])
+  on('state.get', { plugin: 'trajviz-obs', key: 'dashboards' }, () => ({
+    value: { value: { insight: { url: 'http://127.0.0.1:7860', port: 7860 }, converge: null }, version: 1 },
+  }))
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($)
+  const ui = await $.ui.mount(pane('terminal', 80))
+  expect((await ui.find({ type: 'Text', text: /insight/ }))?.text).toBe('insight http://127.0.0.1:7860')
+  await ui.unmount()
+})
+
+test('the pane without a snapshot says so, and with an empty one', async ($, on) => {
+  const h = host(on, [{ schema_version: 1, empty: true, reason: 'no_steps', transcript: { path: DERIVED } }])
+  await $.session.start({ cwd: CWD, surface: 'desktop', isInteractive: true })
+  let ui = await $.ui.mount(pane('desktop', 80))
+  expect((await ui.find({ type: 'Text', text: /No snapshot yet/ }))?.text).toBe('No snapshot yet: press r or run /obs.')
+  expect((await ui.find({ key: 'refresh' }))?.props['hotkey']).toBe('r')
+  expect(await ui.find({ key: 'tab:3' })).toBeDefined()
+  await ui.press({ key: 'report' })
+  await ui.press({ key: 'dashboard' })
+  expect(h.runs).toEqual(['report', 'dashboard'])
+  await ui.unmount()
+
+  // An empty session is never stored: `/obs pane` says so under its line, and the pane still waits.
+  expect(await obs($, 'pane')).toBe('obs pane opened.\nNothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.')
+  expect(h.snapshots).toBe(1)
+  ui = await $.ui.mount(pane('desktop', 80))
+  expect(await ui.find({ type: 'Text', text: /No snapshot yet/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('an empty latest snapshot draws the empty row', async ($, on) => {
+  host(on, [SNAPSHOT])
+  on('state.get', { plugin: 'trajviz-obs', key: 'latest' }, () => ({
+    value: { value: { schema_version: 1, empty: true, reason: 'no_steps', transcript: { path: DERIVED } }, version: 1 },
+  }))
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount(pane('terminal', 80))
+  expect((await ui.find({ type: 'Text', text: /Nothing to analyze yet/ }))?.text).toBe('Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.')
+  expect(await ui.find({ type: 'Text', text: /computed in/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('/obs pane opens with focus, inline on the main screen; pane close closes', async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+
+  // On the main screen: inline, 14 rows, focused; with no snapshot yet one is taken.
+  expect(await obs($, 'pane')).toBe('obs pane opened.')
+  expect(h.opens).toEqual([{ id: 'obs', title: 'obs', focus: true, rows: 14 }])
+  expect(h.snapshots).toBe(1)
+  // Fullscreen: docked at 56 columns; the snapshot is kept.
+  expect(await obs($, 'pane', WIDE)).toBe('obs pane opened.')
+  expect(h.opens[1]).toEqual({ id: 'obs', title: 'obs', focus: true, columns: 56 })
+  expect(h.snapshots).toBe(1)
+
+  expect(await obs($, 'pane close')).toBe('obs pane closed.')
+  expect(h.closes).toEqual(['obs'])
+})
+
+test('/obs pane --session refreshes an existing pane and its refresh keeps the selected path', async ($, on) => {
+  const h = host(on, [SNAPSHOT, { ...SECOND, transcript: { ...SECOND.transcript, path: '/outside/my run.jsonl', session_id: 'other', kind: 'other' } }])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($)
+  expect(await obs($, 'pane --session "/outside/my run.jsonl"')).toBe('obs pane opened.')
+  expect(h.snapshots).toBe(2)
+  expect(h.bridgeCalls.filter(c => c[0] === 'resolve').map(c => c.slice(-2))).toEqual([['--session', '/outside/my run.jsonl']])
+  const ui = await $.ui.mount(pane('terminal', 80))
+  expect(await ui.find({ type: 'Text', text: /^350$/ })).toBeDefined()
+  await ui.press({ key: 'report' })
+  await ui.press({ key: 'dashboard' })
+  expect(h.runs.map(args => parseArgs(args))).toEqual([
+    { sub: 'report', positional: [], flags: { session: '/outside/my run.jsonl' }, passthrough: [] },
+    { sub: 'dashboard', positional: [], flags: { session: '/outside/my run.jsonl' }, passthrough: [] },
+  ])
+  await ui.press({ key: 'refresh' })
+  await ui.unmount()
+  expect(h.bridgeCalls.filter(c => c[0] === 'resolve').map(c => c.slice(-2))).toEqual([['--session', '/outside/my run.jsonl'], ['--session', '/outside/my run.jsonl']])
+})
+
+test('/obs opens the pane unasked only beside a wide fullscreen transcript', async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, '', MAIN)
+  await obs($, '', { isFullscreen: true, columns: 139 })
+  expect(h.opens).toEqual([])
+  await obs($, '', { isFullscreen: true, columns: 140 })
+  expect(h.opens).toEqual([{ id: 'obs', title: 'obs', columns: 56 }])
+})
+
+test('an open the surface cannot place is said in the row', async ($, on) => {
+  host(on, [SNAPSHOT], { isPlaced: false, reason: 'no-surface: none attached' })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  expect(await obs($, 'pane')).toBe('obs pane is open but not drawn: no-surface: none attached')
+})

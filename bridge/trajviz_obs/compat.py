@@ -19,13 +19,15 @@ as TrajViz's own command does on start.
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import inspect
 import re
 import sys
 import types
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from pathlib import Path
 from typing import Any
 
 import agent_trajviz
@@ -126,6 +128,59 @@ def window_info(run: Trajectory) -> dict[str, Any]:
     stats = run.context_pressure()["stats"]
     return {"window": stats.get("window_limit"), "window_source": stats.get("window_source"),
             "window_note": stats.get("window_note") or ""}
+
+
+def llm_config_from_env(*, load_dotenv: bool = False) -> Any:
+    """The LLM settings without importing the LLM's chart presenters.
+
+    TrajViz 0.2's public ``llm`` module imports the issue presenter, which imports Pygments even when only
+    ``[llm]`` was installed. Doctor must still describe that minimal environment, so use the same lightweight
+    configuration functions its public wrapper calls, without loading the rendering stack.
+    """
+    check_supported()
+    from agent_trajviz.insight.llm_config import load_env_files, resolve_analysis_config
+
+    if load_dotenv:
+        load_env_files()
+    return resolve_analysis_config()
+
+
+def protect_run_outputs(run: Trajectory, destinations: Iterable[Path]) -> None:
+    """Protect the loaded transcript and its known sidecars from generated artifact paths.
+
+    A directory load's public ``source`` is that directory; the loader records the actual selected file in
+    ``_source_path``. Use that loader-owned path only for directory inputs, never paths embedded in content.
+    """
+    from .outputs import protect_inputs, session_files
+
+    check_supported()
+    if not run.source:
+        return
+    source = Path(run.source)
+    if source.is_dir():
+        selected = run.raw.get("_source_path")
+        if isinstance(selected, str):
+            source = Path(selected)
+    protect_inputs(destinations, session_files(source))
+
+
+@contextlib.contextmanager
+def labeler_run(run: Trajectory) -> Iterator[None]:
+    """Label the exact normalized steps already loaded, without reopening a changing runtime transcript.
+
+    TrajViz's labeler accepts only a file, and its older internal loader cannot read public trajectory
+    exports. Injecting its step-loading boundary supports both immutable cached exports and live inputs.
+    The sidecar still records the original transcript path passed to ``label_trajectory``.
+    """
+    check_supported()
+    from agent_trajviz.labeling import labeler
+
+    original = labeler.load_all_steps
+    labeler.load_all_steps = lambda _path: copy.deepcopy(run.steps)
+    try:
+        yield
+    finally:
+        labeler.load_all_steps = original
 
 
 @contextlib.contextmanager

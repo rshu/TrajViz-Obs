@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import zipfile
+from pathlib import Path
 
 import agent_trajviz as tv
 import pytest
 from agent_trajviz import MissingExtraError
 
 from trajviz_obs import report_cmd
+from trajviz_obs.compat import load_run
 from trajviz_obs.errors import BridgeError
 from trajviz_obs.report_cmd import bundle_session, write_report_file
 
@@ -52,6 +54,43 @@ def test_bundle_skips_symlinks(tmp_session_with_child, tmp_artifacts, tmp_path):
     (tmp_session_with_child.dir / tmp_session_with_child.id / "subagents" / "link.jsonl").symlink_to(secret)
     out = bundle_session(tmp_session_with_child.transcript, tmp_artifacts / "bundle.zip")
     assert not any(m.endswith("link.jsonl") for m in out["members"])
+
+
+@pytest.mark.parametrize("command", ["report", "bundle"])
+@pytest.mark.parametrize("source_kind", ["transcript", "child", "staging"])
+def test_export_cannot_overwrite_session_input(command, source_kind, tmp_session):
+    transcript = Path(tmp_session.transcript)
+    source = (next((tmp_session.dir / tmp_session.id / "subagents").rglob("*.jsonl"))
+              if source_kind == "child" else transcript)
+    original = source.read_bytes()
+    # An output's staging file must also be protected (foo.jsonl -> foo.jsonl.tmp).
+    if source_kind == "staging":
+        source = transcript.with_name("staging.tmp")
+        transcript.rename(source)
+        transcript = source
+        dest = source.with_name("staging")
+    else:
+        dest = source
+    with pytest.raises(BridgeError) as exc:
+        if command == "report":
+            write_report_file(load_run(str(transcript)), dest, dark=False, offline=False)
+        else:
+            bundle_session(str(transcript), dest)
+    assert exc.value.code == "bad_output" and source.read_bytes() == original
+
+
+@pytest.mark.parametrize("command", ["report", "bundle"])
+def test_export_cannot_overwrite_session_through_symlink(command, tmp_session):
+    transcript = Path(tmp_session.transcript)
+    alias = transcript.with_name("output-alias")
+    alias.symlink_to(transcript)
+    original = transcript.read_bytes()
+    with pytest.raises(BridgeError) as exc:
+        if command == "report":
+            write_report_file(load_run(str(transcript)), alias, dark=False, offline=False)
+        else:
+            bundle_session(str(transcript), alias)
+    assert exc.value.code == "bad_output" and transcript.read_bytes() == original
 
 
 def test_cli_report_default_path(run_cli, fixture_session, tmp_artifacts):

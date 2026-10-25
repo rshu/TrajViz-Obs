@@ -10,7 +10,7 @@ import platform
 from typing import Any
 
 import agent_trajviz
-from agent_trajviz import MissingExtraError, attribution
+from agent_trajviz import attribution
 
 from . import compat
 from .cli import register
@@ -37,12 +37,8 @@ def _llm_env(cwd: str | None, llm_extra: bool) -> dict[str, Any]:
                    "reason": "The 'llm' extra is not installed (pip install \"agent-trajviz[llm]\")."}
     if not llm_extra:
         return unavailable
-    try:
-        from agent_trajviz import llm
-    except MissingExtraError as exc:
-        return {**unavailable, "reason": str(exc)}
     with contextlib.chdir(cwd) if cwd else contextlib.nullcontext():
-        config = llm.config_from_env(load_dotenv=True)
+        config = compat.llm_config_from_env(load_dotenv=True)
     return {"available": True, "ready": bool(config.ready), "missing": list(config.missing), "reason": None}
 
 
