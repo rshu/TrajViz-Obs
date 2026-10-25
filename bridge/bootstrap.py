@@ -204,7 +204,8 @@ def run_command(argv: list[str], *, capture: bool = False) -> str:
         _job = _windows_job()
     # A separate supervisor survives a SIGKILL of this worker long enough to
     # reap the installer's process group. Windows uses kill-on-close jobs.
-    command = [sys.executable, "-I", str(Path(__file__).resolve()), "--execute", json.dumps(argv)]
+    command = [sys.executable, "-I", str(Path(__file__).resolve()), "--execute",
+               json.dumps({"argv": argv, "parent": os.getpid()})]
     child = subprocess.Popen(command, stdout=subprocess.PIPE if capture else sys.stderr, stderr=sys.stderr,
                              stdin=subprocess.PIPE if os.name == "nt" else subprocess.DEVNULL,
                              start_new_session=os.name != "nt")
@@ -248,31 +249,37 @@ def run_command(argv: list[str], *, capture: bool = False) -> str:
         _active = None
 
 
-def supervise(argv: list[str]) -> int:
+def supervise(argv: list[str], *, parent: int | None = None) -> int:
     """POSIX installer group: parent death also stops grandchildren after SIGKILL."""
     if os.name == "nt":
         # EOF means the worker died before assigning this process to its job.
         if sys.stdin.buffer.readline() != b"start\n":
             return 1
         return subprocess.call(argv, stdin=subprocess.DEVNULL)
-    parent = os.getppid()
+    parent = os.getppid() if parent is None else parent
+    if os.getppid() != parent:
+        return 1
     child = None
-    stopped = threading.Event()
+    stopped = False
     def stop(_signum=None, _frame=None):
-        stopped.set()
+        nonlocal stopped
+        # A second SIGTERM can interrupt this handler. Event.set()/locks can
+        # deadlock here; repeated process-group kills are safe and lock-free.
+        stopped = True
         if child is not None:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(child.pid, signal.SIGKILL)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     def watch():
-        while not stopped.wait(0.1):
+        while not stopped:
+            time.sleep(0.1)
             if os.getppid() != parent:
                 stop()
     threading.Thread(target=watch, daemon=True).start()
     try:
         child = subprocess.Popen(argv, start_new_session=True, stdin=subprocess.DEVNULL)
-        if stopped.is_set():
+        if stopped:
             stop()
         return child.wait()
     finally:
@@ -337,7 +344,8 @@ def setup(request: dict, *, builder=build_generation) -> dict:
 
 def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--execute":
-        return supervise(json.loads(sys.argv[2]))
+        execution = json.loads(sys.argv[2])
+        return supervise(execution["argv"], parent=execution["parent"])
     parser = argparse.ArgumentParser()
     parser.add_argument("--request", required=True)
     args = parser.parse_args()

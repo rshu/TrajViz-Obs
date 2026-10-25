@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 — 2026-10-25
+
+- Keep installer cancellation safe under repeated termination signals.
+- Reject orphaned supervisors before starting an installer.
+
 ## 0.1.2 — 2026-10-25
 
 - Handle a new Claude session before its transcript file exists.

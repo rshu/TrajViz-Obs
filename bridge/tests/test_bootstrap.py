@@ -181,6 +181,81 @@ class BootstrapTests(unittest.TestCase):
                     proc.wait()
                 proc.stderr.close()
 
+    @unittest.skipIf(os.name == "nt", "POSIX nested signal handling")
+    def test_supervisor_handles_nested_termination_without_locking(self):
+        script = f"""
+import os, signal, subprocess, sys, threading
+from unittest.mock import patch
+sys.path.insert(0, {str(Path(__file__).resolve().parents[2])!r})
+from bridge import bootstrap as b
+injected = False
+original_event = threading.Event
+def nested_signal():
+    global injected
+    if not injected:
+        injected = True
+        signal.raise_signal(signal.SIGTERM)
+class NestedEvent(original_event):
+    def __init__(self):
+        super().__init__()
+        notify = self._cond.notify_all
+        def nested_notify():
+            # Reenter while Event.set owns its non-reentrant condition lock.
+            nested_signal()
+            notify()
+        self._cond.notify_all = nested_notify
+class Child:
+    pid = 123456789
+    def wait(self):
+        signal.raise_signal(signal.SIGTERM)
+        return 0
+kills = []
+def kill_group(*args):
+    kills.append(args)
+    # The lock-free implementation must handle nested delivery here too.
+    nested_signal()
+with patch.object(threading, 'Event', NestedEvent), patch.object(threading.Thread, 'start'), \\
+     patch.object(subprocess, 'Popen', return_value=Child()), patch.object(os, 'killpg', side_effect=kill_group):
+    assert b.supervise([]) == 0
+assert injected and kills
+print('nested termination completed')
+"""
+        result = subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, text=True, timeout=3,
+                                check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nested termination completed", result.stdout)
+
+    @unittest.skipIf(os.name == "nt", "Windows uses a job-assignment handshake")
+    def test_supervisor_does_not_start_installer_after_early_worker_death(self):
+        ready, marker = self.cache / "supervisor-ready", self.cache / "installer-started"
+        wrapper = self.cache / "delayed-bootstrap.py"
+        wrapper.write_text("import os,runpy,time\nfrom pathlib import Path\nparent=os.getppid()\nPath(" + repr(str(ready)) +
+                           ").write_text(str(os.getpid()))\nuntil=time.monotonic()+3\n" +
+                           "while os.getppid()==parent and time.monotonic()<until:time.sleep(0.01)\nrunpy.run_path(" +
+                           repr(str(Path(b.__file__).resolve())) + ",run_name='__main__')\n")
+        installer = "from pathlib import Path;Path(" + repr(str(marker)) + ").write_text('started')"
+        runner = self.cache / "early-death-runner.py"
+        runner.write_text("import sys\nsys.path.insert(0," + repr(str(Path(__file__).resolve().parents[2])) +
+                          ")\nfrom bridge import bootstrap as b\nb.__file__=" + repr(str(wrapper)) +
+                          "\nb.run_command([sys.executable,'-c'," + repr(installer) + "])\n")
+        proc = subprocess.Popen([sys.executable, str(runner)], stderr=subprocess.PIPE, text=True)
+        try:
+            until = time.monotonic() + 3
+            while not ready.exists() and time.monotonic() < until:
+                time.sleep(0.01)
+            self.assertTrue(ready.exists())
+            proc.kill()
+            proc.wait(timeout=5)
+            # The delayed supervisor must exit without launching its installer,
+            # even though it first observes its parent after being reparented.
+            proc.communicate(timeout=5)
+            self.assertFalse(marker.exists())
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            proc.stderr.close()
+
     def test_completed_installer_cannot_leave_background_descendants(self):
         heartbeat = self.cache / "completed-heartbeat"
         pidfile = self.cache / "completed-pid"
@@ -206,7 +281,8 @@ class BootstrapTests(unittest.TestCase):
     def test_windows_supervisor_waits_for_job_assignment(self):
         marker = self.cache / "installer-started"
         argv = [sys.executable, "-c", "from pathlib import Path;Path(" + repr(str(marker)) + ").write_text('started')"]
-        child = subprocess.Popen([sys.executable, "-I", str(Path(b.__file__).resolve()), "--execute", json.dumps(argv)],
+        execution = {"argv": argv, "parent": os.getpid()}
+        child = subprocess.Popen([sys.executable, "-I", str(Path(b.__file__).resolve()), "--execute", json.dumps(execution)],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             time.sleep(0.2)
