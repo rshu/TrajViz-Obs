@@ -9,7 +9,8 @@ import type { EmptySnapshot, Snapshot } from '../../types'
 import { BridgeError, runBridge } from './bridge'
 import { clip, fmtInt } from './format'
 import { artifactsDir } from './paths'
-import { ensureEnv, ensureExtra, needsSetup, readEnvState, type Extra } from './python'
+import { lockPublication, publicationGeneration } from './publication'
+import { SETUP_TIMEOUT_MS, ensureEnv, ensureExtra, needsSetup, readEnvState, type Extra } from './python'
 import { RESOLVE_TIMEOUT_MS, resolveTranscript, selectSession, type Transcript } from './session'
 import { claimRefresh, readFlags, readSnapshotIds, releaseRefresh, writeLatest, writeSnapshotIds, writeSnapshotMember } from './state'
 
@@ -21,16 +22,13 @@ export const BUSY_TEXT = 'An analysis is already running; try again in a moment.
 
 const SNAPSHOT_TIMEOUT_MS = 120_000
 
-/** The first-run setup's allowance in the lock: about 10 s, minutes on a slow network; `$.process.spawn` bounds it no further. */
-const SETUP_HOLD_MS = 120_000
-
 /**
  * How long a `refresh.busy` may be held before it counts as abandoned: the
  * longest `takeSnapshot` can legitimately take, setup then the bridge's
  * `resolve` and `snapshot` at their timeouts. A hold past it was left by a
  * dispatch cut before its `finally` (Esc, a reload) and is reclaimed.
  */
-export const BUSY_STALE_MS = SETUP_HOLD_MS + RESOLVE_TIMEOUT_MS + SNAPSHOT_TIMEOUT_MS
+export const BUSY_STALE_MS = SETUP_TIMEOUT_MS + RESOLVE_TIMEOUT_MS + SNAPSHOT_TIMEOUT_MS
 
 const PREFIX = 'obs snapshot '
 const ID_LINE = /^obs snapshot (\d+) · /
@@ -74,15 +72,19 @@ export function parseSnapshotId(text: string): string | null {
  * prunes to the last five (older members cleared to `null`) and sets
  * `latest`. Answers the id.
  */
-export async function storeSnapshot($: EngineInterface, snap: Snapshot | EmptySnapshot): Promise<string> {
-  const ids = await readSnapshotIds($)
-  const id = mintId(ids)
-  await writeSnapshotMember($, id, snap)
-  const all = [...ids, id]
-  await writeSnapshotIds($, all.slice(-KEEP))
-  for (const old of all.slice(0, -KEEP)) await writeSnapshotMember($, old, null)
-  await writeLatest($, snap)
-  return id
+export async function storeSnapshot($: EngineInterface, snap: Snapshot | EmptySnapshot, generation?: number): Promise<string> {
+  const release = await lockPublication()
+  try {
+    if (generation !== undefined && generation !== publicationGeneration()) throw new BridgeError('session_changed', 'The selected session changed during analysis; run /obs again.')
+    const ids = await readSnapshotIds($)
+    const id = mintId(ids)
+    await writeSnapshotMember($, id, snap)
+    const all = [...ids, id]
+    await writeSnapshotIds($, all.slice(-KEEP))
+    for (const old of all.slice(0, -KEEP)) await writeSnapshotMember($, old, null)
+    await writeLatest($, snap)
+    return id
+  } finally { release() }
 }
 
 /** The engine's context window, null where the session has none to report. */
@@ -192,15 +194,17 @@ export async function ensureReady($: EngineInterface, options: PluginOptions, ex
  * context window when it reports one, the artifacts folder, and `--kind
  * current|other`.
  */
-export async function sessionArgv($: EngineInterface, spec?: string): Promise<{ transcript: Transcript; argv: string[] }> {
+export async function sessionArgv($: EngineInterface, spec?: string, resolvingGeneration = publicationGeneration()): Promise<{ transcript: Transcript; argv: string[]; generation: number }> {
+  if (resolvingGeneration !== publicationGeneration()) throw new BridgeError('session_changed', 'The selected session changed during analysis; run /obs again.')
   const transcript = await resolveTranscript($, spec)
-  await selectSession($, spec ? { path: transcript.path, id: transcript.sessionId, label: transcript.sessionId } : null)
+  const generation = await selectSession($, spec ? { path: transcript.path, id: transcript.sessionId, label: transcript.sessionId } : null, resolvingGeneration)
   const argv = ['--transcript', transcript.path]
   // The current engine cannot report another session's context window.
   const window = spec ? null : await contextWindow($)
   if (window !== null) argv.push('--window', String(window))
   argv.push('--artifacts', await artifactsDir($, transcript.sessionId), '--kind', spec ? 'other' : 'current')
-  return { transcript, argv }
+  if (generation !== publicationGeneration()) throw new BridgeError('session_changed', 'The selected session changed during analysis; run /obs again.')
+  return { transcript, argv, generation }
 }
 
 /**
@@ -215,14 +219,36 @@ export async function takeSnapshot($: EngineInterface, options: PluginOptions, s
   const claim = await claimRefresh($, BUSY_STALE_MS)
   if (claim === null) throw new BridgeError('busy', BUSY_TEXT)
   try {
-    await setUp($, options)
-    const { argv } = await sessionArgv($, spec)
-    const snap = await runBridge<Snapshot | EmptySnapshot>($, ['snapshot', ...argv], { timeoutMs: SNAPSHOT_TIMEOUT_MS })
-    if (!spec && !isEmpty(snap)) {
-      try { snap.engine_usage = await $.session.usage() } catch { /* The host may not expose usage. */ }
-    }
-    return snap
+    return (await computeSnapshot($, options, spec)).snap
   } finally {
     await releaseRefresh($, claim)
   }
+}
+
+/** Computes once; callers hold the refresh claim until they finish publishing. */
+async function computeSnapshot($: EngineInterface, options: PluginOptions, spec?: string, resolvingGeneration = publicationGeneration()): Promise<{ snap: Snapshot | EmptySnapshot; generation: number }> {
+  await setUp($, options)
+  const { argv, generation } = await sessionArgv($, spec, resolvingGeneration)
+  const snap = await runBridge<Snapshot | EmptySnapshot>($, ['snapshot', ...argv], { timeoutMs: SNAPSHOT_TIMEOUT_MS })
+  if (!spec && !isEmpty(snap)) {
+    try { snap.engine_usage = await $.session.usage() } catch { /* The host may not expose usage. */ }
+  }
+  if (generation !== publicationGeneration()) throw new BridgeError('session_changed', 'The selected session changed during analysis; run /obs again.')
+  return { snap, generation }
+}
+
+/**
+ * Computes and publishes under one refresh claim. Session changes share the
+ * publication lock, so a reply from before /clear or a selection change can
+ * never overwrite the new session's live data. Empty results replace the
+ * previous snapshot too, while historical cards keep their own members.
+ */
+export async function captureSnapshot($: EngineInterface, options: PluginOptions, spec?: string, resolvingGeneration = publicationGeneration()): Promise<{ snap: Snapshot | EmptySnapshot; id: string; generation: number }> {
+  const claim = await claimRefresh($, BUSY_STALE_MS)
+  if (claim === null) throw new BridgeError('busy', BUSY_TEXT)
+  try {
+    const { snap, generation } = await computeSnapshot($, options, spec, resolvingGeneration)
+    const id = await storeSnapshot($, snap, generation)
+    return { snap, id, generation }
+  } finally { await releaseRefresh($, claim) }
 }

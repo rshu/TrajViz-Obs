@@ -3,7 +3,7 @@ import type { On } from 'claude-code'
 import { NATIVE_SNAPSHOT } from './testdata/native-snapshot'
 import { patternRows } from './render/pane'
 
-const PYTHON = '/cache/trajviz-obs/venv/bin/python'
+const PYTHON = '/cache/trajviz-obs/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python'
 function host(on: On) {
   const live = { percent: 16, usd: 0.42 }
   mock.env(on, { XDG_CACHE_HOME: '/cache', HOME: '/home/test' })
@@ -15,7 +15,7 @@ function host(on: On) {
   on('session.cwd', () => ({ value: '/project' }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000, percent: live.percent }, rateLimits: [], cost: { usd: live.usd } } }))
   on('fs.exists', () => ({ value: true }))
-  on('fs.read', () => ({ value: JSON.stringify({ revision: 4, python: PYTHON, trajviz: '0.2.0', extras: ['llm'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 }) }))
+  on('fs.read', () => ({ value: JSON.stringify({ revision: 4, python: PYTHON, trajviz: '0.2.0', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 }) }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(NATIVE_SNAPSHOT), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   return live
 }

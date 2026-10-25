@@ -47,6 +47,10 @@ _EMPTY_CODES = frozenset({"unknown_format", "no_steps"})
 #: Runs whose window :func:`load_run` set, with that window.
 _OVERRIDES: weakref.WeakKeyDictionary[Trajectory, int] = weakref.WeakKeyDictionary()
 
+# A reloadable export keeps its original provenance in ``run.source``. That value is content, not the
+# path opened by this process, so it must never decide which input an artifact writer may replace.
+_INPUT_PATHS: weakref.WeakKeyDictionary[Trajectory, Path] = weakref.WeakKeyDictionary()
+
 
 class EmptySession(BridgeError):
     """The current session has no assistant step yet, so there is nothing to analyze."""
@@ -106,12 +110,16 @@ def load_run(path: str, *, window_limit: int | None = None, current: bool = Fals
     load_plugins()
     if window_limit is not None and window_limit < 1:
         raise ValueError(f"window_limit must be a positive token count, not {window_limit}")
+    selected = resolve_input_path(path)
     try:
         run = agent_trajviz.load(path)
     except LoadError as exc:
         if current and exc.code in _EMPTY_CODES:
             raise EmptySession(str(exc), path=exc.path or path) from exc
         raise
+    if current and not any(step.get("role") == "assistant" for step in run.steps):
+        raise EmptySession("The current session has no assistant step yet.", path=path)
+    _INPUT_PATHS[run] = selected
     if window_limit is not None:
         metadata = run.raw.get("metadata")
         if not isinstance(metadata, dict):
@@ -119,6 +127,24 @@ def load_run(path: str, *, window_limit: int | None = None, current: bool = Fals
         metadata["context_window_limit"] = window_limit
         _OVERRIDES[run] = window_limit
     return run
+
+
+def resolve_input_path(path: str) -> Path:
+    """Resolve a directory's selected input, even when its contents cannot be loaded as a trajectory."""
+    check_supported()
+    from agent_trajviz.insight.formats.claude_files import resolve_session_path
+
+    selected, _ = resolve_session_path(path)
+    return Path(selected).absolute()
+
+
+def input_path(run: Trajectory) -> Path | None:
+    """The file actually opened by :func:`load_run`, independent of an export's embedded provenance.
+
+    Runs reconstructed from a saved current-session request use the original transcript assigned by the
+    bridge. Other directly constructed trajectories retain their caller-supplied source as a fallback.
+    """
+    return _INPUT_PATHS.get(run) or (Path(run.source) if run.source else None)
 
 
 def window_info(run: Trajectory) -> dict[str, Any]:
@@ -145,23 +171,37 @@ def llm_config_from_env(*, load_dotenv: bool = False) -> Any:
     return resolve_analysis_config()
 
 
+def llm_env_value(name: str) -> str:
+    """An endpoint setting with the same scalar cleanup as TrajViz's analysis configuration."""
+    import os
+
+    check_supported()
+    from agent_trajviz.insight.llm_config import _clean_env_scalar
+
+    return _clean_env_scalar(os.environ.get(name, ""))
+
+
 def protect_run_outputs(run: Trajectory, destinations: Iterable[Path]) -> None:
     """Protect the loaded transcript and its known sidecars from generated artifact paths.
 
-    A directory load's public ``source`` is that directory; the loader records the actual selected file in
-    ``_source_path``. Use that loader-owned path only for directory inputs, never paths embedded in content.
+    Use the selected input recorded at load time; an export's embedded ``source`` and ``_source_path`` may
+    name unrelated files. Native Claude discovery also accepts the real session id's tree and old sibling
+    agent logs, including when the parent transcript was renamed or reached through a symlink.
     """
     from .outputs import protect_inputs, session_files
 
     check_supported()
-    if not run.source:
+    source = input_path(run)
+    if source is None:
         return
-    source = Path(run.source)
-    if source.is_dir():
-        selected = run.raw.get("_source_path")
-        if isinstance(selected, str):
-            source = Path(selected)
-    protect_inputs(destinations, session_files(source))
+    actual = source.resolve()
+    metadata = run.raw.get("metadata")
+    session_id = metadata.get("session_id") if isinstance(metadata, dict) else None
+    files = [source, *session_files(actual, session_id=session_id if run.format == "claude_code" else None)]
+    if run.format == "claude_code" and not actual.name.startswith("agent-"):
+        files.extend(path for path in actual.parent.glob("agent-*.jsonl")
+                     if not path.is_symlink() and path.is_file())
+    protect_inputs(destinations, files)
 
 
 @contextlib.contextmanager

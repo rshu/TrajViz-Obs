@@ -254,6 +254,30 @@ test('the phase ribbon leaves blank cells where no phase is, and never exceeds i
   await ui.unmount()
 })
 
+test('more phases than cells and more than 256 agents stay inside native render limits', async ($, on) => {
+  const phases = Array.from({ length: 600 }, (_, i) => ({ name: `phase ${i}`, start: i, end: i }))
+  const lanes = Array.from({ length: 300 }, (_, i) => ({ id: String(i), label: `agent ${i}`, segments: [{ start: 0, end: 599 }] }))
+  on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) => {
+    const els = $.ui.resolve(e)
+    const { Box } = els
+    return <Box flexDirection="column">
+      {PhaseRibbon({ els, phases, total: 600, columns: e.props.bodyColumns })}
+      {Swimlane({ els, surface: e.surface, lanes, total: 600, columns: e.props.bodyColumns })}
+      {IssuesList({ els, issues: SNAPSHOT.issues, limit: 1, total: 37 })}
+    </Box>
+  })
+  for (const columns of [1, 5, 80, 512]) {
+    const ui = await $.ui.mount({ ...pane(columns), surface: 'terminal' })
+    expect(ribbonCells(await ui.find({ key: 'phases' })).reduce((a, b) => a + b, 0)).toBe(columns)
+    const raster = await ui.find({ key: 'swimlane' })
+    expect(raster?.props['rows']).toBe(256)
+    expect(raster?.props['columns']).toBeLessThanOrEqual(columns)
+    expect(await ui.find({ type: 'Text', text: '… 44 more agent lanes' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '… 36 more' })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
 test('status colours, cache efficiency and the empty cases', async ($, on) => {
   expect(statusColor('ok')).toBe('success')
   expect(statusColor('good')).toBe('success')

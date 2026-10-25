@@ -1,6 +1,6 @@
 {
   "name": "trajviz-obs",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TrajViz observability for the current Claude Code session: /obs visualizes and diagnoses the session's trajectory",
   "author": { "name": "Rui Shu" },
   "homepage": "https://github.com/rshu/TrajViz-Obs#readme",
@@ -18,7 +18,7 @@
     "python": {
       "type": "string",
       "title": "Python",
-      "description": "Interpreter to build the environment with (empty: uv, else the newest python3.11+ on PATH)",
+      "description": "Interpreter to build the environment with (empty: uv, else an available Python 3.11+ on PATH)",
       "default": ""
     },
     "llm": {

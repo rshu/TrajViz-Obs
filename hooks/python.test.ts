@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { EngineInterface, PluginOptions, ProcessSpawnChunk, ProcessSpawnResult, StateAddress } from 'claude-code'
-import { NoPythonError, ensureEnv, ensureExtra, findPython, findUv, isLocalPath, needsSetup, readEnvState, requirementArgv, withExtras } from './lib/python'
+import { NoPythonError, SETUP_TIMEOUT_MS, ensureEnv, ensureExtra, findPython, findUv, isLocalPath, needsSetup, readEnvState, requirementArgv, withExtras } from './lib/python'
 
 type RunAnswer = { exitCode: number; stdout: string; stderr?: string }
 type SpawnAnswer = { chunks: ProcessSpawnChunk[]; code: number }
@@ -8,11 +8,11 @@ type FakeWorld = { files?: Record<string, string>; pythonExists?: boolean; run?:
 type Fake = { $: EngineInterface; spawned: string[][]; ran: string[][]; writes: Record<string, string>; files: Record<string, string> }
 const HOME = '/home/u'
 const CACHE = `${HOME}/.cache/trajviz-obs`
-const VENV_PY = `${CACHE}/envs/test/generation/bin/python`
+const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE = `${CACHE}/state.json`
 const BOOTSTRAP = '/plugin/bridge/bootstrap.py'
 const OPTIONS: PluginOptions = { trajvizSource: 'agent-trajviz>=0.2.0,<0.3', python: '' }
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1700000000000 })
+const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1700000000000 })
 
 function fake(world: FakeWorld): Fake {
   const files = { ...(world.files ?? {}) }, writes: Record<string, string> = {}
@@ -22,12 +22,14 @@ function fake(world: FakeWorld): Fake {
   const $ = {
     plugin: { root: '/plugin' }, session: { cwd: async () => '/work' },
     env: { get: async (name: string) => ({ HOME })[name] },
+    clock: { sleep: async (_ms: number, options?: { signal?: AbortSignal }) => new Promise<void>((_resolve, reject) => { options?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true }) }) },
     state: {
       get: async (ref: StateAddress) => state.get(ref.key) ?? { value: undefined, version: 0 },
       set: async (ref: StateAddress, value: unknown) => { const version = (state.get(ref.key)?.version ?? 0) + 1; state.set(ref.key, { value, version }); return { isSet: true, version } },
     },
     fs: {
       exists: async (path: string) => path === VENV_PY && pythonExists,
+      stat: async () => { throw new Error('ENOENT') },
       read: async (path: string) => { if (path in files) return files[path]; throw new Error(`ENOENT: ${path}`) },
       write: async (path: string, text: string) => { files[path] = text; writes[path] = text },
     },
@@ -57,7 +59,7 @@ const payload = (argv: string[]) => JSON.parse(argv[argv.indexOf('--request') + 
 test('readEnvState parses state.json', async () => {
   const ok = fake({ files: { [STATE]: STATE_JSON } })
   const state = await readEnvState(ok.$)
-  expect(state).toEqual({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1700000000000 })
+  expect(state).toEqual({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1700000000000 })
   expect(needsSetup(state, OPTIONS)).toBe(false)
   expect(needsSetup(state, { ...OPTIONS, trajvizSource: '/Users/me/TrajViz' })).toBe(true)
   expect(needsSetup(null, OPTIONS)).toBe(true)
@@ -146,6 +148,47 @@ test('the selected interpreter stays pinned when another session replaces the gl
   expect(w.spawned).toEqual([])
 })
 
+test('a pinned relative checkout is invalidated when the session changes directory', async () => {
+  const state = { ...JSON.parse(STATE_JSON), source: './checkout', sourceCwd: '/work' }
+  const w = fake({ files: { [STATE]: JSON.stringify(state) } })
+  expect(await readEnvState(w.$)).toEqual(state)
+  w.$.session.cwd = async () => '/another/work'
+  expect(await readEnvState(w.$)).toBeNull()
+  const missing = fake({ files: { [STATE]: JSON.stringify({ ...JSON.parse(STATE_JSON), source: './checkout' }) } })
+  expect(await readEnvState(missing.$)).toBeNull()
+})
+
+test('transient metadata sharing errors are retried without rebuilding', async () => {
+  const w = fake({ files: { [STATE]: STATE_JSON } })
+  const read = w.$.fs.read
+  let attempts = 0
+  w.$.fs.read = (async (path: string) => { if (++attempts <= 2) throw new Error('EACCES: Permission denied'); return read(path) }) as typeof read
+  w.$.clock.sleep = async () => {}
+  expect(await ensureEnv(w.$, OPTIONS, () => {})).toEqual(JSON.parse(STATE_JSON))
+  expect(attempts).toBe(3)
+  expect(w.spawned).toEqual([])
+})
+
+test('metadata outside the managed generations is never selected', async () => {
+  for (const python of ['/usr/bin/python', `${CACHE}/venv/bin/python`, `/other/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`]) {
+    const w = fake({ files: { [STATE]: JSON.stringify({ ...JSON.parse(STATE_JSON), python }) } })
+    w.$.fs.exists = async () => true
+    w.$.fs.stat = async () => { throw new Error('ENOENT') }
+    expect(await readEnvState(w.$)).toBeNull()
+  }
+  for (const changed of [{ extras: ['llm'] }, { trajviz: null }, { trajviz: '' }]) {
+    expect(needsSetup({ ...JSON.parse(STATE_JSON), ...changed }, OPTIONS)).toBe(true)
+  }
+})
+
+test('the canonical cache root permits symlink aliases without resolving the interpreter itself', async () => {
+  const state = { ...JSON.parse(STATE_JSON), python: VENV_PY.replace(CACHE, '/canonical/cache') }
+  const w = fake({ files: { [STATE]: JSON.stringify(state) } })
+  w.$.fs.exists = async path => path === state.python
+  w.$.fs.stat = async path => ({ kind: 'dir', size: 0, mtimeMs: 0, isLink: true, realPath: path === CACHE ? '/canonical/cache' : undefined })
+  expect(await readEnvState(w.$)).toEqual(state)
+})
+
 test('changed source, Python override, old revision and deleted interpreter use the worker', async () => {
   for (const options of ([{ ...OPTIONS, trajvizSource: '~/checkout' }, { ...OPTIONS, python: '/opt/py312' }] as PluginOptions[])) {
     const w = fake({ files: { [STATE]: STATE_JSON }, run: versions({ uv: 'uv 0.9.0' }) })
@@ -185,7 +228,7 @@ test('no compatible host interpreter reports what was tried and starts no worker
 test('extras request a new generation and an installed extra remains a warm no-op', async () => {
   const w = fake({ files: { [STATE]: STATE_JSON }, run: versions({ uv: 'uv 0.9.0' }) })
   await ensureExtra(w.$, OPTIONS, 'app', () => {})
-  expect(payload(w.spawned[0]!)).toMatchObject({ extras: ['llm', 'charts', 'llm', 'app'] })
+  expect(payload(w.spawned[0]!)).toMatchObject({ extras: ['llm', 'charts', 'llm', 'charts', 'app'] })
   expect((await readEnvState(w.$))?.extras).toEqual(['llm', 'charts', 'app'])
   await ensureExtra(w.$, OPTIONS, 'app', () => {})
   expect(w.spawned).toHaveLength(1)
@@ -196,4 +239,26 @@ test('malformed and oversized bootstrap results fail explicitly', async () => {
     const w = fake({ run: versions({ uv: 'uv 0.9.0' }), spawn: () => ({ code: 0, chunks: [{ stream: 'stdout', text }] }) })
     await expect(ensureEnv(w.$, OPTIONS, () => {})).rejects.toThrow('obs setup:')
   }
+})
+
+test('bootstrap replies must match the requested source, interpreter option and extras', async () => {
+  for (const changed of [{ source: '/wrong/source' }, { pythonOption: '/wrong/python' }, { extras: ['llm'] }, { extras: ['llm', 'charts'] }]) {
+    const w = fake({ run: versions({ uv: 'uv 0.9.0' }), spawn: () => ({ code: 0, chunks: [{ stream: 'stdout', text: JSON.stringify({ ...JSON.parse(STATE_JSON), ...changed }) }] }) })
+    await expect(ensureExtra(w.$, OPTIONS, 'app', () => {})).rejects.toThrow('invalid environment document')
+  }
+})
+
+test('an unresponsive bootstrap is bounded and its stream is closed', async () => {
+  const w = fake({ run: versions({ uv: 'uv 0.9.0' }) })
+  let closed = false
+  w.$.process.spawn = () => ({
+    result: new Promise(() => {}),
+    next: () => new Promise(() => {}),
+    return: async () => { closed = true; return { done: true, value: { code: null, signal: null } } },
+    throw: async e => { throw e },
+    [Symbol.asyncIterator]() { return this },
+  })
+  w.$.clock.sleep = async ms => { expect(ms).toBeLessThanOrEqual(SETUP_TIMEOUT_MS) }
+  await expect(ensureEnv(w.$, OPTIONS, () => {})).rejects.toThrow('exceeded 10 minutes')
+  expect(closed).toBe(true)
 })

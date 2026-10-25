@@ -354,15 +354,15 @@ function cellRange(lo: number, hi: number, total: number, columns: number): [num
 }
 
 /**
- * One line of bands, exactly `columns` cells in all (at least one per phase,
- * at most 512): each phase's name on the cells its steps own over `total`,
+ * One line of bands, at most `columns` cells in all (at most 512): each
+ * phase's name on the cells its steps own over `total`,
  * in a lane colour; the cells no phase owns (before the first, between two)
  * are blank spacers. Under a Box keyed `phases`.
  */
 export function PhaseRibbon({ els, phases, total, columns }: { els: Els; phases: Phase[]; total: number; columns: number }): RenderElement {
   const { Box, Text } = els
   if (phases.length === 0) return <Text dimColor>No phases.</Text>
-  const width = Math.max(phases.length, Math.min(512, Math.floor(columns)))
+  const width = Math.max(1, Math.min(512, Math.floor(columns)))
   // Which phase owns each cell, in step order so a later phase settles a shared boundary cell.
   const owner: (number | null)[] = Array.from({ length: width }, () => null)
   const order = phases.map((p, i) => i).sort((a, b) => Math.min(phases[a]!.start, phases[a]!.end) - Math.min(phases[b]!.start, phases[b]!.end))
@@ -413,26 +413,31 @@ export function Swimlane({ els, surface, lanes, total, columns }: { els: Els; su
   const { Box, Text } = els
   if (lanes.length === 0) return <Text dimColor>No agents.</Text>
   const Raster = rasterOf(els, surface)
-  const labelWidth = Math.min(16, Math.max(...lanes.map(l => l.label.length)))
-  const width = rasterColumns(columns - labelWidth - 1)
-  const colored = lanes.map((l, i) => ({ segments: l.segments, fg: LANE_COLORS[i % LANE_COLORS.length] as number }))
+  const shown = lanes.slice(0, 256)
+  const labelWidth = Math.min(16, Math.max(0, columns - 2), Math.max(...shown.map(l => l.label.length)))
+  const gap = labelWidth > 0 ? 1 : 0
+  const width = rasterColumns(columns - labelWidth - gap)
+  const colored = shown.map((l, i) => ({ segments: l.segments, fg: LANE_COLORS[i % LANE_COLORS.length] as number }))
+  const more = lanes.length > shown.length ? <Text dimColor>{`… ${fmtInt(lanes.length - shown.length)} more agent lanes`}</Text> : null
   if (Raster) {
     return (
-      <Box flexDirection="row" gap={1}>
-        <Box flexDirection="column">
-          {lanes.map(l => (
-            <Text>{clip(l.label, labelWidth).padEnd(labelWidth)}</Text>
-          ))}
+      <Box flexDirection="column">
+        <Box flexDirection="row" gap={gap}>
+          {labelWidth > 0 ? <Box flexDirection="column">
+            {shown.map(l => <Text>{clip(l.label, labelWidth).padEnd(labelWidth)}</Text>)}
+          </Box> : null}
+          <Raster key="swimlane" {...swimlaneRaster(colored, total, width)} />
         </Box>
-        <Raster key="swimlane" {...swimlaneRaster(colored, total, width)} />
+        {more}
       </Box>
     )
   }
   return (
     <Box flexDirection="column">
-      {lanes.map((l, i) => (
-        <Text color={hex(colored[i]?.fg ?? 0)}>{`${clip(l.label, labelWidth).padEnd(labelWidth)} ${laneText(l.segments, total, width)}`}</Text>
+      {shown.map((l, i) => (
+        <Text color={hex(colored[i]?.fg ?? 0)}>{`${labelWidth > 0 ? `${clip(l.label, labelWidth).padEnd(labelWidth)} ` : ''}${laneText(l.segments, total, width)}`}</Text>
       ))}
+      {more}
     </Box>
   )
 }
@@ -451,7 +456,7 @@ function stepsText(steps: number[]): string {
 }
 
 /** The top `limit` issues, each its title with its steps, its evidence and, dim, its `why`. */
-export function IssuesList({ els, issues, limit }: { els: Els; issues: Issue[]; limit: number }): RenderElement {
+export function IssuesList({ els, issues, limit, total = issues.length }: { els: Els; issues: Issue[]; limit: number; total?: number }): RenderElement {
   const { Box, Text } = els
   const shown = issues.slice(0, Math.max(0, limit))
   if (shown.length === 0) return <Text dimColor>No issues found.</Text>
@@ -467,7 +472,7 @@ export function IssuesList({ els, issues, limit }: { els: Els; issues: Issue[]; 
           {issue.why ? <Text dimColor>{`   ${issue.why}`}</Text> : null}
         </Box>
       ))}
-      {issues.length > shown.length ? <Text dimColor>{`… ${fmtInt(issues.length - shown.length)} more`}</Text> : null}
+      {total > shown.length ? <Text dimColor>{`… ${fmtInt(total - shown.length)} more`}</Text> : null}
     </Box>
   )
 }

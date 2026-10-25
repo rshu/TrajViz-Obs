@@ -88,6 +88,7 @@ type Server = { stream: ServerStream; url: string; cancelled: boolean; cancel: (
 /** The running children by kind; an entry exists from the URL line until the stream ends. */
 const servers = new Map<Kind, Server>()
 const starts = new Map<Kind, Promise<Started>>()
+const startTokens = new Map<Kind, object>()
 
 /** The URL dashboard `kind` runs at; null when it is not running. */
 export function running(kind: Kind): string | null {
@@ -136,6 +137,7 @@ export async function startServerFrom($: EngineInterface, kind: Kind, stream: Se
   timer = $.clock.after(START_TIMEOUT_MS, () => {
     server.cancelled = true
     finish({ error: `the dashboard did not print its URL within 120 seconds${last ? `: ${last}` : ''}` })
+    if (server.url) void setDashboard($, kind, null)
     void end(stream)
   })
 
@@ -149,6 +151,7 @@ export async function startServerFrom($: EngineInterface, kind: Kind, stream: Se
       server.url = url.url
       servers.set(kind, server)
       await setDashboard($, kind, { url: url.url, port: portOf(url.url) })
+      if (server.cancelled) return 'failed'
       finish(url)
       return 'started'
     }
@@ -171,6 +174,7 @@ export async function startServerFrom($: EngineInterface, kind: Kind, stream: Se
           r = await stream.next()
         } catch (e) {
           finish({ error: `the dashboard could not start: ${e instanceof Error ? e.message : String(e)}` })
+          await end(stream)
           return
         }
         if (r.done) {
@@ -226,12 +230,19 @@ export async function startServer($: EngineInterface, kind: Kind, argv: string[]
   if (live !== null) return { url: live, preloaded: true }
   const existing = starts.get(kind)
   if (existing) return existing
-  const pending = (async () => startServerFrom($, kind, $.process.spawn({ argv, cwd: await $.session.cwd() })))()
+  const token = {}
+  startTokens.set(kind, token)
+  const pending = (async () => {
+    const cwd = await $.session.cwd()
+    if (startTokens.get(kind) !== token) return { error: 'the dashboard start was cancelled' }
+    return startServerFrom($, kind, $.process.spawn({ argv, cwd }))
+  })()
   starts.set(kind, pending)
   try {
     return await pending
   } finally {
     if (starts.get(kind) === pending) starts.delete(kind)
+    if (startTokens.get(kind) === token) startTokens.delete(kind)
   }
 }
 
@@ -243,10 +254,11 @@ export async function startServer($: EngineInterface, kind: Kind, argv: string[]
  * soon as this resolves. Nothing when none runs.
  */
 export async function stopServer($: EngineInterface, kind: Kind): Promise<void> {
+  startTokens.delete(kind)
+  starts.delete(kind)
   const server = servers.get(kind)
   if (!server) return
   servers.delete(kind)
-  starts.delete(kind)
   server.cancelled = true
   server.cancel()
   if (server.url) await setDashboard($, kind, null)
@@ -255,7 +267,7 @@ export async function stopServer($: EngineInterface, kind: Kind): Promise<void> 
 
 /** Ends every running dashboard (the session's end). */
 export async function stopAll($: EngineInterface): Promise<void> {
-  for (const kind of [...servers.keys()]) await stopServer($, kind)
+  for (const kind of new Set([...servers.keys(), ...starts.keys()])) await stopServer($, kind)
 }
 
 /**

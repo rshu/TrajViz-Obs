@@ -50,10 +50,14 @@ jobs:
       - name: Smoke every entrypoint without the app extra
         run: bridge/.venv/bin/python -m pytest bridge/tests/test_minimal_runtime.py -q
 
-  bootstrap-windows:
-    name: Immutable environment worker / Windows
-    runs-on: windows-latest
+  bootstrap-native:
+    name: Immutable environment worker / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2

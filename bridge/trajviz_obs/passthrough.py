@@ -35,6 +35,34 @@ OUTPUT_CAP = 64 * 1024
 TRUNCATED = "\n… (truncated)"
 
 
+class _BoundedCapture(io.StringIO):
+    """Keep only an output prefix while a command prints, with UTF-8 bytes as the budget."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._bytes = 0
+        self._truncated = False
+
+    def write(self, text: str) -> int:
+        if not self._truncated:
+            data = text.encode("utf-8")
+            remaining = OUTPUT_CAP - self._bytes
+            if len(data) > remaining:
+                data = data[:remaining]
+                self._truncated = True
+            kept = data.decode("utf-8", "ignore")
+            self._bytes += len(kept.encode("utf-8"))
+            super().write(kept)
+        return len(text)
+
+    def getvalue(self) -> str:
+        text = super().getvalue()
+        if not self._truncated:
+            return text
+        keep = OUTPUT_CAP - len(TRUNCATED.encode("utf-8"))
+        return text.encode("utf-8")[:keep].decode("utf-8", "ignore") + TRUNCATED
+
+
 def _exit_status(code: Any, err: io.StringIO) -> int:
     """``SystemExit.code`` as an exit status: ``None`` is 0, a message is written to *err* and is 1."""
     if code is None:
@@ -45,14 +73,15 @@ def _exit_status(code: Any, err: io.StringIO) -> int:
     return 1
 
 
-def _captured(main: Callable[[list[str]], int | None], argv: Sequence[str]) -> tuple[int, str, str]:
+def _captured(main: Callable[[list[str]], int | None], argv: Sequence[str], *,
+              bound_stdout: bool = False) -> tuple[int, str, str]:
     """``main(argv)`` with stdout and stderr captured: ``(exit status, stdout, stderr)``.
 
     ``SystemExit`` (argparse's usage errors, ``--help``, ``--version``) becomes the status. A log handler the
     entry point adds to the ``agent_trajviz`` logger (bound to the captured stderr) is removed afterwards and
     the logger's level restored.
     """
-    out, err = io.StringIO(), io.StringIO()
+    out, err = _BoundedCapture() if bound_stdout else io.StringIO(), _BoundedCapture()
     logger = logging.getLogger("agent_trajviz")
     handlers, level = list(logger.handlers), logger.level
     try:
@@ -118,7 +147,7 @@ def run_converge_cli(argv: list[str], out_dir: Path) -> dict:
 
 def run_collect(argv: list[str]) -> dict:
     """``agent-trajviz-collect argv`` in process: ``{"exit", "stdout", "stderr"}``, each capped at 64 KB."""
-    status, stdout, stderr = _captured(collect_main.main, argv)
+    status, stdout, stderr = _captured(collect_main.main, argv, bound_stdout=True)
     return {"exit": status, "stdout": _cap(stdout), "stderr": _cap(stderr)}
 
 

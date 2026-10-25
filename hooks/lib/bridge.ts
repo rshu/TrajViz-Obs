@@ -13,7 +13,7 @@ export const LAUNCHER = 'bridge/trajviz_obs_cli.py'
 
 /** The row when there is no managed environment yet (the `no_env` BridgeError's message). */
 export const NO_ENV_TEXT = 'TrajViz is not set up yet: run /obs setup, or /obs, which sets it up first.'
-export const MAX_BRIDGE_CHARS = 4 * 1024 * 1024
+export const MAX_BRIDGE_BYTES = 4 * 1024 * 1024
 const STDERR_TAIL_CHARS = 64 * 1024
 
 /**
@@ -141,6 +141,7 @@ export async function spawnBridge<T>($: EngineInterface, argv: string[]): Promis
   const command = await launcherArgv($, argv)
   const name = argv[0] ?? 'bridge'
   const text = { stdout: '', stderr: '' }
+  let stdoutBytes = 0
   let ended: { code: number | null; signal: string | null }
   try {
     const child = $.process.spawn({ argv: command, cwd: await $.session.cwd() })
@@ -155,7 +156,8 @@ export async function spawnBridge<T>($: EngineInterface, argv: string[]): Promis
         }
         const { stream, text: chunk } = r.value
         if (stream === 'stdout') {
-          if (text.stdout.length + chunk.length > MAX_BRIDGE_CHARS) throw new BridgeError('truncated', `obs ${name}: the bridge's output exceeded 4 MiB; run it with fewer --max-steps.`)
+          stdoutBytes += new TextEncoder().encode(chunk).length
+          if (stdoutBytes > MAX_BRIDGE_BYTES) throw new BridgeError('truncated', `obs ${name}: the bridge's output exceeded 4 MiB; run it with fewer --max-steps.`)
           text.stdout += chunk
         } else text.stderr = (text.stderr + chunk).slice(-STDERR_TAIL_CHARS)
       }

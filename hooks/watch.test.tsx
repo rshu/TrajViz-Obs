@@ -7,9 +7,9 @@ import { SNAPSHOT } from './testdata/snapshot'
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
-const VENV_PY = `${CACHE}/venv/bin/python`
+const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
+const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 24 }, rateLimits: [] }
 const NOW = 1_761_150_000_000
@@ -51,6 +51,7 @@ test('statusLine: the engine context, the tool calls and their success, the issu
   const one = { ...SNAPSHOT, issues: SNAPSHOT.issues.slice(0, 1), tools: { ...SNAPSHOT.tools, calls: 49, success_rate: null } }
   expect(statusLine(one, null)).toBe('obs · ctx 71% · 49 tools ? · 1 issue')
   expect(statusLine({ ...SNAPSHOT, issues: [] }, { ...USAGE, context: { window: 1_000_000 } })).toBe('obs · ctx 71% · 196 tools 96% · 0 issues')
+  expect(statusLine({ ...SNAPSHOT, counts: { ...SNAPSHOT.counts, issues: 37 } }, USAGE)).toContain('37 issues')
 })
 
 type Host = {
@@ -308,4 +309,46 @@ test('statusline off while the stat of a too-large session is in flight: the lar
   // The toast is still said, once.
   expect(h.toasts).toEqual([LARGE_SESSION_TEXT])
   expect(h.ran).toEqual([])
+})
+
+test('an empty refresh replaces the previous pane data and clears its status line', { options: { statusline: true } }, async ($, on) => {
+  const empty = { schema_version: 1, empty: true, reason: 'no_steps', transcript: { path: DERIVED } }
+  const h = host(on, [SNAPSHOT, empty])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await turnEnds($, h)
+  expect(await paneSteps($, 311)).toBe(true)
+  h.stat = { size: 0, mtimeMs: NOW + 10_000 }
+  await h.clock.advance(10_000)
+  await turnEnds($, h)
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /Nothing to analyze yet/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^311$/ })).toBeUndefined()
+  expect(h.statuses.at(-1)).toBeUndefined()
+  await ui.unmount()
+})
+
+test('/clear during a watch child cannot republish the old session or its debounce stamp', { options: { statusline: true } }, async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  const latest: unknown[] = []
+  const refresh: unknown[] = []
+  on('state.set', (_, e, next) => {
+    if (e.key === 'latest') latest.push(e.value)
+    if (e.key === 'refresh') refresh.push(e.value)
+    return next(e)
+  })
+  on('classic.SessionStart', () => ({}))
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await $.classic.SessionStart({ source: 'startup', transcript_path: DERIVED, session_id: 'abc' })
+  h.delayMs = 5_000
+  await turnEnds($, h)
+  await h.clock.advance(5_000)
+  expect(h.ran.map(argv => argv[3])).toEqual(['snapshot'])
+  await $.classic.SessionStart({ source: 'clear', transcript_path: '/new/def.jsonl', session_id: 'def' })
+  await h.clock.advance(5_000)
+  expect(latest.at(-1)).toBeNull()
+  expect(refresh.at(-1)).toMatchObject({ lastRunAt: 0, lastSize: 0, busy: false })
+  expect(h.statuses.every(line => line === undefined)).toBe(true)
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /No snapshot yet/ })).toBeDefined()
+  await ui.unmount()
 })

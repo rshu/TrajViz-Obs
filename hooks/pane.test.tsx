@@ -6,9 +6,9 @@ import { SNAPSHOT } from './testdata/snapshot'
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
-const VENV_PY = `${CACHE}/venv/bin/python`
+const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
+const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 24 }, rateLimits: [], cost: { usd: 1.25 } }
 const BREAKDOWN = {
@@ -298,11 +298,11 @@ test('the pane without a snapshot says so, and with an empty one', async ($, on)
   expect(h.runs).toEqual(['report', 'dashboard'])
   await ui.unmount()
 
-  // An empty session is never stored: `/obs pane` says so under its line, and the pane still waits.
+  // An empty result is stored too, so the pane replaces any preceding data.
   expect(await obs($, 'pane')).toBe('obs pane opened.\nNothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.')
   expect(h.snapshots).toBe(1)
   ui = await $.ui.mount(pane('desktop', 80))
-  expect(await ui.find({ type: 'Text', text: /No snapshot yet/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Nothing to analyze yet/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -316,6 +316,23 @@ test('an empty latest snapshot draws the empty row', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: /Nothing to analyze yet/ }))?.text).toBe('Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.')
   expect(await ui.find({ type: 'Text', text: /computed in/ })).toBeUndefined()
   await ui.unmount()
+})
+
+test('empty and not-yet-loaded saved-session panes keep report and dashboard actions on the selection', async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  const path = '/outside/my run.jsonl'
+  let snapshot: unknown = null
+  on('state.get', { plugin: 'trajviz-obs', key: 'latest' }, () => ({ value: { value: snapshot, version: 1 } }) as never)
+  on('state.get', { plugin: 'trajviz-obs', key: 'session' }, () => ({ value: { value: { transcriptPath: DERIVED, sessionId: 'abc', selected: { path, id: 'other', label: 'other' } }, version: 1 } }))
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  for (const value of [null, { schema_version: 1, empty: true, reason: 'no_steps', transcript: { path } }]) {
+    snapshot = value
+    const ui = await $.ui.mount(pane('terminal', 80))
+    await ui.press({ key: 'report' })
+    await ui.press({ key: 'dashboard' })
+    await ui.unmount()
+  }
+  expect(h.runs.map(args => parseArgs(args).flags['session'])).toEqual([path, path, path, path])
 })
 
 test('/obs pane opens with focus, inline on the main screen; pane close closes', async ($, on) => {

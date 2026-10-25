@@ -7,7 +7,7 @@ import logging
 
 from agent_trajviz.collect import __main__ as collect_main
 
-from trajviz_obs.passthrough import OUTPUT_CAP, attribution, brief, run_collect, run_converge_cli
+from trajviz_obs.passthrough import OUTPUT_CAP, _BoundedCapture, attribution, brief, run_collect, run_converge_cli
 
 
 def test_converge_cli_summary(fixture_session, synthetic_session, tmp_artifacts):
@@ -62,6 +62,27 @@ def test_collect_output_is_capped(monkeypatch):
     monkeypatch.setattr(collect_main, "main", noisy)
     out = run_collect(["cursor"])
     assert out["exit"] == 0 and len(out["stdout"].encode()) <= OUTPUT_CAP
+
+
+def test_collect_bounds_storage_during_multibyte_stdout_and_stderr_writes(monkeypatch):
+    import io
+    import sys
+
+    def noisy(argv):
+        for _ in range(32):
+            sys.stdout.write("界" * OUTPUT_CAP)
+            sys.stderr.write("🙂" * OUTPUT_CAP)
+        # Inspect retained storage before the command returns, so a post-hoc output cap cannot pass.
+        assert isinstance(sys.stdout, _BoundedCapture) and isinstance(sys.stderr, _BoundedCapture)
+        assert len(io.StringIO.getvalue(sys.stdout).encode()) <= OUTPUT_CAP
+        assert len(io.StringIO.getvalue(sys.stderr).encode()) <= OUTPUT_CAP
+        return 0
+
+    monkeypatch.setattr(collect_main, "main", noisy)
+    result = run_collect(["cursor"])
+    assert result["exit"] == 0
+    assert all(len(result[key].encode()) <= OUTPUT_CAP and result[key].endswith("… (truncated)")
+               for key in ("stdout", "stderr"))
 
 
 def test_attribution_unavailable_is_honest(fixture_run):

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1 — 2026-10-25
+
+- Fixed stale and concurrent snapshot publication, saved-session actions, dashboard cancellation, and concurrent model reply files.
+- Protected loaded inputs and sidecars from export overwrites, and isolated temporary output files between writers.
+- Hardened environment metadata, Windows publication, installation deadlines, and installer process cleanup.
+- Corrected environment-provider settings, model request integrity, bounded output, and issue totals.
+- Added regression, local HTTP, subprocess/schema, cold-install, and expanded real-session tests.
+- Removed internal plans and validation reports; kept plugin instructions in the README.
+
 ## 0.1.0 — 2026-10-25
 
 - Added the immediate `/obs` command, snapshot cards, seven-tab pane, post-turn watch, and optional status line for Claude Code's function hooks API.

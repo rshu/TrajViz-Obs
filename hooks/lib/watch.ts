@@ -9,8 +9,9 @@ import type { EngineInterface, PluginOptions, SessionUsage, Timer } from 'claude
 import type { EmptySnapshot, RefreshState, Snapshot } from '../../types'
 import { BridgeError } from './bridge'
 import { fmtInt, fmtPct } from './format'
+import { lockPublication, publicationGeneration } from './publication'
 import { resolveTranscript } from './session'
-import { BUSY_STALE_MS, isEmpty, storeSnapshot, takeSnapshot } from './snapshot'
+import { BUSY_STALE_MS, captureSnapshot, isEmpty } from './snapshot'
 import { readFlags, readRefresh, readSession, stampRefresh } from './state'
 import { sessionUsage } from '../render/card'
 import { PANE_ID } from '../render/pane'
@@ -60,15 +61,20 @@ export function shouldRefresh(now: number, refresh: RefreshState, stat: { size: 
  */
 export function statusLine(snap: Snapshot, usage: SessionUsage | null): string {
   const ctx = usage?.context.percent ?? snap.context.current_pct
-  const issues = snap.issues.length
+  const issues = snap.counts.issues ?? snap.issues.length
   return `obs · ctx ${fmtPct(ctx)} · ${fmtInt(snap.tools.calls)} tools ${fmtPct(snap.tools.success_rate)} · ${issues} issue${issues === 1 ? '' : 's'}`
 }
 
 /** Draws the status line from `snap` (nothing for no snapshot or an empty one). */
-export async function drawStatusLine($: EngineInterface, snap: Snapshot | EmptySnapshot | null): Promise<void> {
-  if (snap === null || isEmpty(snap)) return
-  const selected = (await readSession($)).selected
-  $.ui.status(statusLine(snap, selected ? null : await sessionUsage($)))
+export async function drawStatusLine($: EngineInterface, snap: Snapshot | EmptySnapshot | null, generation = publicationGeneration()): Promise<void> {
+  const release = await lockPublication()
+  try {
+    if (generation !== publicationGeneration()) return
+    if (snap === null || isEmpty(snap)) { $.ui.status(undefined); return }
+    const selected = (await readSession($)).selected
+    const usage = selected ? null : await sessionUsage($)
+    if ((await readFlags($)).statusline) $.ui.status(statusLine(snap, usage))
+  } finally { release() }
 }
 
 /** Whether the pane is open (placed or not), by the engine's own record. */
@@ -128,25 +134,31 @@ function scheduleTrailing($: EngineInterface, options: PluginOptions, waitMs: nu
 async function refreshAfterTurn($: EngineInterface, options: PluginOptions): Promise<void> {
   const flags = await readFlags($)
   if (!flags.statusline && !(flags.watch && (await isPaneOpen($)))) return
+  const beforeStat = publicationGeneration()
   const selected = (await readSession($)).selected
   const path = selected?.path ?? (await resolveTranscript($)).path
   const stat = await $.fs.stat(path)
+  if (publicationGeneration() !== beforeStat) return
   const startedAt = await $.clock.now()
   const decision = shouldRefresh(startedAt, await readRefresh($), stat, stat.size)
   if (decision.reason === 'too-large') return sayLarge($)
   if (decision.reason === 'debounce') scheduleTrailing($, options, decision.waitMs ?? MIN_DEBOUNCE_MS)
   if (!decision.run) return
   let snap: Snapshot | EmptySnapshot | null = null
+  let generation = beforeStat
   try {
-    snap = await takeSnapshot($, options, selected?.path)
+    ;({ snap, generation } = await captureSnapshot($, options, selected?.path, beforeStat))
   } catch (e) {
-    if (e instanceof BridgeError && e.code === 'busy') return
+    if (e instanceof BridgeError && (e.code === 'busy' || e.code === 'session_changed')) return
     $.ui.log(`obs watch: ${e instanceof Error ? e.message : String(e)}`, { to: 'debug' })
   }
-  await stampRefresh($, { lastRunAt: startedAt, lastDurationMs: (await $.clock.now()) - startedAt, lastSize: stat.size, lastMtimeMs: stat.mtimeMs })
+  const release = await lockPublication()
+  try {
+    if (publicationGeneration() !== generation) return
+    await stampRefresh($, { lastRunAt: startedAt, lastDurationMs: (await $.clock.now()) - startedAt, lastSize: stat.size, lastMtimeMs: stat.mtimeMs })
+  } finally { release() }
   if (snap === null) return
-  if (!isEmpty(snap)) await storeSnapshot($, snap)
-  if (await statuslineOn($)) await drawStatusLine($, snap)
+  if (await statuslineOn($)) await drawStatusLine($, snap, generation)
 }
 
 /**

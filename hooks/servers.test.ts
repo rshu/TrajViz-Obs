@@ -132,6 +132,47 @@ test('concurrent starts share one child and stopping before its URL cancels it',
   expect(running('insight')).toBeNull()
 })
 
+test('stopping while the host is resolving cwd cancels a start before it spawns a child', async () => {
+  const s = fakeStream()
+  const f = await fresh([s.stream])
+  let release: () => void = () => {}
+  const gate = new Promise<void>(resolve => { release = resolve })
+  f.$.session.cwd = async () => { await gate; return CWD }
+  const pending = startServer(f.$, 'insight', ['x'])
+  expect(hasServer('insight')).toBe(true)
+  await stopServer(f.$, 'insight')
+  release()
+  expect(await pending).toEqual({ error: 'the dashboard start was cancelled' })
+  expect(f.spawned).toEqual([])
+  expect(hasServer('insight')).toBe(false)
+})
+
+test('a startup timeout during dashboard state publication cannot leave a dead URL in state', async () => {
+  const s = fakeStream()
+  const f = await fresh([s.stream])
+  const set = f.$.state.set.bind(f.$.state)
+  let release: () => void = () => {}
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let storageStarted: () => void = () => {}
+  const storage = new Promise<void>(resolve => { storageStarted = resolve })
+  let first = true
+  f.$.state.set = (async (ref: StateAddress, value: unknown, options?: { ifVersion?: number }) => {
+    if (ref.key === 'dashboards' && first) { first = false; storageStarted(); await gate }
+    return set(ref as never, value as never, options)
+  }) as typeof f.$.state.set
+  const pending = startServer(f.$, 'insight', ['x'])
+  s.out(URL_LINE)
+  await storage
+  f.timers[0]?.fire()
+  const outcome = await pending
+  release()
+  await settle()
+  expect(outcome).toMatchObject({ error: 'the dashboard did not print its URL within 120 seconds: {"url": "http://127.0.0.1:7860"}' })
+  expect(running('insight')).toBeNull()
+  expect(dashboards(f)).toEqual({ insight: null, converge: null })
+  expect(s.returned).toBe(true)
+})
+
 test('a silent dashboard startup times out and closes its child; a ready child cancels the timer', async () => {
   const s = fakeStream()
   const f = await fresh([s.stream])
@@ -307,7 +348,7 @@ test('startServer spawns in the session directory, once per kind', async () => {
   const a = fakeStream()
   const b = fakeStream()
   const f = await fresh([a.stream, b.stream])
-  const argv = ['/venv/bin/python', '-I', '/plugin/bridge/trajviz_obs_cli.py', 'dashboard', '--transcript', '/t.jsonl']
+  const argv = ['/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python', '-I', '/plugin/bridge/trajviz_obs_cli.py', 'dashboard', '--transcript', '/t.jsonl']
   const started = startServer(f.$, 'insight', argv)
   a.out(URL_LINE)
   expect(await started).toEqual({ url: 'http://127.0.0.1:7860', preloaded: true })

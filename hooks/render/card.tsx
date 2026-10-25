@@ -117,7 +117,7 @@ export function renderCard($: EngineInterface, e: CardEvent, snap: Snapshot, opt
       {ToolBars({ els, byTool: snap.tools.by_tool, width: columns })}
       {PhaseRibbon({ els, phases: snap.phases, total: snap.counts.records, columns })}
       {full ? Swimlane({ els, surface, lanes: snap.swimlane.lanes, total: snap.swimlane.total_steps, columns }) : null}
-      {IssuesList({ els, issues: snap.issues, limit: reduced ? ISSUES_SHOWN : ISSUES_SHOWN_MINIMAL })}
+      {IssuesList({ els, issues: snap.issues, limit: reduced ? ISSUES_SHOWN : ISSUES_SHOWN_MINIMAL, total: snap.counts.issues })}
       {bottlenecks ? <Text dimColor>{`Bottlenecks: ${bottlenecks}`}</Text> : null}
       {WarningsLine({ els, warnings: snap.trajviz.warnings })}
       {showButtons ? (

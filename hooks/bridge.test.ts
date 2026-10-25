@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { EngineInterface, ProcessSpawnChunk, StateAddress } from 'claude-code'
-import { BridgeError, MAX_BRIDGE_CHARS, runBridge, spawnBridge } from './lib/bridge'
+import { BridgeError, MAX_BRIDGE_BYTES, runBridge, spawnBridge } from './lib/bridge'
 import { resolveTranscript, selectSession } from './lib/session'
 import { flags, latest, paneTab, refresh, session, snapshotIds, snapshotRef } from './lib/state'
 
@@ -32,8 +32,8 @@ type Fake = {
 
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
-const VENV_PY = `${HOME}/.cache/trajviz-obs/venv/bin/python`
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
+const VENV_PY = `${HOME}/.cache/trajviz-obs/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
+const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
 const LAUNCHER = '/plugin/bridge/trajviz_obs_cli.py'
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 
@@ -170,13 +170,17 @@ test('runBridge parses the envelope and maps errors', async () => {
 
 test('spawned bridge output is bounded and an oversized child is closed', async () => {
   let closed = false
-  const w = fake(withEnv({ spawn: spawnedBridge({ label: { chunks: [out('x'.repeat(MAX_BRIDGE_CHARS)), out('x')], code: 0 } }) }))
+  const w = fake(withEnv({ spawn: spawnedBridge({ label: { chunks: [out('x'.repeat(MAX_BRIDGE_BYTES)), out('x')], code: 0 } }) }))
   const spawn = w.$.process.spawn
   const wrapped = { ...w.$, process: { ...w.$.process, spawn: (request: Parameters<typeof spawn>[0]) => (async function* () {
     try { return yield* spawn(request) } finally { closed = true }
   })() } } as EngineInterface
   expect((await rejection(spawnBridge(wrapped, ['label']))).code).toBe('truncated')
   expect(closed).toBe(true)
+  // Host process.run caps UTF-8 bytes; spawned children follow the same
+  // boundary even when fewer than four million JavaScript characters arrive.
+  const unicode = fake(withEnv({ spawn: spawnedBridge({ label: { chunks: [out('界'.repeat(Math.floor(MAX_BRIDGE_BYTES / 3) + 1))], code: 0 } }) }))
+  expect((await rejection(spawnBridge(unicode.$, ['label']))).code).toBe('truncated')
 })
 
 test('spawnBridge collects the child\'s stdout with no timeout and decodes it as runBridge does', async () => {

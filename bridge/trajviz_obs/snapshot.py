@@ -20,7 +20,7 @@ from typing import Any
 from agent_trajviz import Trajectory
 
 from .cli import register
-from .compat import TRAJVIZ_VERSION, EmptySession, load_run, window_info
+from .compat import TRAJVIZ_VERSION, EmptySession, input_path, load_run, window_info
 from .sessions import _positive_int
 from .sidecars import AgentMeta, TranscriptFacts, agent_meta, scan_transcript
 from .text import render_overview
@@ -297,7 +297,7 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
         "counts": {"records": summary["steps"], "assistant_steps": summary["assistant_steps"],
                    "user_records": metrics.get("user_steps"), "prompts": facts.prompt_count,
                    "compactions": pressure["stats"].get("compaction_count"), "agents": summary["agents"],
-                   "tool_calls": summary["tool_calls"]},
+                   "tool_calls": summary["tool_calls"], "issues": len(views["issues"])},
         "tokens": {k: summary["tokens"].get(k) for k in
                    ("total", "input", "output", "cache_read", "cache_write", "reasoning")},
         "timing": {"wall_clock_s": summary.get("wall_clock_s"), "started_at": session.get("started_at"),
@@ -389,9 +389,10 @@ def _snapshot(args: argparse.Namespace) -> dict:
         run = load_run(args.transcript, window_limit=args.window, current=args.kind == "current")
     except EmptySession as exc:
         return empty_snapshot(exc.reason, args.transcript)
-    is_file = os.path.isfile(args.transcript)
-    facts = scan_transcript(args.transcript) if is_file else TranscriptFacts(None, [], 0, 0)
-    meta = agent_meta(args.transcript) if is_file else {}
+    source = input_path(run)
+    is_file = source is not None and source.is_file()
+    facts = scan_transcript(str(source)) if is_file else TranscriptFacts(None, [], 0, 0)
+    meta = agent_meta(str(source)) if is_file else {}
     return build_snapshot(run, transcript_path=args.transcript, facts=facts, agents_meta=meta,
                           artifacts=args.artifacts, max_points=args.max_points,
                           duration_ms=int((time.monotonic() - started) * 1000))

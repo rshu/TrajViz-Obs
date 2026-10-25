@@ -7,7 +7,7 @@ import type { SessionState } from '../types'
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
-const VENV_PY = `${CACHE}/venv/bin/python`
+const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
 const PROJECT_DIR = `${HOME}/.claude/projects/-Users-me-p`
 const DERIVED = `${PROJECT_DIR}/abc.jsonl`
@@ -67,7 +67,7 @@ function host(on: On, world: World = {}): Host {
   const spawned: Host['spawned'] = []
   const rows: string[] = []
   const timeline: string[] = []
-  const files: Record<string, string> = { [STATE_PATH]: stateJson(world.extras ?? ['llm', 'app']) }
+  const files: Record<string, string> = { [STATE_PATH]: stateJson(world.extras ?? ['llm', 'charts', 'app']) }
   on('command.register', () => ({ value: { command: 'obs' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -131,7 +131,7 @@ function host(on: On, world: World = {}): Host {
     spawned.push({ argv: [...e.argv], cwd: e.cwd })
     if (e.argv.some(a => a.endsWith('/bridge/bootstrap.py'))) {
       const req = JSON.parse(e.argv[e.argv.indexOf('--request') + 1] as string)
-      const state = { revision: 4, python: VENV_PY, pythonOption: req.pythonOption, trajviz: '0.2.1', extras: [...new Set(['llm', 'charts', ...req.extras])], source: req.source, createdAt: 1 }
+      const state = { revision: 4, python: VENV_PY, pythonOption: req.pythonOption, trajviz: '0.2.1', extras: [...new Set(['llm', 'charts', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
       files[STATE_PATH] = JSON.stringify(state)
       timeline.push('pip')
       yield { stream: 'stderr' as const, text: 'Installed\n' }
@@ -165,14 +165,14 @@ const END = { reason: 'prompt_input_exit' as const, sessionId: 'abc', resume: { 
 
 test('dashboard asks, announces and installs the app extra, starts the bridge child with the transcript and port, and opens the URL', async ($, on) => {
   forgetPlatform()
-  const { ran, spawned, asked, rows, timeline } = host(on, { extras: ['llm'], commands: DARWIN })
+  const { ran, spawned, asked, rows, timeline } = host(on, { extras: ['llm', 'charts'], commands: DARWIN })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const out = await obs($, 'dashboard --port 7777')
   // An interactive session is asked once; the install is then announced in a row of its own before pip starts.
   expect(asked).toEqual([ASK_APP])
   expect(rows).toEqual([INSTALLING_APP])
   expect(timeline).toEqual(['ask', 'row', 'pip', 'child', 'open'])
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz>=0.2.0,<0.3', extras: ['llm', 'charts', 'llm', 'app'] })
+  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz>=0.2.0,<0.3', extras: ['llm', 'charts', 'llm', 'charts', 'app'] })
   expect(children(spawned)).toEqual([['dashboard', '--transcript', DERIVED, '--port', '7777']])
   expect(spawned[1]?.argv.slice(0, 2)).toEqual([VENV_PY, '-I'])
   expect(spawned[1]?.argv[2]).toMatch(/\/bridge\/trajviz_obs_cli\.py$/)
@@ -271,7 +271,7 @@ test('a dashboard whose preload could not be wired names the bundle ZIP to drop 
 
 test('the app install is declined by Not now or a dismissed ask, and not asked of a headless session', async ($, on) => {
   forgetPlatform()
-  const world: World = { extras: ['llm'], commands: DARWIN, answer: 'Not now' }
+  const world: World = { extras: ['llm', 'charts'], commands: DARWIN, answer: 'Not now' }
   const { spawned, asked, rows, timeline } = host(on, world)
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   expect((await obs($, 'dashboard')).text).toBe(DECLINED)
@@ -288,7 +288,7 @@ test('the app install is declined by Not now or a dismissed ask, and not asked o
   expect(asked).toHaveLength(2)
   expect(rows).toEqual([INSTALLING_APP])
   expect(timeline).toEqual(['ask', 'ask', 'row', 'pip', 'child', 'open'])
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz>=0.2.0,<0.3', extras: ['llm', 'charts', 'llm', 'app'] })
+  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz>=0.2.0,<0.3', extras: ['llm', 'charts', 'llm', 'charts', 'app'] })
   expect(children(spawned)).toEqual([['dashboard', '--transcript', DERIVED]])
   await $.session.end(END)
 })
@@ -310,14 +310,14 @@ test('a reload (session.start again) ends the dashboards and clears their state'
 
 test('converge asks, announces and installs the app extra once, and takes the data root and port, defaulting to the project folder', async ($, on) => {
   forgetPlatform()
-  const { ran, spawned, asked, rows, timeline } = host(on, { extras: ['llm'], commands: DARWIN })
+  const { ran, spawned, asked, rows, timeline } = host(on, { extras: ['llm', 'charts'], commands: DARWIN })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const out = await obs($, 'converge')
   // The same ask and announcing row as `dashboard`, in the same order, before pip and the child.
   expect(asked).toEqual([ASK_APP])
   expect(rows).toEqual([INSTALLING_APP])
   expect(timeline).toEqual(['ask', 'row', 'pip', 'child', 'open'])
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz>=0.2.0,<0.3', extras: ['llm', 'charts', 'llm', 'app'] })
+  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz>=0.2.0,<0.3', extras: ['llm', 'charts', 'llm', 'charts', 'app'] })
   expect(children(spawned)).toEqual([['converge', '--data-root', PROJECT_DIR]])
   expect(out.text).toBe(`Converge dashboard at ${URL} over ${PROJECT_DIR}; opened in the browser. /obs converge stop ends it.`)
   expect(ran.filter(r => r[0] === 'open')).toEqual([['open', URL]])

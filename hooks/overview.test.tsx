@@ -2,8 +2,9 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { EngineInterface, On, StateAddress } from 'claude-code'
 import type { EmptySnapshot } from '../types'
 import { BridgeError } from './lib/bridge'
-import { BUSY_STALE_MS, mintId, parseSnapshotId, provenanceLine, storeSnapshot, takeSnapshot } from './lib/snapshot'
+import { BUSY_STALE_MS, captureSnapshot, mintId, parseSnapshotId, provenanceLine, storeSnapshot, takeSnapshot } from './lib/snapshot'
 import { claimRefresh, releaseRefresh } from './lib/state'
+import { rememberTranscript } from './lib/session'
 import { errorRow } from './commands/overview'
 import { maybeOpenPane } from './commands/pane'
 import { SNAPSHOT } from './testdata/snapshot'
@@ -11,9 +12,9 @@ import { SNAPSHOT } from './testdata/snapshot'
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
-const VENV_PY = `${CACHE}/venv/bin/python`
+const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
+const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const ARTIFACTS = `${CACHE}/sessions/abc`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 12 }, rateLimits: [] }
@@ -272,6 +273,56 @@ test('ids continue and prune to five', async () => {
   expect(mintId([])).toBe('1')
   expect(mintId(['2', '3', '4', '5', '6'])).toBe('7')
   expect(mintId(['9', '10'])).toBe('11')
+})
+
+test('concurrent snapshot publications keep distinct immutable cards and prune the oldest members', async () => {
+  const w = fake()
+  const ids = await Promise.all(Array.from({ length: 8 }, (_, i) => storeSnapshot(w.$, { ...SNAPSHOT, duration_ms: i })))
+  expect(ids).toEqual(['1', '2', '3', '4', '5', '6', '7', '8'])
+  expect(w.state.get('snapshotIds')?.value).toEqual(['4', '5', '6', '7', '8'])
+  for (let i = 0; i < 8; i++) {
+    const snap = w.state.get(`snapshot/${i + 1}`)?.value
+    if (i < 3) expect(snap).toBeNull()
+    else expect(snap).toMatchObject({ duration_ms: i })
+  }
+  expect(w.state.get('latest')?.value).toMatchObject({ duration_ms: 7 })
+})
+
+test('the refresh claim includes publication so a second analysis cannot overtake a slow state write', async () => {
+  const w = fake({ bridge: { snapshot: json(SNAPSHOT) }, now: NOW })
+  const set = w.$.state.set.bind(w.$.state)
+  let unblock: () => void = () => {}
+  const blocked = new Promise<void>(resolve => { unblock = resolve })
+  let storageStarted: () => void = () => {}
+  const storage = new Promise<void>(resolve => { storageStarted = resolve })
+  w.$.state.set = (async (ref: StateAddress, value: unknown, options?: { ifVersion?: number }) => {
+    if (ref.key === 'snapshot') { storageStarted(); await blocked }
+    return set(ref as never, value as never, options)
+  }) as typeof w.$.state.set
+  const first = captureSnapshot(w.$, {})
+  await storage
+  await expect(captureSnapshot(w.$, {})).rejects.toMatchObject({ code: 'busy' })
+  expect(w.ran.filter(argv => argv[3] === 'snapshot')).toHaveLength(1)
+  unblock()
+  await expect(first).resolves.toMatchObject({ id: '1' })
+  expect(w.state.get('refresh')?.value).toMatchObject({ busy: false })
+})
+
+test('/clear while context usage is resolving cancels the old transcript before any snapshot child starts', async () => {
+  const w = fake({ state: { session: { transcriptPath: DERIVED, sessionId: 'abc', selected: null } }, bridge: { snapshot: json(SNAPSHOT) }, now: NOW })
+  let release: () => void = () => {}
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let usageStarted: () => void = () => {}
+  const usage = new Promise<void>(resolve => { usageStarted = resolve })
+  w.$.session.usage = (async () => { usageStarted(); await gate; return USAGE }) as typeof w.$.session.usage
+  const pending = captureSnapshot(w.$, {})
+  await usage
+  await rememberTranscript(w.$, { transcript_path: '/new/def.jsonl', session_id: 'def' })
+  release()
+  await expect(pending).rejects.toMatchObject({ code: 'session_changed' })
+  expect(w.ran).toEqual([])
+  expect(w.state.get('latest')?.value).toBeNull()
+  expect(w.state.get('refresh')?.value).toMatchObject({ lastRunAt: 0, busy: false })
 })
 
 test('provenance line and its id', () => {

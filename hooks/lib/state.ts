@@ -9,6 +9,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions } from 'claude-code'
 import type { Dashboards, EmptySnapshot, Flags, RefreshState, SessionState, Snapshot } from '../../types'
+import { lockPublication } from './publication'
 
 /** The newest snapshot: what the pane and the status line draw. */
 export const latest = atom({ plugin: 'trajviz-obs', key: 'latest' } as const, null)
@@ -126,12 +127,14 @@ export async function readDashboards($: EngineInterface): Promise<Dashboards> {
 
 /** No dashboard running (the module's load: a reload's children are gone with the old environment). */
 export async function resetDashboards($: EngineInterface): Promise<void> {
-  await update($, dashboards, () => dashboards.initial)
+  const release = await lockPublication()
+  try { await update($, dashboards, () => dashboards.initial) } finally { release() }
 }
 
 /** Records dashboard `kind` as running at `value`; `null` once it stops. */
 export async function setDashboard($: EngineInterface, kind: keyof Dashboards, value: Dashboards[keyof Dashboards]): Promise<void> {
-  await update($, dashboards, d => ({ ...d, [kind]: value }))
+  const release = await lockPublication()
+  try { await update($, dashboards, d => ({ ...d, [kind]: value })) } finally { release() }
 }
 
 /** How often `claimRefresh` retries a write another beat. */

@@ -26,6 +26,29 @@ def test_current_snapshot_tolerates_only_an_in_progress_tail(fixture_session, tm
     assert code == 1 and out["error"]["code"] == "load_error"
 
 
+@pytest.mark.parametrize("command", ["snapshot", "view", "json", "report", "brief", "attribution", "compare",
+                                     "scorecard", "llm-prompt", "ask", "fixes", "label"])
+def test_current_session_with_only_a_real_user_prompt_is_empty(command, fixture_session, tmp_path, run_cli):
+    import json
+
+    source = tmp_path / "new.jsonl"
+    source.write_text(json.dumps({"type": "user", "sessionId": "new", "uuid": "first",
+                                 "message": {"role": "user", "content": "build it"}}) + "\n")
+    argv = [command, "--transcript", str(source), "--kind", "current", "--artifacts", str(tmp_path / "artifacts")]
+    if command == "view":
+        argv += ["health"]
+    elif command == "compare":
+        argv += ["--other", str(fixture_session)]
+    elif command == "scorecard":
+        argv += ["--others", str(fixture_session)]
+    elif command == "llm-prompt":
+        argv += ["--feature", "analyze"]
+    code, out = run_cli(argv)
+    assert code == 0 and out.get("empty") is True, (command, out)
+    assert not (tmp_path / "artifacts").exists()
+    assert len(load_run(str(source)).steps) == 1  # historical inputs can still describe a user-only run
+
+
 def test_label_replies_are_stale_when_only_a_subagent_changes(tmp_session, tmp_path):
     source = Path(tmp_session.transcript)
     options = {"transcript_path": str(source), "question": None, "history_path": None, "limit": 3,

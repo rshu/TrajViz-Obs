@@ -19,7 +19,7 @@ import agent_trajviz as tv
 from agent_trajviz import Trajectory
 
 from .cli import register
-from .compat import EmptySession, load_plugins, load_run, protect_run_outputs
+from .compat import EmptySession, load_plugins, load_run, protect_run_outputs, resolve_input_path
 from .errors import BridgeError
 from .outputs import protect_inputs, session_files
 from .text import LINE_CHARS, _cell, _clip, _duration, _num
@@ -170,12 +170,20 @@ def scorecard(current: Trajectory | None, others: list[str], *, fuzzy: bool, lab
     is a row with its ``error``; fewer than two runs raise ``BridgeError("compare_failed")``.
     """
     load_plugins()  # TrajViz loads the others itself (and with --no-self nothing went through load_run)
-    sources: list[Trajectory | str] = [*([] if no_self else [current]), *others]
+    sources: list[Trajectory | str] = [] if no_self else [current]
     destination = out_dir / "compare" / "scorecard.json"
     if current is not None:
         protect_run_outputs(current, [destination])
     for other in others:
-        protect_inputs([destination], session_files(Path(other)))
+        protect_inputs([destination], session_files(resolve_input_path(other)))
+        try:
+            loaded = load_run(other)
+        except tv.LoadError:
+            # The group API preserves unreadable runs as error rows.
+            sources.append(other)
+        else:
+            protect_run_outputs(loaded, [destination])
+            sources.append(loaded)
     try:
         result = tv.compare_runs(sources, labels=labels, fuzzy_commands=fuzzy)
     except ValueError as exc:

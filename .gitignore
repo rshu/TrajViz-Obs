@@ -19,3 +19,5 @@ dist/
 .env
 .env.*
 !.env.example
+# Local plans and verification reports are not plugin distribution files.
+/docs/

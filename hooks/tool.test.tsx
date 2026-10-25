@@ -5,13 +5,13 @@ import { SNAPSHOT } from './testdata/snapshot'
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
-const VENV_PY = `${CACHE}/venv/bin/python`
+const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const ARTIFACTS = `${CACHE}/sessions/abc`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 12 }, rateLimits: [] }
 const NOW = 1_761_150_000_000
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: NOW })
+const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: NOW })
 
 /** The argv every session-bound bridge subcommand gets for the current session. */
 const SESSION_ARGV = ['--transcript', DERIVED, '--window', '1000000', '--artifacts', ARTIFACTS, '--kind', 'current']
@@ -120,6 +120,13 @@ test('what: "health" answers the health rows of the snapshot', async ($, on) => 
   await start($)
   const r = await callObs($, { what: 'health' })
   expect(JSON.parse(r.result ?? '')).toEqual({ health: SNAPSHOT.health, total: SNAPSHOT.health.length })
+})
+
+test('issues reports the full count when the snapshot carries only its top preview', async ($, on) => {
+  host(on, { snapshot: json({ ...SNAPSHOT, counts: { ...SNAPSHOT.counts, issues: 37 } }) })
+  await start($)
+  const result = await callObs($, { what: 'issues', limit: 1 })
+  expect(JSON.parse(result.result ?? '')).toEqual({ issues: SNAPSHOT.issues.slice(0, 1), total: 37 })
 })
 
 test('what: "brief" answers the bridge brief of the current session', async ($, on) => {

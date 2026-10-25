@@ -92,33 +92,61 @@ def atomic_json(path: Path, value: dict) -> None:
             os.unlink(name)
 
 
+def read_json(path: Path) -> dict:
+    """Windows can briefly deny opening a name while atomic replacement completes."""
+    for attempt in range(11):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError:
+            if attempt == 10:
+                raise
+            time.sleep(0.02)
+    raise AssertionError("unreachable")
+
+
 def load_state(path: Path, request: dict) -> dict | None:
     try:
-        state = json.loads(path.read_text(encoding="utf-8"))
+        state = read_json(path)
+        local_source = re.fullmatch(r"(.*?)(?:\[([^\]]*)\])?", request["source"], re.DOTALL)
+        relative = request["local"] and not Path(local_source[1]).expanduser().is_absolute()
+        python = Path(state["python"])
+        generation = python.parent.parent
+        expected = generation / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         if (isinstance(state, dict) and state.get("revision") == REVISION
                 and state.get("source") == request["source"]
                 and state.get("pythonOption", "") == request.get("pythonOption", "")
+                and ("sourceCwd" not in state or state["sourceCwd"] == str(Path.cwd()))
+                and (not relative or state.get("sourceCwd") == str(Path.cwd()))
+                and isinstance(state.get("trajviz"), str) and bool(state["trajviz"].strip())
+                and type(state.get("createdAt")) in (int, float) and 0 <= state["createdAt"] <= 8.64e15
                 and isinstance(state.get("extras"), list)
                 and all(isinstance(v, str) for v in state["extras"])
-                and Path(state["python"]).is_file()):
+                and set(BASE_EXTRAS) <= set(state["extras"])
+                and python == expected and generation.parent == path.parent
+                and re.fullmatch(r"[0-9a-f]{32}", generation.name)
+                and generation.resolve().parent == path.parent.resolve()
+                and python.is_file()):
             return state
     except (OSError, ValueError, TypeError, KeyError):
         pass
     return None
 
 
-def requirement(source: str, extras: list[str], local: bool) -> list[str]:
-    """The source argument retains its own extras, including PEP 508 URLs."""
+def source_parts(source: str, local: bool) -> tuple[str, str | None, str]:
     named = re.fullmatch(r"([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)(?:\s*\[([^\]]*)\])?((?:\s*[<>=!~(;@].*)?)", source, re.DOTALL)
     if local:
         match = re.fullmatch(r"(.*?)(?:\[([^\]]*)\])?", source, re.DOTALL)
-        base, own, tail = match[1], match[2], ""
-    elif named:
-        base, own, tail = named[1], named[2], named[3]
-    else:
-        base, own, tail = "agent-trajviz", None, " @ " + source
+        return match[1], match[2], ""
+    if named:
+        return named[1], named[2], named[3]
+    return "agent-trajviz", None, " @ " + source
+
+
+def requirement(source: str, extras: list[str], local: bool) -> list[str]:
+    """The source argument retains its own extras, including PEP 508 URLs."""
+    base, own, tail = source_parts(source, local)
     merged = list(dict.fromkeys([*(v.strip() for v in (own or "").split(",") if v.strip()), *extras]))
-    return (["-e"] if local else []) + [base + "[" + ",".join(merged) + "]" + tail]
+    return (["-e"] if local else []) + [base + ("[" + ",".join(merged) + "]" if merged else "") + tail]
 
 
 def _windows_job():
@@ -150,20 +178,24 @@ def _windows_job():
 
 
 def terminate_active() -> None:
+    global _job
     child = _active
-    if child is None or child.poll() is not None:
-        return
     if os.name == "nt":
         if _job is not None:
             kernel, handle = _job
+            _job = None
             kernel.CloseHandle(handle)
-        else:
+        elif child is not None and child.poll() is None:
             child.kill()
     else:
+        if child is None or child.poll() is not None:
+            return
+        # The supervisor owns a separate installer group, which it kills
+        # before exiting. SIGKILL here would prevent that cleanup.
         with contextlib.suppress(ProcessLookupError):
-            os.killpg(child.pid, signal.SIGKILL)
-    with contextlib.suppress(Exception):
-        child.wait(timeout=5)
+            os.killpg(child.pid, signal.SIGTERM)
+    # Signal handlers must not wait here: they can interrupt Popen.wait()
+    # while its internal lock is held. run_command's finally reaps the child.
 
 
 def run_command(argv: list[str], *, capture: bool = False) -> str:
@@ -172,11 +204,12 @@ def run_command(argv: list[str], *, capture: bool = False) -> str:
         _job = _windows_job()
     # A separate supervisor survives a SIGKILL of this worker long enough to
     # reap the installer's process group. Windows uses kill-on-close jobs.
-    command = [sys.executable, "-I", str(Path(__file__).resolve()), "--execute", json.dumps(argv)] if os.name != "nt" else argv
+    command = [sys.executable, "-I", str(Path(__file__).resolve()), "--execute", json.dumps(argv)]
     child = subprocess.Popen(command, stdout=subprocess.PIPE if capture else sys.stderr, stderr=sys.stderr,
+                             stdin=subprocess.PIPE if os.name == "nt" else subprocess.DEVNULL,
                              start_new_session=os.name != "nt")
     _active = child
-    deadline = threading.Timer(60, terminate_active) if capture else None
+    deadline = threading.Timer(60, lambda: terminate_active() if _active is child else None) if capture else None
     if deadline is not None:
         deadline.start()
     try:
@@ -186,6 +219,10 @@ def run_command(argv: list[str], *, capture: bool = False) -> str:
             if not kernel.AssignProcessToJobObject(handle, int(child._handle)):
                 child.kill()
                 raise ctypes.WinError(ctypes.get_last_error())
+            # The supervisor cannot start an installer before its job has
+            # been assigned; even a fast-spawning descendant inherits it.
+            child.stdin.write(b"start\n")
+            child.stdin.close()
         if capture:
             # Verification emits only a version. Bound output before retaining it.
             data = child.stdout.read(4097)
@@ -201,20 +238,47 @@ def run_command(argv: list[str], *, capture: bool = False) -> str:
     finally:
         if deadline is not None:
             deadline.cancel()
+            deadline.join()
         terminate_active()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=5)
         _active = None
 
 
 def supervise(argv: list[str]) -> int:
     """POSIX installer group: parent death also stops grandchildren after SIGKILL."""
+    if os.name == "nt":
+        # EOF means the worker died before assigning this process to its job.
+        if sys.stdin.buffer.readline() != b"start\n":
+            return 1
+        return subprocess.call(argv, stdin=subprocess.DEVNULL)
     parent = os.getppid()
+    child = None
+    stopped = threading.Event()
+    def stop(_signum=None, _frame=None):
+        stopped.set()
+        if child is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(child.pid, signal.SIGKILL)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
     def watch():
-        while True:
-            time.sleep(0.1)
+        while not stopped.wait(0.1):
             if os.getppid() != parent:
-                os.killpg(os.getpid(), signal.SIGKILL)
+                stop()
     threading.Thread(target=watch, daemon=True).start()
-    return subprocess.call(argv)
+    try:
+        child = subprocess.Popen(argv, start_new_session=True, stdin=subprocess.DEVNULL)
+        if stopped.is_set():
+            stop()
+        return child.wait()
+    finally:
+        # A successful installer can otherwise leave background descendants
+        # modifying an environment after it has been published.
+        stop()
 
 
 def build_generation(generation: Path, request: dict, extras: list[str]) -> str:
@@ -226,7 +290,7 @@ def build_generation(generation: Path, request: dict, extras: list[str]) -> str:
     python = generation / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     pip = [uv, "pip", "install", "--python", str(python)] if uv else [str(python), "-m", "pip", "install"]
     run_command([*pip, *requirement(request["installSource"], extras, request["local"])])
-    imports = "import agent_trajviz, agent_trajviz.llm; "
+    imports = "import agent_trajviz, agent_trajviz.llm, plotly; "
     if "app" in extras:
         imports += "import gradio; "
     return run_command([str(python), "-I", "-c", imports + 'import importlib.metadata as m; print(m.version("agent-trajviz"))'], capture=True)
@@ -239,12 +303,14 @@ def setup(request: dict, *, builder=build_generation) -> dict:
         match = re.fullmatch(r"(.*?)(?:\[([^\]]*)\])?", source, re.DOTALL)
         source = str(Path(match[1]).expanduser().resolve()) + ("[" + match[2] + "]" if match[2] else "")
     request = {**request, "installSource": source}
+    own = source_parts(source, request["local"])[1]
+    source_extras = [value.strip().lower() for value in (own or "").split(",") if value.strip()]
     identity = {"source": source, "python": request.get("pythonOption", ""), "revision": REVISION}
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
     folder = cache / "envs" / key
     with install_lock(cache / "install.lock", request.get("lockWaitSeconds", LOCK_WAIT_S)):
         old = load_state(folder / "state.json", request)
-        extras = list(dict.fromkeys([*BASE_EXTRAS, *(old["extras"] if old else []), *request.get("extras", [])]))
+        extras = list(dict.fromkeys([*BASE_EXTRAS, *(old["extras"] if old else []), *source_extras, *request.get("extras", [])]))
         if old and set(extras) <= set(old["extras"]):
             atomic_json(cache / "state.json", old)
             return old
@@ -270,7 +336,7 @@ def setup(request: dict, *, builder=build_generation) -> dict:
 
 
 def main() -> int:
-    if len(sys.argv) == 3 and sys.argv[1] == "--execute" and os.name != "nt":
+    if len(sys.argv) == 3 and sys.argv[1] == "--execute":
         return supervise(json.loads(sys.argv[2]))
     parser = argparse.ArgumentParser()
     parser.add_argument("--request", required=True)

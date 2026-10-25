@@ -10,6 +10,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("trajviz_obs_bootstrap", Path(__file__).resolve().parents[1] / "bootstrap.py")
 b = importlib.util.module_from_spec(spec)
@@ -85,6 +86,58 @@ class BootstrapTests(unittest.TestCase):
         self.assertTrue(Path(first["python"]).is_file())
         self.assertEqual(len(list((self.cache / "envs").glob("*/*/Scripts" if os.name == "nt" else "*/*/bin"))), 1)
 
+    def test_invalid_metadata_rebuilds_without_mutating_old_generation(self):
+        first = b.setup(request(self.cache), builder=fake_builder)
+        metadata = Path(first["python"]).parent.parent.parent / "state.json"
+        external = self.cache / "external-python"
+        external.write_text("unrelated")
+        invalid = [{"python": str(external)}, {"extras": ["llm"]}, {"trajviz": None},
+                   {"createdAt": float("inf")}, {"sourceCwd": "/wrong/working-directory"}]
+        for change in invalid:
+            metadata.write_text(json.dumps({**first, **change}))
+            rebuilt = b.setup(request(self.cache), builder=fake_builder)
+            self.assertNotEqual(rebuilt["python"], first["python"])
+            self.assertEqual(Path(first["python"]).read_text(), "ready")
+        self.assertEqual(external.read_text(), "unrelated")
+
+    def test_metadata_cannot_redirect_generation_directory_through_symlink(self):
+        first = b.setup(request(self.cache), builder=fake_builder)
+        generation = Path(first["python"]).parent.parent
+        elsewhere = self.cache / "elsewhere"
+        generation.rename(elsewhere)
+        try:
+            generation.symlink_to(elsewhere, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"Directory symlinks unavailable: {exc}")
+        rebuilt = b.setup(request(self.cache), builder=fake_builder)
+        self.assertNotEqual(rebuilt["python"], first["python"])
+        self.assertTrue((elsewhere / ("Scripts/python.exe" if os.name == "nt" else "bin/python")).is_file())
+
+    def test_relative_checkout_metadata_requires_its_original_working_directory(self):
+        req = {**request(self.cache, "./checkout"), "local": True}
+        first = b.setup(req, builder=fake_builder)
+        self.assertEqual(first["sourceCwd"], str(Path.cwd()))
+        metadata = Path(first["python"]).parent.parent.parent / "state.json"
+        missing = {key: value for key, value in first.items() if key != "sourceCwd"}
+        metadata.write_text(json.dumps(missing))
+        rebuilt = b.setup(req, builder=fake_builder)
+        self.assertNotEqual(rebuilt["python"], first["python"])
+        other = self.cache / "other"
+        other.mkdir()
+        with b.contextlib.chdir(other):
+            different = b.setup(req, builder=fake_builder)
+        self.assertNotEqual(different["python"], rebuilt["python"])
+
+    def test_transient_metadata_permission_errors_retry_but_corrupt_json_does_not(self):
+        path = self.cache / "state.json"
+        with patch.object(Path, "read_text", side_effect=[PermissionError("sharing"), PermissionError("sharing"), '{"n":1}']) as read:
+            self.assertEqual(b.read_json(path), {"n": 1})
+            self.assertEqual(read.call_count, 3)
+        with patch.object(Path, "read_text", return_value="{bad") as read:
+            with self.assertRaises(ValueError):
+                b.read_json(path)
+            self.assertEqual(read.call_count, 1)
+
     def test_killed_owner_releases_os_lock_and_wait_is_bounded(self):
         ctx = multiprocessing.get_context("spawn")
         queue = ctx.Queue()
@@ -127,6 +180,46 @@ class BootstrapTests(unittest.TestCase):
                     proc.wait()
                 proc.stderr.close()
 
+    def test_completed_installer_cannot_leave_background_descendants(self):
+        heartbeat = self.cache / "completed-heartbeat"
+        pidfile = self.cache / "completed-pid"
+        code = "from pathlib import Path;import time;p=Path(" + repr(str(heartbeat)) + ");\nwhile True:p.write_text(str(time.time()));time.sleep(0.05)"
+        script = self.cache / "completed-installer.py"
+        script.write_text("import subprocess,sys,time\nfrom pathlib import Path\np=subprocess.Popen([sys.executable,'-c'," + repr(code) + "])\nPath(" + repr(str(pidfile)) + ").write_text(str(p.pid))\nwhile not Path(" + repr(str(heartbeat)) + ").exists():time.sleep(0.01)\n")
+        completed = False
+        try:
+            b.run_command([sys.executable, str(script)])
+            time.sleep(0.15)
+            stopped = heartbeat.read_text()
+            time.sleep(0.2)
+            self.assertEqual(heartbeat.read_text(), stopped)
+            completed = True
+        finally:
+            if not completed and pidfile.exists():
+                # Cleanup also protects the test host if the regression returns.
+                import signal
+                with b.contextlib.suppress(OSError):
+                    os.kill(int(pidfile.read_text()), signal.SIGTERM)
+
+    @unittest.skipUnless(os.name == "nt", "Native Windows job-assignment handshake")
+    def test_windows_supervisor_waits_for_job_assignment(self):
+        marker = self.cache / "installer-started"
+        argv = [sys.executable, "-c", "from pathlib import Path;Path(" + repr(str(marker)) + ").write_text('started')"]
+        child = subprocess.Popen([sys.executable, "-I", str(Path(b.__file__).resolve()), "--execute", json.dumps(argv)],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            time.sleep(0.2)
+            self.assertFalse(marker.exists())
+            child.stdin.close()
+            child.wait(timeout=5)
+            self.assertNotEqual(child.returncode, 0)
+            self.assertFalse(marker.exists())
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+            child.stdout.close()
+            child.stderr.close()
 
     def test_metadata_readers_never_observe_partial_json(self):
         path = self.cache / "state.json"
@@ -135,7 +228,7 @@ class BootstrapTests(unittest.TestCase):
         def read():
             while not stop.is_set():
                 try:
-                    json.loads(path.read_text())
+                    b.read_json(path)
                 except (OSError, ValueError) as exc:
                     failures.append(str(exc))
         reader = threading.Thread(target=read)
@@ -152,6 +245,18 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(b.requirement("agent-trajviz[app]>=0.2", ["llm", "charts"], False), ["agent-trajviz[app,llm,charts]>=0.2"])
         self.assertEqual(b.requirement("/tmp/my checkout", ["llm", "charts"], True), ["-e", "/tmp/my checkout[llm,charts]"])
         self.assertEqual(b.requirement("git+https://example.test/a.git", ["llm"], False), ["agent-trajviz[llm] @ git+https://example.test/a.git"])
+        self.assertEqual(b.requirement("agent-trajviz", [], False), ["agent-trajviz"])
+        self.assertEqual(b.requirement('agent-trajviz; python_version >= "3.11"', ["llm"], False), ['agent-trajviz[llm]; python_version >= "3.11"'])
+
+    def test_source_extras_are_recorded_and_reused(self):
+        for source, local in [("agent-trajviz[App]>=0.2", False),
+                              ("agent-trajviz[app] @ https://example.test/a.whl", False),
+                              (str(self.cache / "local checkout") + "[app]", True)]:
+            req = {**request(self.cache, source), "local": local}
+            first = b.setup(req, builder=fake_builder)
+            self.assertIn("app", first["extras"])
+            again = b.setup({**req, "extras": ["app"]}, builder=fake_builder)
+            self.assertEqual(again["python"], first["python"])
 
 
 if __name__ == "__main__":

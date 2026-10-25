@@ -5,9 +5,10 @@
 // into one); state is reached only through the functions in state.ts.
 import type { EngineInterface } from 'claude-code'
 import type { SessionState } from '../../types'
-import { runBridge } from './bridge'
+import { BridgeError, runBridge } from './bridge'
 import { configDir, projectSlug } from './paths'
-import { readSession, stampRefresh, updateSession, writeLatest } from './state'
+import { invalidatePublication, lockPublication, publicationGeneration } from './publication'
+import { readFlags, readSession, stampRefresh, updateSession, writeLatest } from './state'
 
 /** A transcript to analyze: its path and the session id it belongs to. */
 export type Transcript = { path: string; sessionId: string }
@@ -52,13 +53,23 @@ export async function resolveTranscript($: EngineInterface, spec?: string): Prom
  * Records the session the person named last with `--session` (null: the
  * current one), which the pane, the status line and the `obs` tool read.
  */
-export async function selectSession($: EngineInterface, sel: SessionState['selected']): Promise<void> {
-  const previous = await readSession($)
-  await updateSession($, s => ({ ...s, selected: sel }))
-  if (previous.selected?.path !== sel?.path) {
-    await writeLatest($, null)
-    await stampRefresh($, { lastRunAt: 0, lastDurationMs: 0, lastSize: 0, lastMtimeMs: 0 })
-  }
+export async function selectSession($: EngineInterface, sel: SessionState['selected'], generation?: number): Promise<number> {
+  const release = await lockPublication()
+  try {
+    if (generation !== undefined && generation !== publicationGeneration()) throw new BridgeError('session_changed', 'The selected session changed during analysis; run /obs again.')
+    const previous = await readSession($)
+    await updateSession($, s => ({ ...s, selected: sel }))
+    if (previous.selected?.path !== sel?.path) await invalidateSession($)
+    return publicationGeneration()
+  } finally { release() }
+}
+
+/** Clears the previous session's live data and invalidates an in-flight bridge reply. */
+async function invalidateSession($: EngineInterface): Promise<void> {
+  invalidatePublication()
+  await writeLatest($, null)
+  await stampRefresh($, { lastRunAt: 0, lastDurationMs: 0, lastSize: 0, lastMtimeMs: 0 })
+  if ((await readFlags($)).statusline) $.ui.status(undefined)
 }
 
 /**
@@ -68,10 +79,10 @@ export async function selectSession($: EngineInterface, sel: SessionState['selec
  */
 export async function rememberTranscript($: EngineInterface, e: { readonly transcript_path: string; readonly session_id: string }): Promise<void> {
   if (!e.transcript_path) return
-  const previous = await readSession($)
-  await updateSession($, s => ({ ...s, transcriptPath: e.transcript_path, sessionId: e.session_id }))
-  if (previous.transcriptPath && previous.transcriptPath !== e.transcript_path && !previous.selected) {
-    await writeLatest($, null)
-    await stampRefresh($, { lastRunAt: 0, lastDurationMs: 0, lastSize: 0, lastMtimeMs: 0 })
-  }
+  const release = await lockPublication()
+  try {
+    const previous = await readSession($)
+    await updateSession($, s => ({ ...s, transcriptPath: e.transcript_path, sessionId: e.session_id }))
+    if (previous.transcriptPath !== e.transcript_path && !previous.selected) await invalidateSession($)
+  } finally { release() }
 }

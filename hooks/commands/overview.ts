@@ -2,7 +2,7 @@ import type { CommandRunResult, EngineInterface } from 'claude-code'
 import { BridgeError } from '../lib/bridge'
 import { artifactsDir } from '../lib/paths'
 import { isProcessWithheld } from '../lib/python'
-import { isEmpty, provenanceLine, storeSnapshot, takeSnapshot } from '../lib/snapshot'
+import { captureSnapshot, isEmpty, provenanceLine } from '../lib/snapshot'
 import type { CommandContext } from './index'
 import { maybeOpenPane } from './pane'
 
@@ -58,13 +58,13 @@ export function errorRow(e: unknown, spec?: string): string {
 export async function overview($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
   const spec = sessionSpec(ctx)
   let snap
+  let id
   try {
-    snap = await takeSnapshot($, ctx.options, spec)
+    ;({ snap, id } = await captureSnapshot($, ctx.options, spec))
   } catch (e) {
     return { text: errorRow(e, spec) }
   }
   if (isEmpty(snap)) return { text: EMPTY_TEXT }
-  const id = await storeSnapshot($, snap)
   const at = new Date(snap.generated_at)
   const text = `${provenanceLine(id, snap, Number.isNaN(at.getTime()) ? new Date() : at)}\n${snap.text}`
   await maybeOpenPane($, ctx)

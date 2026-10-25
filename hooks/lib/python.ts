@@ -4,8 +4,8 @@
 // installed so a setup is decided without running pip. Every helper taking
 // `$` is a function declaration (validate follows `$` into one); the
 // environment is read only through paths.ts, whose env names are literals.
-import type { EngineInterface, PluginOptions, ProcessSpawnChunk } from 'claude-code'
-import { cacheRoot } from './paths'
+import type { EngineInterface, PluginOptions } from 'claude-code'
+import { cacheRoot, isWindows } from './paths'
 import { readSession, updateSession } from './state'
 
 /** The manifest's default `trajvizSource`. */
@@ -19,6 +19,9 @@ const MIN_MINOR = 11
 
 /** `--version` probes, and the version read-back after an install. */
 const PROBE_TIMEOUT_MS = 10_000
+const BOOTSTRAP_TIMEOUT_MS = 600_000
+/** Includes host Python discovery/download, lock waiting, installation and verification. */
+export const SETUP_TIMEOUT_MS = BOOTSTRAP_TIMEOUT_MS + PROBE_TIMEOUT_MS * (PYTHON_CANDIDATES.length + 2)
 /** Rebuild older environments that omitted the chart imports required by TrajViz's LLM renderer. */
 export const ENV_REVISION = 4
 const BASE_EXTRAS: readonly string[] = ['llm', 'charts']
@@ -144,21 +147,63 @@ export async function statePath($: EngineInterface): Promise<string> {
 /** The recorded environment, null when `state.json` is missing or not an EnvState. */
 export async function readEnvState($: EngineInterface): Promise<EnvState | null> {
   const pinned = (await readSession($)).environment
-  if (pinned && isEnvState(pinned) && (await $.fs.exists(pinned.python))) return pinned
+  if (pinned && isEnvState(pinned) && await usableState($, pinned)) return pinned
   let text: string
   try {
-    text = await $.fs.read(await statePath($))
+    const path = await statePath($)
+    for (let attempt = 0; ; attempt++) {
+      try { text = await $.fs.read(path); break } catch (e) {
+        if (attempt >= 10 || !(e instanceof Error) || !/EACCES|EPERM|EBUSY|permission denied|sharing violation|access is denied|being used by another process/i.test(e.message)) throw e
+        await $.clock.sleep(20)
+      }
+    }
   } catch {
     return null
   }
   try {
     const v: unknown = JSON.parse(text)
-    if (!isEnvState(v) || !(await $.fs.exists(v.python))) return null
-    if (v.sourceCwd !== undefined && v.sourceCwd !== await $.session.cwd()) return null
+    if (!isEnvState(v) || !await usableState($, v)) return null
     return pinEnv($, v)
   } catch {
     return null
   }
+}
+
+/** Fold path spellings for comparison without resolving the venv's Python symlink. */
+function normalizedPath(path: string): string {
+  const slash = path.replace(/\\/g, '/')
+  const parts: string[] = []
+  for (const part of slash.split('/')) {
+    if (!part || part === '.') continue
+    if (part === '..' && parts.length && parts[parts.length - 1] !== '..') parts.pop()
+    else if (part !== '.') parts.push(part)
+  }
+  return `${slash.startsWith('/') ? '/' : ''}${parts.join('/')}`
+}
+
+/** Metadata may name only an immutable generation belonging to this cache. */
+async function usableState($: EngineInterface, state: EnvState): Promise<boolean> {
+  const insensitive = await isWindows($)
+  const localBase = PATH_EXTRAS.exec(state.source)?.[1] ?? state.source
+  const relative = isLocalPath(state.source) && !/^~(?:[\\/]|$)/.test(localBase) && !(insensitive ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/ : /^\//).test(localBase)
+  if (relative && state.sourceCwd === undefined) return false
+  if (state.sourceCwd !== undefined && state.sourceCwd !== await $.session.cwd()) {
+    const cwd = await $.fs.stat(await $.session.cwd(), { resolve: true }).catch(() => undefined)
+    if (cwd?.realPath !== state.sourceCwd) return false
+  }
+  const python = state.python.replace(/\\/g, '/')
+  const match = /^(.*)\/envs\/[0-9a-f]{24}\/[0-9a-f]{32}\/(?:bin\/python|Scripts\/python\.exe)$/.exec(python)
+  if (!match || /(?:^|\/)\.\.(?:\/|$)/.test(python) || !(insensitive ? python.endsWith('/Scripts/python.exe') : python.endsWith('/bin/python'))) return false
+  let root = await cacheRoot($)
+  if (!/^(?:[A-Za-z]:[\\/]|[\\/])/.test(root)) root = `${await $.session.cwd()}/${root}`
+  const same = (a: string, b: string): boolean => insensitive ? normalizedPath(a).toLowerCase() === normalizedPath(b).toLowerCase() : normalizedPath(a) === normalizedPath(b)
+  if (!same(match[1]!, root)) {
+    // macOS /tmp, symlinked HOME/cache roots, and Windows aliases can resolve
+    // differently in pathlib; only ask for canonicalization when needed.
+    const canonical = await $.fs.stat(root, { resolve: true }).catch(() => undefined)
+    if (!canonical?.realPath || !same(match[1]!, canonical.realPath)) return false
+  }
+  return $.fs.exists(state.python)
 }
 
 function isEnvState(v: unknown): v is EnvState {
@@ -179,7 +224,7 @@ function isEnvState(v: unknown): v is EnvState {
 
 /** Whether the source, interpreter option or installer layout changed. */
 export function needsSetup(state: EnvState | null, options: PluginOptions): boolean {
-  return state === null || state.revision !== ENV_REVISION || state.source !== trajvizSource(options) || (state.pythonOption ?? '') !== pythonOverride(options)
+  return state === null || state.revision !== ENV_REVISION || !state.trajviz?.trim() || !BASE_EXTRAS.every(extra => state.extras.includes(extra)) || state.source !== trajvizSource(options) || (state.pythonOption ?? '') !== pythonOverride(options)
 }
 
 /** Pins the immutable interpreter to this Claude session, independent of other sessions' latest pointer. */
@@ -245,18 +290,20 @@ export async function findPython(
 }
 
 /** The bootstrap emits progress on stderr and one bounded state document on stdout. */
-async function runBootstrap($: EngineInterface, argv: readonly string[], report: (line: string) => void): Promise<EnvState> {
+async function runBootstrap($: EngineInterface, argv: readonly string[], options: PluginOptions, extras: readonly string[], report: (line: string) => void): Promise<EnvState> {
   let stdout = '', pending = '', last = ''
   const emit = (line: string): void => {
     const text = line.slice(-4096).replace(/\r$/, '')
     if (text.trim()) { last = text; report(text) }
   }
   const child = $.process.spawn({ argv, cwd: await $.session.cwd() })
+  const timer = new AbortController()
+  const expired = $.clock.sleep(BOOTSTRAP_TIMEOUT_MS, { signal: timer.signal }).then(() => { throw new Error('obs setup: installation exceeded 10 minutes; try /obs again.') })
   let code: number | null = null
   let done = false
   try {
     for (;;) {
-      const chunk = await child.next()
+      const chunk = await Promise.race([child.next(), expired])
       if (chunk.done) { code = chunk.value.code; done = true; break }
       if (chunk.value.stream === 'stdout') {
         if (stdout.length + chunk.value.text.length > 65_536) throw new Error('obs setup: bootstrap output exceeded 64 KB.')
@@ -268,6 +315,7 @@ async function runBootstrap($: EngineInterface, argv: readonly string[], report:
       }
     }
   } finally {
+    timer.abort()
     if (!done) {
       try { await child.return({ code: null, signal: null }) } catch { /* Preserve the setup failure. */ }
     }
@@ -277,7 +325,7 @@ async function runBootstrap($: EngineInterface, argv: readonly string[], report:
   try { result = JSON.parse(stdout) } catch { /* Report malformed output below. */ }
   const error = typeof result === 'object' && result !== null && 'error' in result ? (result as { error?: { message?: unknown } }).error : undefined
   if (code !== 0 || error) throw new Error(`obs setup: ${typeof error?.message === 'string' ? error.message : `bootstrap exited with ${code ?? 'a signal'}${last ? `: ${last}` : ''}`}`)
-  if (!isEnvState(result) || result.revision !== ENV_REVISION || !(await $.fs.exists(result.python))) throw new Error('obs setup: bootstrap returned an invalid environment document.')
+  if (!isEnvState(result) || needsSetup(result, options) || !extras.every(extra => result.extras.includes(extra)) || !await usableState($, result)) throw new Error('obs setup: bootstrap returned an invalid environment document.')
   return pinEnv($, result)
 }
 
@@ -296,7 +344,7 @@ async function setupEnvironment($: EngineInterface, options: PluginOptions, extr
   const source = trajvizSource(options)
   const request = { cache: await cacheRoot($), source, installSource: await expandHome($, source), local: isLocalPath(source), pythonOption: override, uv, extras }
   command.push(`${$.plugin.root}/bridge/bootstrap.py`, '--request', JSON.stringify(request))
-  return runBootstrap($, command, report)
+  return runBootstrap($, command, options, extras, report)
 }
 
 /** Reuses a ready immutable interpreter without spawning, otherwise asks the locked worker to build or find one. */

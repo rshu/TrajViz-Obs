@@ -104,9 +104,15 @@ def validate_report(path: Path) -> dict:
     return {'path': str(path), 'bytes': path.stat().st_size, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
+def feature_replies(artifacts: Path, feature: str) -> dict:
+    paths = list(artifacts.glob(f'replies-{feature}-*.json'))
+    require(len(paths) == 1, f'Expected exactly one {feature} reply artifact, found {len(paths)}')
+    return json_object(paths[0])
+
+
 def validate_analysis(artifacts: Path, text: str) -> dict:
     require(re.search(r'(?mi)^usage: .* input .* output tokens', text), 'Analysis usage summary is missing')
-    replies = json_object(artifacts / 'replies-analyze.json')
+    replies = feature_replies(artifacts, 'analyze')
     require(isinstance(replies.get('hash'), str) and len(replies['hash']) == 64, 'Analysis has no prompt hash')
     rows = replies.get('replies', [])
     require(len(rows) == 1 and isinstance(rows[0].get('text'), str) and rows[0]['text'].strip()
@@ -122,7 +128,7 @@ def validate_feature_reply(artifacts: Path, feature: str, text: str) -> dict:
     require(re.search(r'(?mi)^usage: .* input .* output tokens', text), f'{feature} usage summary missing')
     require(re.search(rf'(?m)^(?:trajviz-obs: )?{feature}: 1 call\b', text), f'{feature} planned more than one call')
     require(not re.search(r'(?mi)^Errors:|stale_prompts|Cancelled:', text), f'{feature} reported a failure: {text}')
-    replies = json_object(artifacts / f'replies-{feature}.json')
+    replies = feature_replies(artifacts, feature)
     require(isinstance(replies.get('hash'), str) and len(replies['hash']) == 64, f'{feature} prompt hash missing')
     rows = replies.get('replies', [])
     require(len(rows) == 1 and isinstance(rows[0].get('text'), str) and rows[0]['text'].strip()
@@ -236,6 +242,53 @@ def validate_http(url: str, timeout: float = 20) -> dict:
     raise AssertionError(f'Dashboard did not become healthy: {url}: {last_error}')
 
 
+def exercise_command_matrix(turn, output: Path, session_id: str) -> dict:
+    """Exercise native routing and validation without additional model calls."""
+    index = json_object(output / 'export' / 'index.json')
+    saved = output / 'saved-native.jsonl'
+    saved.write_bytes((ROOT / 'bridge/tests/fixtures/native_claude_code/django__django-11477.jsonl').read_bytes())
+    for row in index['views']:
+        vid = row['id']
+        turn(f'/obs view {vid} --limit 2 --offset 1 --json', f'native view {vid}',
+             expected=rf'^obs view {re.escape(vid)} · ')
+    commands = [
+        ('/obs help', r'^/obs \[subcommand\]'),
+        ('/obs view', r'\d+ TrajViz views'),
+        ('/obs issues --limit 1', r'^obs view issues'),
+        ('/obs patterns', r'^obs view '), ('/obs agents', r'^obs view agents'),
+        ('/obs context', r'^obs view context_pressure'), ('/obs timeline', r'^obs view '),
+        ('/obs view context_usage agent=main window_limit=100000', r'^obs view context_usage'),
+        ('/obs sessions 5', re.escape(session_id)),
+        (f'/obs --session {session_id[:8]}', r'obs snapshot \d+'),
+        (f'/obs --session "{output / "export/trajectory.json"}"', r'obs snapshot \d+'),
+        (f'/obs --session "{saved}"', r'\b23 assistant steps\b'),
+        ('/obs', r'obs snapshot \d+'),
+        ('/obs pane', r'obs pane (?:opened|is open but not drawn)'),
+        ('/obs watch off', r'obs: watch off'), ('/obs watch on', r'obs: watch on'),
+        ('/obs statusline on', r'obs: statusline on'), ('/obs statusline off', r'obs: statusline off'),
+        ('/obs pane close', r'obs pane closed'),
+        (f'/obs schemas "{output / "schemas"}"', r'JSON Schemas of \d+ views'),
+        (f'/obs bundle -o "{output / "session.zip"}"', r'Bundle of \d+ files?'),
+        (f'/obs compare "{output / "export/trajectory.json"}" --reverse --fuzzy-commands', r'Comparison: reference'),
+        (f'/obs scorecard "{output / "export/trajectory.json"}" --labels live,export', r'Scorecard views written'),
+        ('/obs collect --version', r'agent-trajviz-collect \d'),
+        ('/obs collect cursor --help', r'usage:'),
+        ('/obs attribution', r'DECAF|not available|unavailable'),
+        ('/obs health --limit 0', r'limit.*(?:1|500)'),
+        ('/obs view missing_view', r'No view'),
+        ('/obs view health nonsense=x', r'No option'),
+        ('/obs report --out', r'needs an output path'),
+        ('/obs doctor unexpected', r'Unexpected arguments|Usage:'),
+        ('/obs health --unexpected', r'Unknown option'),
+        ('/obs --session', r'--session needs'),
+    ]
+    for command, expected in commands:
+        turn(command, 'native command ' + command, expected=expected)
+    require((output / 'session.zip').is_file(), 'Native bundle export missing')
+    require((output / 'schemas/health.schema.json').is_file(), 'Native schemas export missing')
+    return {'views': len(index['views']), 'additional_commands': len(commands)}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -247,6 +300,7 @@ def main() -> None:
     parser.add_argument('--test-obs-tool', action='store_true', help='Additional paid turn using the plugin tool')
     parser.add_argument('--test-llm-all', action='store_true', help='Also exercise one fixes and one label model call')
     parser.add_argument('--test-subagent', action='store_true', help='Spawn one real native subagent and verify merging')
+    parser.add_argument('--test-command-matrix', action='store_true', help='Exercise all views, commands and invalid inputs')
     parser.add_argument('--budget', default='5')
     args = parser.parse_args()
     if args.test_llm_all and args.skip_llm:
@@ -279,7 +333,8 @@ def main() -> None:
                     'commands': [], 'checks': [], 'output': str(output), 'cache': str(cache), 'status': 'running',
                     'coverage': {'report': not args.skip_report, 'analysis': not args.skip_llm,
                                  'dashboards': not args.skip_dashboard, 'model_obs_tool': args.test_obs_tool,
-                                 'fixes': args.test_llm_all, 'label': args.test_llm_all, 'subagents': args.test_subagent}}
+                                 'fixes': args.test_llm_all, 'label': args.test_llm_all, 'subagents': args.test_subagent,
+                                 'command_matrix': args.test_command_matrix}}
     ports: set[int] = set()
     with (output / 'stderr.log').open('w') as stderr, (output / 'events.jsonl').open('w') as raw:
         process = subprocess.Popen(argv, cwd=work, env=env, stdin=subprocess.PIPE,
@@ -350,7 +405,9 @@ def main() -> None:
                     if prompt.startswith('/obs'):
                         require(any(item.get('local_command_run', {}).get('command') == 'obs' for item in received),
                                 f'{label} did not execute the plugin local command')
-                        require(expected is not None and re.search(expected, row['result'], re.IGNORECASE | re.MULTILINE),
+                        # The host prefixes local-command text with the plugin name on some surfaces.
+                        command_text = re.sub(r'(?m)^trajviz-obs: ', '', row['result'])
+                        require(expected is not None and re.search(expected, command_text, re.IGNORECASE | re.MULTILINE),
                                 f'{label}: unexpected output (is_error alone is insufficient): {row["result"]}')
                     row['status'] = 'output-validated'
                     print(f'Validated {label}: {str(row["result"])[:180]}', flush=True)
@@ -385,6 +442,9 @@ Use the tools to do this work; do not merely describe commands.'''
             if subagent is not None:
                 check('native subagent snapshot, merge, and sibling transcript',
                       lambda: validate_subagents(output / 'export', subagent['events'], overview['result']))
+            if args.test_command_matrix:
+                check('native command and view matrix',
+                      lambda: exercise_command_matrix(turn, output, ledger['session_id']))
             extras = ['charts'] if not args.skip_report else []
             if not args.skip_dashboard:
                 extras.append('app')

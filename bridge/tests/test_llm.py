@@ -141,6 +141,18 @@ def test_analyze_history_round_trip(fixture_run, fixture_session, tmp_artifacts)
     assert second["hash"] != first["hash"]
 
 
+@pytest.mark.parametrize("message", [None, "old answer", {"role": [], "content": "text"},
+                                     {"role": "system", "content": "text"}, {"role": "user", "content": {}}])
+def test_malformed_history_is_rejected_before_prompt_planning(message, fixture_session, tmp_artifacts, run_cli):
+    history = tmp_artifacts / "analyze.json"
+    original = json.dumps({"history": [message]})
+    history.write_text(original)
+    code, result = run_cli(["llm-prompt", "--transcript", str(fixture_session), "--artifacts", str(tmp_artifacts),
+                            "--feature", "analyze"])
+    assert code == 1 and result["error"]["code"] == "bad_history"
+    assert history.read_text() == original and not (tmp_artifacts / "prompts-analyze.json").exists()
+
+
 def test_label_capture_and_apply(fixture_run, fixture_session, tmp_artifacts):
     p = plan_prompts(fixture_run, "label", **_opts(fixture_session))
     assert 0 < p["plan"]["calls"] <= 50 and p["prompts"][0]["max_tokens"] == 1024

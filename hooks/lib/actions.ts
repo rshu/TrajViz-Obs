@@ -1,5 +1,4 @@
 import type { CommandRunResult, EngineInterface } from 'claude-code'
-import type { Snapshot } from '../../types'
 import { derivedTranscriptPath, selectSession } from './session'
 import { readSession } from './state'
 
@@ -13,7 +12,7 @@ function quoteArgument(value: string): string {
  * session keeps a plain command so its live engine context window is used;
  * another session, including a card retained across /clear, names its path.
  */
-export async function runSnapshotCommand($: EngineInterface, snap: Snapshot, command: string): Promise<CommandRunResult> {
+export async function runSnapshotCommand($: EngineInterface, snap: { transcript: { path: string } }, command: string): Promise<CommandRunResult> {
   const session = await readSession($)
   const current = session.transcriptPath ?? await derivedTranscriptPath($, await $.session.cwd(), await $.session.id())
   const isCurrent = snap.transcript.path === current
@@ -22,4 +21,10 @@ export async function runSnapshotCommand($: EngineInterface, snap: Snapshot, com
   if (isCurrent && session.selected !== null) await selectSession($, null)
   const args = isCurrent ? command : `${command} --session ${quoteArgument(snap.transcript.path)}`
   return $.command.run({ command: 'obs', args })
+}
+
+/** A pane awaiting its first snapshot still applies actions to its selected session. */
+export async function runSelectedCommand($: EngineInterface, command: string): Promise<CommandRunResult> {
+  const selected = (await readSession($)).selected
+  return $.command.run({ command: 'obs', args: selected ? `${command} --session ${quoteArgument(selected.path)}` : command })
 }

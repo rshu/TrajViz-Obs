@@ -14,6 +14,7 @@ const PROMPT_TIMEOUT_MS = 120_000
 const APPLY_TIMEOUT_MS = 600_000
 /** Env mode's `ask` and `fixes` make one request each; `label` (one per step) is spawned with no deadline. */
 const DIRECT_TIMEOUT_MS = 600_000
+let repliesSequence = 0
 
 /** The most issues the fix judge takes (the bridge's `FIXES_CAP`). */
 export const FIXES_CAP = 8
@@ -146,7 +147,7 @@ async function viaSession($: EngineInterface, ctx: CommandContext, req: Request,
   const cap = req.feature === 'label' && !interactive ? labelMaxSteps(ctx.options) : Number.POSITIVE_INFINITY
   const run = await runPlan($, plan, model, { confirm: interactive, cap })
   if (run === null) return `${line}\n${CANCELLED_TEXT}`
-  const repliesPath = `${await artifactsDir($, sessionId)}/replies-${req.feature}.json`
+  const repliesPath = `${await artifactsDir($, sessionId)}/replies-${req.feature}-${await $.clock.now()}-${++repliesSequence}.json`
   await $.fs.write(repliesPath, JSON.stringify({ hash: plan.hash, replies: run.replies }))
   const apply = ['llm-apply', ...session, '--feature', req.feature, '--replies', repliesPath, ...req.argv]
   if (req.feature === 'label') apply.push(...labelArgv(req, model))

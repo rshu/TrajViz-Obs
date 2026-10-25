@@ -3,7 +3,7 @@ import type { CommandContext } from './index'
 
 /** The grouped command table, under 30 lines. */
 export const HELP_TEXT = [
-  '/obs [subcommand] [options]  TrajViz observability for this session; every subcommand takes --session <id|path>',
+  '/obs [subcommand] [options]  TrajViz observability; session commands take --session <id|prefix|path>',
   'Look',
   '  overview (default)   health, KPIs, sparklines, top issues    pane | pane close   open/close the live pane',
   '  issues | health | patterns | agents | context | timeline   the pane\'s tabs inline [--limit N]',

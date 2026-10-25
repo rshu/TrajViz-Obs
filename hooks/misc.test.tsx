@@ -6,7 +6,7 @@ import { attributionText, doctorText, parseExtras, setupText, type DoctorDoc } f
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
-const VENV_PY = `${CACHE}/venv/bin/python`
+const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const ARTIFACTS = `${CACHE}/sessions/abc`
@@ -57,7 +57,7 @@ function host(on: On, world: World = {}): Host {
   const statuses: (string | undefined)[] = []
   const toasts: string[] = []
   const files: Record<string, string> = {}
-  if (world.extras !== null) files[STATE_PATH] = stateJson(world.extras ?? ['llm'])
+  if (world.extras !== null) files[STATE_PATH] = stateJson(world.extras ?? ['llm', 'charts'])
   const answers = answerOf(world.bridge ?? {}, world.commands ?? {})
   on('command.register', () => ({ value: { command: 'obs' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
@@ -92,7 +92,7 @@ function host(on: On, world: World = {}): Host {
     spawned.push([...e.argv])
     if (e.argv.some(a => a.endsWith('/bridge/bootstrap.py'))) {
       const req = JSON.parse(e.argv[e.argv.indexOf('--request') + 1] as string)
-      const state = { revision: 4, python: VENV_PY, pythonOption: req.pythonOption, trajviz: (world.commands?.[VENV_PY]?.stdout.trim() || '0.2.1'), extras: [...new Set(['llm', 'charts', ...req.extras])], source: req.source, createdAt: 1 }
+      const state = { revision: 4, python: VENV_PY, pythonOption: req.pythonOption, trajviz: (world.commands?.[VENV_PY]?.stdout.trim() || '0.2.1'), extras: [...new Set(['llm', 'charts', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
       files[STATE_PATH] = JSON.stringify(state)
 
       yield { stream: 'stderr' as const, text: 'Installed\n' }

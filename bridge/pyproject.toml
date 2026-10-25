@@ -1,13 +1,13 @@
 [project]
 name = "trajviz-obs-bridge"
-version = "0.1.0"
+version = "0.1.1"
 description = "TrajViz bridge for the /obs Claude Code plugin (JSON on stdout)."
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = ["agent-trajviz[all]>=0.2.0,<0.3"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5"]
+dev = ["pytest>=8", "ruff>=0.5", "jsonschema>=4.23,<5"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

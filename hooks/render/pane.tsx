@@ -9,7 +9,7 @@ import type { EngineInterface, PaneOpenArgs, PluginOptions, RenderElement, Rende
 import type { Dashboards, EmptySnapshot, Flags, Snapshot } from '../../types'
 import { EMPTY_TEXT } from '../commands/overview'
 import { refreshPane } from '../commands/pane'
-import { runSnapshotCommand } from '../lib/actions'
+import { runSelectedCommand, runSnapshotCommand } from '../lib/actions'
 import { fmtCompact, fmtInt, fmtPct, fmtSecs } from '../lib/format'
 import { isEmpty } from '../lib/snapshot'
 import { toggleWatch, writePaneTab } from '../lib/state'
@@ -149,7 +149,7 @@ function overviewBody(b: Body): RenderElement {
       {KpiRow({ els, snap, usage: usage ?? undefined, columns })}
       {seriesOf({ els, surface: e.surface, snap, columns })}
       {PhaseRibbon({ els, phases: snap.phases, total: snap.counts.records, columns })}
-      {IssuesList({ els, issues: snap.issues, limit: OVERVIEW_ISSUES })}
+      {IssuesList({ els, issues: snap.issues, limit: OVERVIEW_ISSUES, total: snap.counts.issues })}
       {WarningsLine({ els, warnings: snap.trajviz.warnings })}
     </Box>
   )
@@ -177,7 +177,7 @@ function issuesBody({ els, snap }: Body): RenderElement {
   const { Box, Text } = els
   return (
     <Box flexDirection="column" gap={1}>
-      {IssuesList({ els, issues: snap.issues, limit: snap.issues.length })}
+      {IssuesList({ els, issues: snap.issues, limit: snap.issues.length, total: snap.counts.issues })}
       {snap.bottlenecks.length ? (
         <Box flexDirection="column">
           <Text weight="semibold">Bottlenecks</Text>
@@ -326,8 +326,8 @@ export function renderPane(
       <Box flexDirection="row" flexWrap="wrap" gap={2}>
         <Button key="refresh" label="Refresh" hotkey="r" plain onPress={refresh} />
         <Button key="watch" label={`Watch ${flags.watch ? 'on' : 'off'}`} hotkey="w" plain onPress={watch} />
-        <Button key="report" label="Report" hotkey="o" plain onPress={() => snap !== null && !isEmpty(snap) ? runSnapshotCommand($, snap, 'report') : $.command.run({ command: 'obs', args: 'report' })} />
-        <Button key="dashboard" label="Dashboard" hotkey="d" plain onPress={() => snap !== null && !isEmpty(snap) ? runSnapshotCommand($, snap, 'dashboard') : $.command.run({ command: 'obs', args: 'dashboard' })} />
+        <Button key="report" label="Report" hotkey="o" plain onPress={() => snap !== null ? runSnapshotCommand($, snap, 'report') : runSelectedCommand($, 'report')} />
+        <Button key="dashboard" label="Dashboard" hotkey="d" plain onPress={() => snap !== null ? runSnapshotCommand($, snap, 'dashboard') : runSelectedCommand($, 'dashboard')} />
         {dashboards.insight ? <Text dimColor>{`insight ${dashboards.insight.url}`}</Text> : null}
         {dashboards.converge ? <Text dimColor>{`converge ${dashboards.converge.url}`}</Text> : null}
       </Box>

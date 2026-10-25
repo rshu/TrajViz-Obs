@@ -52,6 +52,17 @@ def test_snapshot_enrichment(tmp_session):  # title, prompts, agent label from m
     assert snap["transcript"]["session_id"] == tmp_session.id and snap["text"].startswith("Health: ")
 
 
+def test_snapshot_directory_input_keeps_parent_enrichment(tmp_session, run_cli):
+    code, file = run_cli(["snapshot", "--transcript", tmp_session.transcript])
+    assert code == 0
+    directory = tmp_session.dir / tmp_session.id
+    code, tree = run_cli(["snapshot", "--transcript", str(directory)])
+    assert code == 0
+    assert tree["transcript"]["path"] == str(directory)
+    for key in ("title", "task", "counts", "agents", "swimlane"):
+        assert tree[key] == file[key]
+
+
 def test_snapshot_issue_evidence(fixture_session):
     snap = _snapshot(str(fixture_session))
     issue = snap["issues"][0]
@@ -59,6 +70,7 @@ def test_snapshot_issue_evidence(fixture_session):
     assert issue["evidence"] == "Read: /home/user/workdirs/django__django-11477/claude_code/tests/i18n/patterns/urls"
     assert snap["tools"]["by_tool"][0] == {"tool": "Grep", "calls": 6, "errors": 0}
     assert snap["context"]["window_source"] == "model" and snap["context"]["current_pct"] is not None
+    assert snap["counts"]["issues"] == len(load_run(str(fixture_session)).view("issues").data)
 
 
 def test_snapshot_bounds_megabyte_failed_command_previews_without_changing_full_views(tmp_path):

@@ -9,7 +9,7 @@
 import type { EngineInterface, PluginOptions, ToolCallResult, ToolSpec } from 'claude-code'
 import { runBridge } from './bridge'
 import { fmtBytes, fmtInt } from './format'
-import { ensureReady, isEmpty, sessionArgv, storeSnapshot, takeSnapshot } from './snapshot'
+import { captureSnapshot, ensureReady, isEmpty, sessionArgv } from './snapshot'
 import { readLatest, readSession } from './state'
 import { EMPTY_TEXT, errorRow } from '../commands/overview'
 import { MAX_LIMIT, catalogText, viewText, type CatalogEntry, type ViewPayload } from '../commands/inline'
@@ -112,13 +112,12 @@ async function snapshotRows($: EngineInterface, options: PluginOptions, what: 'i
     } catch { /* A host without stat can still serve the recorded snapshot. */ }
   }
   if (stale) {
-    snap = await takeSnapshot($, options, spec)
-    await storeSnapshot($, snap)
+    ;({ snap } = await captureSnapshot($, options, spec))
   }
   if (snap === null) return answer(EMPTY_TEXT)
   if (isEmpty(snap)) return answer(EMPTY_TEXT)
   const rows: unknown[] = snap[what]
-  return answer(JSON.stringify({ [what]: rows.slice(0, limit), total: rows.length }, null, 2))
+  return answer(JSON.stringify({ [what]: rows.slice(0, limit), total: what === 'issues' ? (snap.counts.issues ?? rows.length) : rows.length }, null, 2))
 }
 
 /** The bridge's `brief` of the session. */

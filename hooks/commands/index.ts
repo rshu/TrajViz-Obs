@@ -34,6 +34,23 @@ const COMMAND_FLAGS: Record<string, readonly string[]> = {
   attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [], setup: ['extras', 'source'], doctor: [], help: [],
 }
 
+const NO_POSITIONALS = ['overview', 'help', 'doctor', 'setup', 'report', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline']
+const SESSION_COMMANDS = ['overview', 'pane', 'view', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'report', 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution']
+
+/** Reject grammar that would otherwise be ignored, before setup or external work. */
+function argumentError(ctx: CommandContext): string | undefined {
+  const { sub, positional, passthrough, flags } = ctx.parsed
+  if (sub === 'analyze' || sub === 'collect' || sub === 'converge-cli') return undefined
+  if (!COMMAND_FLAGS[sub]) return undefined
+  if (flags['session'] !== undefined && !SESSION_COMMANDS.includes(sub)) return `--session is not supported by /obs ${sub}.`
+  let invalid = passthrough.length > 0 || (NO_POSITIONALS.includes(sub) && positional.length > 0)
+  if (sub === 'pane') invalid ||= positional.length > 1 || (positional.length === 1 && positional[0] !== 'close')
+  if (sub === 'schemas') invalid ||= positional.length > 1
+  if (sub === 'view') invalid ||= positional.slice(1).some(p => !/^[^=]+=/.test(p))
+  if (invalid) return `Unexpected arguments for /obs ${sub}. /obs help lists the supported form.`
+  return undefined
+}
+
 /**
  * Routes `ctx.parsed.sub` to its handler. A static switch, not a record of
  * handlers: the engine refuses `$` passed through anything but a function
@@ -48,6 +65,8 @@ export async function dispatch($: EngineInterface, ctx: CommandContext): Promise
   if (sub !== 'collect' && sub !== 'converge-cli' && sub !== 'analyze' && (session === true || (typeof session === 'string' && !session.trim()))) {
     return { text: SESSION_USAGE }
   }
+  const invalidArguments = argumentError(ctx)
+  if (invalidArguments) return { text: invalidArguments }
   const allowed = COMMAND_FLAGS[sub]
   if (allowed) {
     for (const [flag, value] of Object.entries(ctx.parsed.flags)) {

@@ -1,5 +1,5 @@
 import type { CommandRunResult, EngineInterface, PluginOptions } from 'claude-code'
-import { isEmpty, storeSnapshot, takeSnapshot } from '../lib/snapshot'
+import { captureSnapshot, isEmpty } from '../lib/snapshot'
 import { readLatest, readSession } from '../lib/state'
 import { openPane, PANE_ID, placePane } from '../render/pane'
 import type { CommandContext } from './index'
@@ -34,12 +34,11 @@ export async function refreshPane($: EngineInterface, options: PluginOptions, sp
   const target = spec ?? (await readSession($)).selected?.path ?? undefined
   let snap
   try {
-    snap = await takeSnapshot($, options, target)
+    ;({ snap } = await captureSnapshot($, options, target))
   } catch (e) {
     return errorRow(e, target)
   }
   if (isEmpty(snap)) return EMPTY_TEXT
-  await storeSnapshot($, snap)
   return null
 }
 

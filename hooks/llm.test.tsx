@@ -6,9 +6,9 @@ import { analyzeArgs, LIMIT_TEXT, MAX_STEPS_TEXT } from './commands/llm'
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
-const VENV_PY = `${CACHE}/venv/bin/python`
+const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
+const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const ARTIFACTS = `${CACHE}/sessions/abc`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 12 }, rateLimits: [] }
@@ -41,6 +41,7 @@ type World = {
   model?: string
   /** What the person answers an ask; `dismiss` closes the dialog. */
   answer?: string
+  apply?: (argv: readonly string[], files: Record<string, string>) => Promise<RunAnswer>
 }
 
 type Host = {
@@ -104,10 +105,10 @@ function host(on: On, world: World = {}): Host {
     if (r.reason === 'api-error') return { value: { isAnswered: false as const, reason: 'api-error' as const, status: r.status, error: 'overloaded' as const, usage: NO_USAGE } }
     return { value: { isAnswered: false as const, reason: r.reason, usage: NO_USAGE } }
   })
-  on('process.run', (_, e) => {
+  on('process.run', async (_, e) => {
     timeline.push(`bridge:${e.argv[3]}`)
     ran.push([...e.argv])
-    const a = answers(e.argv)
+    const a = e.argv[3] === 'llm-apply' && world.apply ? await world.apply(e.argv, files) : answers(e.argv)
     if (!a) return { deny: `cannot start ${e.argv[0]}` }
     return { value: { exitCode: a.exitCode, stdout: a.stdout, stderr: a.stderr ?? '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -148,6 +149,8 @@ const planOf = (feature: PromptPlan['feature'], calls: number, extra: Partial<Pr
 const EMPTY_TEXT = 'Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.'
 const ONE_CALL_USAGE = 'usage: 1,000 input · 200 cache read · 300 cache write · 50 output tokens'
 
+const replyFile = (files: Record<string, string>, feature: string): string => Object.keys(files).find(path => path.startsWith(`${ARTIFACTS}/replies-${feature}-`)) ?? ''
+
 test('analyze asks the question as typed, runs one completion, writes the replies and applies them', async ($, on) => {
   const { ran, files, completions, asked } = host(on, {
     bridge: {
@@ -162,7 +165,8 @@ test('analyze asks the question as typed, runs one completion, writes the replie
   expect(bridgeCalls(ran)[0]).toEqual(['llm-prompt', ...SESSION_ARGV, '--feature', 'analyze', '--question', "why's it slow?"])
   expect(completions).toEqual([{ model: 'sonnet', system: 'SYS', prompt: 'P0', maxTokens: 2048, effort: undefined, timeoutMs: 120_000 }])
   expect(asked).toEqual([])
-  const repliesPath = `${ARTIFACTS}/replies-analyze.json`
+  const repliesPath = replyFile(files, 'analyze')
+  expect(repliesPath).toMatch(/replies-analyze-\d+-\d+\.json$/)
   expect(JSON.parse(files[repliesPath] as string)).toEqual({ hash: 'h1', replies: [{ index: 0, text: 'The session spent 40% of its tokens re-reading files.' }] })
   expect(bridgeCalls(ran)[1]).toEqual(['llm-apply', ...SESSION_ARGV, '--feature', 'analyze', '--replies', repliesPath, '--question', "why's it slow?"])
   expect(out.text).toBe(['analyze: 1 call · ~7k input tokens · model sonnet', 'The session spent 40% of its tokens re-reading files.', ONE_CALL_USAGE].join('\n'))
@@ -179,6 +183,33 @@ test('analyzeArgs keeps apostrophes and lifts --session out of the question', ()
   expect(analyzeArgs('analyze is it done? --session=abc')).toEqual({ question: 'is it done?', session: 'abc' })
   expect(analyzeArgs('analyze --session "/tmp/my run.jsonl" why is it slow?')).toEqual({ question: 'why is it slow?', session: '/tmp/my run.jsonl' })
   expect(analyzeArgs("analyze why's it slow? --session='/tmp/my run.jsonl'")).toEqual({ question: "why's it slow?", session: '/tmp/my run.jsonl' })
+})
+
+test('concurrent model plans never read each other\'s replies during apply', async ($, on) => {
+  let release: () => void = () => {}
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let firstApply: () => void = () => {}
+  const applying = new Promise<void>(resolve => { firstApply = resolve })
+  let calls = 0
+  const paths: string[] = []
+  host(on, { bridge: { 'llm-prompt': json(planOf('analyze', 1)) }, replies: ['first reply', 'second reply'], apply: async (argv, files) => {
+    const path = argv[argv.indexOf('--replies') + 1] as string
+    paths.push(path)
+    if (++calls === 1) { firstApply(); await gate }
+    const reply = JSON.parse(files[path] as string).replies[0].text
+    return json({ reply, history_path: null })
+  } })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
+  const first = obs($, 'analyze')
+  await applying
+  const second = await obs($, 'analyze')
+  release()
+  const completedFirst = await first
+  expect(paths).toHaveLength(2)
+  expect(paths[0]).not.toBe(paths[1])
+  expect(completedFirst.text).toContain('first reply')
+  expect(completedFirst.text).not.toContain('second reply')
+  expect(second.text).toContain('second reply')
 })
 
 test('the cost plan is visible before a completion or confirmation', async ($, on) => {
@@ -228,8 +259,9 @@ test('a headless session runs 6 calls without asking', async ($, on) => {
   const out = await obs($, 'fixes')
   expect(asked).toEqual([])
   expect(completions.map(c => c.prompt)).toEqual(['P0', 'P1', 'P2', 'P3', 'P4', 'P5'])
-  expect(JSON.parse(files[`${ARTIFACTS}/replies-fixes.json`] as string).replies).toHaveLength(6)
-  expect(bridgeCalls(ran)[1]).toEqual(['llm-apply', ...SESSION_ARGV, '--feature', 'fixes', '--replies', `${ARTIFACTS}/replies-fixes.json`])
+  const repliesPath = replyFile(files, 'fixes')
+  expect(JSON.parse(files[repliesPath] as string).replies).toHaveLength(6)
+  expect(bridgeCalls(ran)[1]).toEqual(['llm-apply', ...SESSION_ARGV, '--feature', 'fixes', '--replies', repliesPath])
   expect(out.text).toContain(fixes.text)
 })
 
@@ -241,7 +273,7 @@ test('a failed request is forwarded to llm-apply as a reply error', async ($, on
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const out = await obs($, 'fixes --limit 4')
   expect(completions).toHaveLength(4)
-  expect(JSON.parse(files[`${ARTIFACTS}/replies-fixes.json`] as string)).toEqual({
+  expect(JSON.parse(files[replyFile(files, 'fixes')] as string)).toEqual({
     hash: 'h1',
     replies: [
       { index: 0, text: '{"where":"a"}' },
@@ -267,7 +299,7 @@ test("analysisModel 'session' uses the session's model", { options: { analysisMo
 
 test('label takes its flags, labels with labelModel (or --model), and names the sidecar', async ($, on) => {
   const labelled = { path: '/tmp/l.json', summary: { classification_rate: 0.9 }, text: 'Labels: 3 steps\nphases: understand 2, build 1', errors: [] }
-  const { ran, completions, asked } = host(on, { bridge: { 'llm-prompt': json(planOf('label', 3)), 'llm-apply': json(labelled) } })
+  const { ran, completions, asked, files } = host(on, { bridge: { 'llm-prompt': json(planOf('label', 3)), 'llm-apply': json(labelled) } })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const out = await obs($, 'label -o /tmp/l.json --assistant-only --max-steps 3')
   expect(bridgeCalls(ran)[0]).toEqual(['llm-prompt', ...SESSION_ARGV, '--feature', 'label', '--max-steps', '3', '--assistant-only'])
@@ -275,7 +307,7 @@ test('label takes its flags, labels with labelModel (or --model), and names the 
   expect(completions[0]).toEqual({ model: 'haiku', system: 'SYS', prompt: 'P0', maxTokens: 1024, effort: undefined, timeoutMs: 120_000 })
   expect(asked).toEqual([])
   expect(bridgeCalls(ran)[1]).toEqual([
-    'llm-apply', ...SESSION_ARGV, '--feature', 'label', '--replies', `${ARTIFACTS}/replies-label.json`,
+    'llm-apply', ...SESSION_ARGV, '--feature', 'label', '--replies', replyFile(files, 'label'),
     '--max-steps', '3', '--assistant-only', '--out', '/tmp/l.json', '--model', 'haiku',
   ])
   expect(out.text).toBe(['label: 3 calls · ~21k input tokens · model haiku', labelled.text, 'Sidecar written to /tmp/l.json', 'usage: 3,000 input · 600 cache read · 900 cache write · 150 output tokens'].join('\n'))

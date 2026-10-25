@@ -13,6 +13,7 @@ import argparse
 import json
 import math
 import os
+import tempfile
 from collections.abc import Callable
 from operator import itemgetter
 from pathlib import Path
@@ -25,6 +26,7 @@ from . import paths
 from .cli import register
 from .compat import EmptySession, load_plugins, load_run, protect_run_outputs
 from .errors import BridgeError
+from .outputs import staged_path
 from .sessions import MAX_LIMIT, _positive_int, page_limit
 from .text import _clip, _num, render_series, render_table
 
@@ -188,9 +190,9 @@ def _bars(rows: list[dict], label_key: str, value_key: str, *, limit: int, offse
 
 def _write_json(path: Path, payload: Any) -> int:
     """*payload* written atomically as indented JSON (as ``export_json`` writes it); returns the file's size."""
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    serialized = json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    with staged_path(path) as tmp:
+        tmp.write_text(serialized, encoding="utf-8")
     return path.stat().st_size
 
 
@@ -258,9 +260,16 @@ def export(run: Trajectory, out_dir: Path, *, only: list[str] | None, with_traje
     names = [f"{view_id}.json" for view_id in (only if only is not None else tv.VIEW_CATALOG)]
     protect_run_outputs(run, [out_dir / name for name in [*names, "index.json",
                                                         *(["trajectory.json"] if with_trajectory else [])]])
-    written = tv.export_json(run if with_trajectory else run.views(only=only), out_dir,
-                             only=only if with_trajectory else None)
-    return {"path": str(out_dir), "files": [p.name for p in written], "bytes": sum(p.stat().st_size for p in written)}
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # TrajViz's exporter uses fixed <name>.tmp files. Give each invocation a private directory so its
+    # internal staging cannot collide with another export or follow an existing staging symlink.
+    with tempfile.TemporaryDirectory(prefix=".trajviz-obs-", dir=out_dir) as scratch:
+        written = tv.export_json(run if with_trajectory else run.views(only=only), scratch,
+                                 only=only if with_trajectory else None)
+        final = [out_dir / path.name for path in written]
+        for temporary, destination in zip(written, final, strict=True):
+            os.replace(temporary, destination)
+    return {"path": str(out_dir), "files": [p.name for p in final], "bytes": sum(p.stat().st_size for p in final)}
 
 
 def write_schemas(out_dir: Path) -> dict:

@@ -8,8 +8,6 @@ transcript and every file under ``<session-id>/subagents/``, the layout TrajViz'
 from __future__ import annotations
 
 import argparse
-import contextlib
-import os
 import zipfile
 from pathlib import Path
 
@@ -19,7 +17,7 @@ from agent_trajviz import ReportError, Trajectory
 from .cli import register
 from .compat import EmptySession, protect_run_outputs
 from .errors import BridgeError
-from .outputs import protect_inputs, session_files
+from .outputs import protect_inputs, session_files, staged_path
 from .views_cmd import _artifacts, _load, _session_args
 
 #: Most member names ``bundle`` lists on stdout.
@@ -34,16 +32,6 @@ def _file_dest(dest: Path) -> Path:
     return dest
 
 
-def _discard(tmp: Path) -> None:
-    with contextlib.suppress(OSError):
-        tmp.unlink()
-
-
-def _replace(tmp: Path, dest: Path) -> int:
-    os.replace(tmp, dest)
-    return dest.stat().st_size
-
-
 def write_report_file(run: Trajectory, dest: Path, *, dark: bool, offline: bool) -> dict:
     """TrajViz's HTML report for *run* written to the file *dest* (replaced atomically): ``{"path", "bytes"}``.
 
@@ -52,16 +40,12 @@ def write_report_file(run: Trajectory, dest: Path, *, dark: bool, offline: bool)
     """
     protect_run_outputs(run, [dest])
     dest = _file_dest(dest)
-    tmp = dest.with_name(dest.name + ".tmp")
     try:
-        tv.write_report(run, tmp, dark=dark, inline_plotly=offline)
+        with staged_path(dest) as tmp:
+            tv.write_report(run, tmp, dark=dark, inline_plotly=offline)
     except ReportError as exc:
-        _discard(tmp)
         raise BridgeError("report_failed", str(exc), path=run.source) from exc
-    except BaseException:
-        _discard(tmp)
-        raise
-    return {"path": str(dest), "bytes": _replace(tmp, dest)}
+    return {"path": str(dest), "bytes": dest.stat().st_size}
 
 
 def bundle_session(transcript_path: str, dest: Path) -> dict:
@@ -79,15 +63,10 @@ def bundle_session(transcript_path: str, dest: Path) -> dict:
     members = [path.relative_to(transcript.parent).as_posix() for path in files]
     protect_inputs([dest], files)
     dest = _file_dest(dest)
-    tmp = dest.with_name(dest.name + ".tmp")
-    try:
-        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for path, member in zip(files, members, strict=True):
-                archive.write(path, member)
-    except BaseException:
-        _discard(tmp)
-        raise
-    return {"path": str(dest), "bytes": _replace(tmp, dest), "members": members[:MEMBERS_LISTED],
+    with staged_path(dest) as tmp, zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path, member in zip(files, members, strict=True):
+            archive.write(path, member)
+    return {"path": str(dest), "bytes": dest.stat().st_size, "members": members[:MEMBERS_LISTED],
             "members_total": len(members)}
 
 

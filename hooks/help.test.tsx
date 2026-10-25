@@ -46,3 +46,17 @@ test('/obs help answers the grouped table', async ($, on) => {
   expect((await $.command.run({ command: 'obs', args: 'report --offlne' } as never)).text).toBe("Unknown option '--offlne' for /obs report. /obs help lists the supported options.")
   expect((await $.command.run({ command: 'obs', args: 'report --dark=false' } as never)).text).toBe('--dark does not take a value.')
 })
+
+test('extra arguments and unsupported session selectors fail before any external work', async ($, on) => {
+  on('command.register', () => ({ value: { command: 'obs' } }))
+  on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  for (const args of ['overview extra', 'help extra', 'doctor extra', 'setup extra', 'report extra', 'json extra', 'bundle extra', 'fixes extra', 'label extra', 'attribution extra', 'issues extra', 'health extra', 'patterns extra', 'agents extra', 'context extra', 'timeline extra', 'pane unknown', 'pane close extra', 'schemas first second', 'view steps junk', 'report -- ignored']) {
+    const result = await $.command.run({ command: 'obs', args } as never)
+    expect(result.text).toContain('Unexpected arguments')
+  }
+  for (const sub of ['help', 'doctor', 'setup', 'schemas', 'converge', 'labels', 'sessions', 'watch', 'statusline']) {
+    expect((await $.command.run({ command: 'obs', args: `${sub} --session other` } as never)).text).toBe(`--session is not supported by /obs ${sub}.`)
+  }
+})

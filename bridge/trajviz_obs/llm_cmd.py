@@ -37,6 +37,7 @@ from .compat import (
     labeler_chat,
     labeler_run,
     labeler_step_cap,
+    llm_env_value,
     load_plugins,
     protect_run_outputs,
     window_info,
@@ -94,7 +95,9 @@ def _hash(run: Trajectory, feature: str, question: str | None, limit: int, promp
     The transcript hash alone is insufficient: history can change without another transcript record, and
     overrides or a language change can produce different requests from the same session bytes.
     """
-    payload = json.dumps([run.sha256, window_info(run)["window"], feature, question, limit, prompts],
+    # Reloadable exports preserve the original transcript's sha256. Bind the normalized steps too: an
+    # edited export's unplanned label tail must not inherit the original request's identity.
+    payload = json.dumps([run.sha256, run.steps, window_info(run)["window"], feature, question, limit, prompts],
                          ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -110,6 +113,11 @@ def _read_history(path: Path | None) -> list[dict[str, Any]]:
     history = data.get("history") if isinstance(data, dict) else None
     if not isinstance(history, list):
         raise BridgeError("bad_history", f"{path} holds no analysis history.", path=str(path))
+    for index, message in enumerate(history):
+        if (not isinstance(message, dict) or message.get("role") not in ("user", "assistant")
+                or not isinstance(message.get("content"), str)):
+            raise BridgeError("bad_history", f"Invalid analysis history message {index} in {path}; expected a "
+                              "user or assistant role and text content.", path=str(path))
     return history
 
 
@@ -311,11 +319,11 @@ def _not_configured(missing: list[str]) -> BridgeError:
 
 def _label_client(config: Any, model: str | None) -> tuple[str, dict]:
     """The labeler's model and endpoint: ``LABEL_*`` first, then the analysis settings."""
-    env = os.environ
-    model = model or env.get("LABEL_MODEL") or config.model
-    client = {"base_url": env.get("LABEL_BASE_URL") or config.base_url,
-              "api_key": env.get("LABEL_API_KEY") or config.api_key,
-              "provider": env.get("LABEL_PROVIDER") or config.provider}
+    model = model or llm_env_value("LABEL_MODEL") or config.model
+    provider = (llm_env_value("LABEL_PROVIDER") or config.provider).lower()
+    client = {"base_url": llm_env_value("LABEL_BASE_URL") or config.base_url,
+              "api_key": llm_env_value("LABEL_API_KEY") or config.api_key,
+              "provider": provider if provider in {"openai", "anthropic"} else "openai"}
     missing = [name for name, value in (("LABEL_BASE_URL", client["base_url"]), ("LABEL_API_KEY", client["api_key"]),
                                         ("LABEL_MODEL", model)) if not value]
     if missing:
@@ -450,8 +458,11 @@ def _freeze_current(args: argparse.Namespace, run: Trajectory, plan: dict) -> di
     folder.mkdir(parents=True, exist_ok=True)
     source = {"path": args.transcript, "sha256": run.sha256, "frozen": True}
     _write_json(trajectory, run.to_dict(include_raw=True))
+    with trajectory.open("rb") as handle:
+        captured_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
     _write_json(manifest, {"schema_version": 1, "hash": plan["hash"], "feature": args.feature,
-                           "transcript": _input_identity(args.transcript), "source": source})
+                           "transcript": _input_identity(args.transcript), "source": source,
+                           "trajectory_sha256": captured_sha256})
     return source
 
 
@@ -470,7 +481,10 @@ def _frozen_current(args: argparse.Namespace, replies: dict) -> tuple[Trajectory
             raise ValueError("the saved request belongs to a different transcript or feature")
         check_supported()
         load_plugins()
-        captured = json.loads((folder / "trajectory.json").read_text(encoding="utf-8"))
+        captured_bytes = (folder / "trajectory.json").read_bytes()
+        if manifest.get("trajectory_sha256") != hashlib.sha256(captured_bytes).hexdigest():
+            raise ValueError("the saved trajectory contents changed")
+        captured = json.loads(captured_bytes)
         # Preserve the caller's original provenance, never an embedded export path or the cache filename.
         if isinstance(captured, dict):
             captured["source"] = args.transcript

@@ -120,8 +120,6 @@ Run `/obs doctor` for the interpreter, TrajViz version, extras, plugins, and opt
 - Dashboard preload adapts TrajViz's Gradio controls. If those controls change, the dashboard can open empty; the command explains how to load an `/obs bundle` ZIP manually.
 - macOS is the real-session test platform. The code includes Linux and Windows interpreter/browser paths, which need platform-specific end-to-end verification.
 
-The adapter boundaries and upstream improvements are described in [docs/upstream-notes.md](docs/upstream-notes.md).
-
 ## Development
 
 `hooks/` is the TypeScript hooks module and rendering layer. `bridge/` is a Python CLI that calls TrajViz and emits JSON. The plugin runs the bridge with its managed interpreter and `-I`; it does not parse session JSONL in TypeScript. `types/index.d.ts` declares the snapshot and plugin state contract.
@@ -135,14 +133,15 @@ bridge/.venv/bin/python scripts/check.py
 
 TypeScript 5.4+ and Node.js are development tools only. For type checking, first load the plugin in an interactive Claude Code session to generate `.claude-plugin/types/`, or pass this build's `plugin-authoring/types` directory with `--api-types`. Install TypeScript locally or pass its CLI path with `--tsc`; the helper also finds an existing npm cache copy and never installs packages. Generated host declarations remain untracked.
 
-The hook tests run through Claude Code's own testing engine with deterministic host and model responses. Python tests use real `agent-trajviz` and the sanitized public fixture whose provenance is recorded in [its README](bridge/tests/fixtures/native_claude_code/README.md). Real-session end-to-end checks are separate from those tests. See [validation details](docs/validation.md) for the scenario, evidence, and platform scope.
+The hook tests run through Claude Code's own testing engine with deterministic host and model responses. Python tests use real `agent-trajviz` and the sanitized public fixture whose provenance is recorded in [its README](bridge/tests/fixtures/native_claude_code/README.md). The check script also runs every diagnostic view through the actual bridge executable and validates exported views against JSON Schema, including comparisons. Model HTTP tests use a local server for both supported provider protocols; they require no account or external model calls. CI runs the bridge suite on Linux with Python 3.11–3.13, a minimal runtime without Gradio, and the environment worker on Windows.
 
 To run the paid end-to-end check with your configured Claude Code account:
 
 ```sh
-python3 scripts/e2e.py --output /tmp/trajviz-obs-e2e-new --model haiku --budget 5
+python3 scripts/e2e.py --output /tmp/trajviz-obs-e2e-new --model haiku --budget 5 \
+  --test-command-matrix --test-obs-tool --test-subagent --test-llm-all
 ```
 
-The output directory must be empty. The harness creates a scratch coding session, verifies a real failed tool call and its recovery, checks diagnostic and export contents, installs optional extras, and tests reports, session-model analysis, and both dashboards over local HTTP. It checks dashboard stop/restart and session-end port cleanup in the same Claude process. `--skip-llm`, `--skip-report`, and `--skip-dashboard` narrow coverage; `--test-obs-tool` adds a model turn that must actually call the plugin tool; `--test-subagent` verifies a native subagent; `--test-llm-all` also verifies fix judgment and step labeling. The ledger records selected coverage and validation outcomes. Raw events and artifacts remain private session data; do not commit them.
+The output directory must be empty. The harness creates a scratch coding session, verifies a real failed tool call and its recovery, checks exports, installs optional extras, and tests reports, session-model analysis, and both dashboards over local HTTP. It checks dashboard stop/restart and session-end port cleanup in the same Claude process. `--test-command-matrix` exercises every view, command routing, selection, pane/statusline toggles, and invalid inputs. The other test flags verify a model calling the native plugin tool, a native subagent, fix judgment, and step labeling. `--skip-llm`, `--skip-report`, and `--skip-dashboard` narrow coverage. Logs, ledgers, exports, and private session evidence belong outside this repository.
 
 MIT licensed. TrajViz is a separate MIT-licensed project; this plugin is not an Anthropic product.

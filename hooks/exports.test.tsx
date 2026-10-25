@@ -7,7 +7,7 @@ import { fmtBytes } from './lib/format'
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
-const VENV_PY = `${CACHE}/venv/bin/python`
+const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const ARTIFACTS = `${CACHE}/sessions/abc`
@@ -58,7 +58,7 @@ function host(on: On, world: World = {}): Host {
   const rows: string[] = []
   const timeline: string[] = []
   const files: Record<string, string> = {}
-  if (world.extras !== null) files[STATE_PATH] = stateJson(world.extras ?? ['llm'])
+  if (world.extras !== null) files[STATE_PATH] = stateJson(world.extras ?? ['llm', 'charts'])
   const answers = answerOf(world.bridge ?? {}, world.commands ?? {})
   on('command.register', () => ({ value: { command: 'obs' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
@@ -95,7 +95,7 @@ function host(on: On, world: World = {}): Host {
     timeline.push('spawn')
     if (e.argv.some(a => a.endsWith('/bridge/bootstrap.py'))) {
       const req = JSON.parse(e.argv[e.argv.indexOf('--request') + 1] as string)
-      const state = { revision: 4, python: VENV_PY, pythonOption: req.pythonOption, trajviz: '0.2.1', extras: [...new Set(['llm', 'charts', ...req.extras])], source: req.source, createdAt: 1 }
+      const state = { revision: 4, python: VENV_PY, pythonOption: req.pythonOption, trajviz: '0.2.1', extras: [...new Set(['llm', 'charts', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
       files[STATE_PATH] = JSON.stringify(state)
 
       yield { stream: 'stderr' as const, text: 'Installed\n' }
@@ -155,11 +155,7 @@ function asks(on: On, answer: string): string[] {
   return asked
 }
 
-const ASK_CHARTS = "Install TrajViz's charts extra (the HTML report, downloads additional packages)?"
-/** The transcript row announcing the install, before pip starts. */
-const INSTALLING_CHARTS = "obs: installing TrajViz's charts extra (the HTML report, downloads additional packages)"
-
-test('report asks, announces and installs the charts extra once, then opens the file', async ($, on) => {
+test('report repairs legacy metadata missing the mandatory charts extra once, then opens the file', async ($, on) => {
   forgetPlatform()
   const { ran, spawned, rows, timeline } = host(on, {
     extras: ['llm'],
@@ -169,11 +165,12 @@ test('report asks, announces and installs the charts extra once, then opens the 
   const asked = asks(on, 'Install')
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const out = await obs($, 'report --dark --offline -o /tmp/r.html')
-  // An interactive session is asked once; the install is announced in a row before it starts; no uv on this host: the venv's own pip installs the extra, once.
-  expect(asked).toEqual([ASK_CHARTS])
-  expect(rows).toEqual([INSTALLING_CHARTS])
-  expect(timeline).toEqual(['row', 'spawn'])
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz>=0.2.0,<0.3', extras: ['llm', 'charts', 'llm', 'charts'] })
+  // Charts are part of every valid base environment: inconsistent metadata
+  // rebuilds the base, and never treats its repair as an optional install.
+  expect(asked).toEqual([])
+  expect(rows).toEqual([])
+  expect(timeline).toEqual(['spawn'])
+  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz>=0.2.0,<0.3', extras: ['llm', 'charts', 'charts'] })
   expect(bridgeCalls(ran)).toEqual([['report', ...SESSION_ARGV, '--out', '/tmp/r.html', '--dark', '--offline']])
   expect(ran.filter(r => r[0] === 'open')).toEqual([['open', REPORT]])
   expect(out.text).toContain(REPORT)
@@ -185,16 +182,16 @@ test('report asks, announces and installs the charts extra once, then opens the 
   expect(ran.filter(r => r[0] === 'open')).toHaveLength(2)
 })
 
-test('report declined is the row, nothing installed and nothing run', async ($, on) => {
-  const { ran, spawned, rows } = host(on, { extras: ['llm'], bridge: { report: json({ path: REPORT, bytes: 900 }) } })
+test('a first report builds its base charts without an optional-extra confirmation', async ($, on) => {
+  const { ran, spawned, rows } = host(on, { extras: null, bridge: { report: json({ path: REPORT, bytes: 900 }) } })
   const asked = asks(on, 'Not now')
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const out = await obs($, 'report')
-  expect(out.text).toBe("TrajViz's charts extra is not installed (the HTML report need it); /obs setup --extras charts installs it.")
-  expect(asked).toEqual([ASK_CHARTS])
+  expect(out.text).toContain(`Report written to ${REPORT}`)
+  expect(asked).toEqual([])
   expect(rows).toEqual([])
-  expect(spawned).toEqual([])
-  expect(bridgeCalls(ran)).toEqual([])
+  expect(spawned).toHaveLength(1)
+  expect(bridgeCalls(ran)).toEqual([['report', ...SESSION_ARGV]])
 })
 
 test('report with openBrowser off prints the path and opens nothing', { options: { openBrowser: false } }, async ($, on) => {

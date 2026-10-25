@@ -93,3 +93,36 @@ def test_reply_hash_cannot_select_an_arbitrary_saved_path(fixture_session, tmp_p
     code, result = run_cli(["llm-apply", "--transcript", str(fixture_session), "--artifacts", str(tmp_path),
                             "--kind", "current", "--feature", "analyze", "--replies", str(replies)])
     assert code == 1 and result["error"]["code"] == "stale_prompts"
+
+
+def test_current_apply_refuses_cached_steps_changed_outside_the_planned_label_cap(fixture_session, tmp_path, run_cli):
+    artifacts = tmp_path / "artifacts"
+    base = ["--transcript", str(fixture_session), "--artifacts", str(artifacts), "--kind", "current",
+            "--feature", "label", "--max-steps", "1"]
+    code, plan = run_cli(["llm-prompt", *base])
+    assert code == 0
+    frozen = artifacts / "plans" / plan["hash"] / "trajectory.json"
+    captured = json.loads(frozen.read_text())
+    # The source identity and the single captured model prompt do not change. A checksum must still detect
+    # corruption in the unplanned tail rather than accepting it into the generated labels sidecar.
+    captured["steps"][-1]["text_preview"] = "unexpected cached mutation"
+    frozen.write_text(json.dumps(captured))
+    code, result = run_cli(["llm-apply", *base, "--replies", _reply_file(plan, "label", tmp_path)])
+    assert code == 1 and result["error"]["code"] == "stale_prompts"
+    assert "contents changed" in result["error"]["message"]
+    assert not (artifacts / "labels.json").exists()
+
+
+def test_historical_export_tail_changes_invalidate_capped_label_replies(fixture_run, tmp_path, run_cli):
+    source = tmp_path / "trajectory.json"
+    captured = fixture_run.to_dict(include_raw=True)
+    source.write_text(json.dumps(captured))
+    base = ["--transcript", str(source), "--artifacts", str(tmp_path / "artifacts"), "--feature", "label",
+            "--max-steps", "1"]
+    code, plan = run_cli(["llm-prompt", *base])
+    assert code == 0
+    captured["steps"][-1]["text_preview"] = "changed historical export tail"
+    source.write_text(json.dumps(captured))
+    code, result = run_cli(["llm-apply", *base, "--replies", _reply_file(plan, "label", tmp_path)])
+    assert code == 1 and result["error"]["code"] == "stale_prompts"
+    assert not (tmp_path / "artifacts" / "labels.json").exists()

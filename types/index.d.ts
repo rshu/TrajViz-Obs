@@ -27,6 +27,8 @@ export type Counts = {
   compactions: number
   agents: number
   tool_calls: number
+  /** Every detected issue, before the snapshot's top-ten preview. */
+  issues?: number
 }
 
 export type Tokens = {
