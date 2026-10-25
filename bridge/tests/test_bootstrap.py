@@ -168,9 +168,10 @@ class BootstrapTests(unittest.TestCase):
                 self.assertTrue(heartbeat.exists())
                 proc.kill() if forced else proc.terminate()
                 proc.wait(timeout=10)
-                # Forced death is observed by the independent supervisor's
-                # 100 ms parent watcher; allow it to reap the process group.
-                time.sleep(0.3)
+                # Every installer descendant inherits this stderr pipe. EOF
+                # proves they have exited; a live descendant fails within the
+                # timeout even when its heartbeat is temporarily unscheduled.
+                proc.communicate(timeout=10)
                 stopped = heartbeat.read_text()
                 time.sleep(0.2)
                 self.assertEqual(heartbeat.read_text(), stopped)

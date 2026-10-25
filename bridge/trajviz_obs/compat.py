@@ -110,6 +110,12 @@ def load_run(path: str, *, window_limit: int | None = None, current: bool = Fals
     load_plugins()
     if window_limit is not None and window_limit < 1:
         raise ValueError(f"window_limit must be a positive token count, not {window_limit}")
+    if current:
+        try:
+            Path(path).stat()
+        except FileNotFoundError as exc:
+            # Claude can invoke the first /obs command before creating this session's transcript.
+            raise EmptySession("The current session transcript has not been created yet.", path=path) from exc
     selected = resolve_input_path(path)
     try:
         run = agent_trajviz.load(path)

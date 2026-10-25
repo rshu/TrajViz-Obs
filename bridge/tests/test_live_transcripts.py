@@ -28,12 +28,14 @@ def test_current_snapshot_tolerates_only_an_in_progress_tail(fixture_session, tm
 
 @pytest.mark.parametrize("command", ["snapshot", "view", "json", "report", "brief", "attribution", "compare",
                                      "scorecard", "llm-prompt", "ask", "fixes", "label"])
-def test_current_session_with_only_a_real_user_prompt_is_empty(command, fixture_session, tmp_path, run_cli):
+@pytest.mark.parametrize("state", ["missing", "user-only"])
+def test_current_session_before_its_first_assistant_is_empty(command, state, fixture_session, tmp_path, run_cli):
     import json
 
     source = tmp_path / "new.jsonl"
-    source.write_text(json.dumps({"type": "user", "sessionId": "new", "uuid": "first",
-                                 "message": {"role": "user", "content": "build it"}}) + "\n")
+    if state == "user-only":
+        source.write_text(json.dumps({"type": "user", "sessionId": "new", "uuid": "first",
+                                     "message": {"role": "user", "content": "build it"}}) + "\n")
     argv = [command, "--transcript", str(source), "--kind", "current", "--artifacts", str(tmp_path / "artifacts")]
     if command == "view":
         argv += ["health"]
@@ -46,7 +48,25 @@ def test_current_session_with_only_a_real_user_prompt_is_empty(command, fixture_
     code, out = run_cli(argv)
     assert code == 0 and out.get("empty") is True, (command, out)
     assert not (tmp_path / "artifacts").exists()
-    assert len(load_run(str(source)).steps) == 1  # historical inputs can still describe a user-only run
+    if state == "user-only":
+        assert len(load_run(str(source)).steps) == 1  # historical user-only runs remain valid
+    else:
+        code, historical = run_cli(["snapshot", "--transcript", str(source)])
+        assert code == 1 and historical["error"]["code"] == "load_error"
+        assert not source.exists()
+
+
+def test_permission_errors_are_not_treated_as_a_missing_current_session(fixture_session, monkeypatch):
+    original = Path.stat
+
+    def denied(path, *args, **kwargs):
+        if str(path) == str(fixture_session):
+            raise PermissionError("permission denied")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied)
+    with pytest.raises(PermissionError):
+        load_run(str(fixture_session), current=True)
 
 
 def test_label_replies_are_stale_when_only_a_subagent_changes(tmp_session, tmp_path):
