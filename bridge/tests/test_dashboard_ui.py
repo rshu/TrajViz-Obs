@@ -63,6 +63,34 @@ def test_presentation_keeps_upstream_assets_without_mutating_original():
     assert all(result[key] is original[key] for key in ("js", "head", "theme"))
 
 
+def test_health_and_findings_live_in_summary_without_burying_other_tabs():
+    native = dashboard.insight_app()
+    cards = next(block for block in native.blocks.values()
+                 if "overview-kpi-strip" in (block.elem_classes or []))
+    app = decorate_dashboard(native, "insight")
+    tabs = next(child for child in app.children if isinstance(child, gr.Tabs))
+    overview = next(child for child in tabs.children if child.label == "Overview")
+    layout = next(child for child in overview.children if "overview-content-layout" in child.elem_classes)
+    content = next(child for child in layout.children if "overview-section-content" in child.elem_classes)
+    summary = content.children[0]
+    assert cards not in app.children and cards in summary.children
+    assert overview.children == [layout]
+    assert any(isinstance(child, gr.Button) and "Suggest fixes" in child.value for child in summary.children)
+    assert any(isinstance(child, gr.HTML) and "summary-banner" in child.elem_classes
+               for column in summary.children if isinstance(column, gr.Column) for child in column.children)
+
+
+@pytest.mark.parametrize("kind", ["insight", "converge"])
+def test_native_dark_media_rules_do_not_conflict_with_light_dashboard_charts(kind):
+    native = dashboard.insight_presentation() if kind == "insight" else dashboard.converge_presentation()
+    original = native["css"]
+    assert "@media (prefers-color-scheme: dark)" in original
+    result = presentation(kind, native)
+    assert "@media (prefers-color-scheme: dark)" not in result["css"]
+    assert "@media not all" in result["css"]
+    assert native["css"] == original
+
+
 def test_converge_sections_keep_all_native_controls_in_separate_tabs(tmp_path):
     app = decorate_dashboard(dashboard.converge_app(data_root=tmp_path), "converge")
     tabs = next(child for child in app.children if isinstance(child, gr.Tabs))

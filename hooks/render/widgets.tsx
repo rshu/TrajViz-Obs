@@ -62,7 +62,7 @@ const rasterRows = (n: number): number => Math.max(1, Math.min(256, Math.floor(n
 export function HealthChips({ els, health }: { els: Els; health: HealthRow[] }): RenderElement {
   const { Box, Text } = els
   return (
-    <Box flexDirection="row" flexWrap="wrap" gap={2}>
+    <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={0}>
       {health.map(row => (
         <Text color={statusColor(row.status)} weight="semibold">
           {`● ${row.metric.replace(/_/g, ' ')} ${row.label}`}
@@ -133,9 +133,22 @@ function packTiles(items: Kpi[], columns: number): Kpi[][] {
  * narrower terminals); below 72, each value and its dim detail on separate lines. The
  * tiles sit under a Box keyed `kpis`, one row Box each.
  */
-export function KpiRow({ els, snap, usage, columns }: { els: Els; snap: Snapshot; usage?: Snapshot['engine_usage']; columns: number }): RenderElement {
+export function KpiRow({ els, snap, usage, columns, summary = false }: { els: Els; snap: Snapshot; usage?: Snapshot['engine_usage']; columns: number; summary?: boolean }): RenderElement {
   const { Box, Text } = els
   const items = kpis(snap, usage)
+  if (summary) return (
+    <Box key="kpis-summary" flexDirection="column">
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+        {items.map(k => (
+          <Box flexDirection="row" gap={1}>
+            <Text dimColor>{k.label === 'Cache Efficiency' ? 'Cache' : k.label === 'Wall clock' ? 'Elapsed' : k.label}</Text>
+            <Text weight="semibold">{k.value}</Text>
+          </Box>
+        ))}
+      </Box>
+      <Text dimColor wrap="wrap">{`${fmtInt(snap.counts.prompts)} prompt${snap.counts.prompts === 1 ? '' : 's'} · ${fmtInt(snap.counts.compactions)} compaction${snap.counts.compactions === 1 ? '' : 's'} · p95 ${fmtSecs(snap.timing.p95_step_s)}`}</Text>
+    </Box>
+  )
   if (columns < 72) {
     return (
       <Box key="kpis-compact" flexDirection="column" gap={1}>
@@ -218,7 +231,7 @@ export function StackedBlock({ els, surface, label, stacks, columns, rows, key }
   const totals = Array.from({ length: n }, (_, i) => stacks.reduce((sum, s) => sum + Math.max(0, s.values[i] ?? 0), 0))
   return (
     <Box flexDirection="column">
-      <Box flexDirection="row" flexWrap="wrap" gap={2}>
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={0}>
         <Text dimColor>{label}</Text>
         {stacks.map(s => (
           <Text color={hex(s.color)}>{`■ ${s.name}`}</Text>
@@ -328,7 +341,7 @@ export function ToolBars({ els, byTool, width }: { els: Els; byTool: ToolRow[]; 
   return (
     <Box flexDirection="column">
       {byTool.map(t => (
-        <Box flexDirection="row" flexWrap="wrap" gap={1}>
+        <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={0}>
           <Text>{clip(t.tool, name).padEnd(name)}</Text>
           <Text color="claude">{bar(t.calls, max, barWidth)}</Text>
           <Text dimColor>{fmtInt(t.calls).padStart(5)}</Text>
@@ -465,7 +478,7 @@ function stepsText(steps: number[]): string {
 }
 
 /** The top `limit` issues, each its title with its steps, its evidence and, dim, its `why`. */
-export function IssuesList({ els, issues, limit, total = issues.length }: { els: Els; issues: Issue[]; limit: number; total?: number }): RenderElement {
+export function IssuesList({ els, issues, limit, total = issues.length, summary = false }: { els: Els; issues: Issue[]; limit: number; total?: number; summary?: boolean }): RenderElement {
   const { Box, Text } = els
   const shown = issues.slice(0, Math.max(0, limit))
   if (shown.length === 0) return <Text dimColor>No issues found.</Text>
@@ -473,12 +486,12 @@ export function IssuesList({ els, issues, limit, total = issues.length }: { els:
     <Box flexDirection="column">
       {shown.map((issue, i) => (
         <Box flexDirection="column">
-          <Box flexDirection="row" flexWrap="wrap" gap={1}>
+          <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={0}>
             <Text weight="semibold">{`${i + 1}. ${issue.title}`}</Text>
-            {issue.steps.length > 0 ? <Text dimColor>{stepsText(issue.steps)}</Text> : null}
+            {!summary && issue.steps.length > 0 ? <Text dimColor>{stepsText(issue.steps)}</Text> : null}
           </Box>
-          {issue.evidence ? <Text color="subtle">{`   ${issue.evidence}`}</Text> : null}
-          {issue.why ? <Text dimColor>{`   ${issue.why}`}</Text> : null}
+          {!summary && issue.evidence ? <Text color="subtle">{`   ${issue.evidence}`}</Text> : null}
+          {!summary && issue.why ? <Text dimColor>{`   ${issue.why}`}</Text> : null}
         </Box>
       ))}
       {total > shown.length ? <Text dimColor>{`… ${fmtInt(total - shown.length)} more`}</Text> : null}
@@ -523,8 +536,14 @@ export function MdTable({ els, rows, columns, limit, width }: { els: Els; rows: 
     <Box key="records" flexDirection="column" gap={1}>
       {shown.map((row, i) => (
         <Box flexDirection="column">
-          <Text weight="semibold" wrap="wrap">{`${i + 1}. ${columns[0]!.replace(/_/g, ' ')}: ${plainCell(row[columns[0]!])}`}</Text>
-          {columns.slice(1).map(c => <Text wrap="wrap">{`${c.replace(/_/g, ' ')}: ${plainCell(row[c])}`}</Text>)}
+          <Text weight="semibold" wrap="wrap">{`${i + 1}. ${columnLabel(columns[0]!)}: ${recordCell(columns[0]!, row[columns[0]!])}`}</Text>
+          <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+            {columns.slice(1).map(c => {
+              const value = recordCell(c, row[c])
+              const long = value.length + columnLabel(c).length > Math.min(28, Math.max(1, width) - 2) || !/^[\x20-\x7e]*$/.test(value)
+              return <Box width={long ? '100%' : undefined}><Text wrap="wrap"><Text dimColor>{`${columnLabel(c)}: `}</Text>{value}</Text></Box>
+            })}
+          </Box>
         </Box>
       ))}
       {more > 0 ? <Text dimColor>{`… ${fmtInt(more)} more; open Dashboard for the full view.`}</Text> : null}
@@ -544,6 +563,24 @@ export function MdTable({ els, rows, columns, limit, width }: { els: Els; rows: 
 function plainCell(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—'
   return typeof value === 'object' ? JSON.stringify(value) : String(value)
+}
+
+/** Familiar labels and units for the pane's common diagnostic columns. */
+const COLUMN_LABELS: Readonly<Record<string, string>> = {
+  label: 'Agent', type: 'Type', step: 'Step', role: 'Role', category: 'Category', agent: 'Agent',
+  steps: 'Steps', tokens: 'Tokens', tool_calls: 'Tool calls', errors: 'Errors', duration_s: 'Duration',
+  cache_pct: 'Cache', file: 'File', reads: 'Reads', writes: 'Writes', preview: 'Preview',
+}
+
+const columnLabel = (key: string): string => COLUMN_LABELS[key] ?? key.replace(/_/g, ' ')
+
+function recordCell(key: string, value: unknown): string {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (key === 'duration_s') return fmtSecs(value)
+    if (key === 'cache_pct') return fmtPct(value)
+    if (Number.isInteger(value)) return fmtInt(value)
+  }
+  return plainCell(value)
 }
 
 /** One dim line. */

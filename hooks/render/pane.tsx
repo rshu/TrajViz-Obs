@@ -39,7 +39,7 @@ export const DOCK_COLUMNS = 56
 /** The body rows asked for when seated inline above the prompt. */
 export const INLINE_ROWS = 14
 
-/** Below this many body columns the overview is a KPI list and the drag line. */
+/** Below this many body columns the overview omits its charts. */
 export const NARROW_COLUMNS = 48
 
 /** The tabs by hotkey: `1` Overview … `7` Timeline. */
@@ -130,16 +130,23 @@ const keysOf = (rows: Record<string, unknown>[]): string[] => Object.keys(rows[0
 
 type Body = { els: Els; e: PaneEvent; snap: Snapshot; columns: number; usage: SessionUsage | null }
 
-/** Tab 1: chips, KPIs, the three series stacked, the ribbon, the top issues and the warnings; narrow, chips, the KPI list and the drag line. */
+/** The dock and short inline surface show a compact summary before detailed diagnostics. */
 function overviewBody(b: Body): RenderElement {
   const { els, e, snap, columns, usage } = b
   const { Box, Text } = els
-  if (columns < NARROW_COLUMNS) {
+  const short = e.props.scroll.bodyRows < 24
+  if (columns < 72 || short) {
     return (
       <Box flexDirection="column" gap={1}>
+        {KpiRow({ els, snap, usage: usage ?? undefined, columns, summary: true })}
+        <Box flexDirection="column">
+          <Text weight="semibold">Top issues</Text>
+          {IssuesList({ els, issues: snap.issues, limit: short ? 1 : OVERVIEW_ISSUES, total: snap.counts.issues, summary: true })}
+          {snap.issues.length ? <Text dimColor>Press 3 for evidence and affected steps.</Text> : null}
+        </Box>
+        {WarningsLine({ els, warnings: snap.trajviz.warnings })}
         {HealthChips({ els, health: snap.health })}
-        {KpiRow({ els, snap, usage: usage ?? undefined, columns })}
-        <Text dimColor>{DRAG_TEXT}</Text>
+        {columns < NARROW_COLUMNS ? <Text dimColor>{DRAG_TEXT}</Text> : null}
       </Box>
     )
   }
@@ -147,9 +154,13 @@ function overviewBody(b: Body): RenderElement {
     <Box flexDirection="column" gap={1}>
       {HealthChips({ els, health: snap.health })}
       {KpiRow({ els, snap, usage: usage ?? undefined, columns })}
+      <Box flexDirection="column">
+        <Text weight="semibold">Top issues</Text>
+        {IssuesList({ els, issues: snap.issues, limit: OVERVIEW_ISSUES, total: snap.counts.issues, summary: true })}
+        {snap.issues.length ? <Text dimColor>Press 3 for evidence and affected steps.</Text> : null}
+      </Box>
       {seriesOf({ els, surface: e.surface, snap, columns })}
       {PhaseRibbon({ els, phases: snap.phases, total: snap.counts.records, columns })}
-      {IssuesList({ els, issues: snap.issues, limit: OVERVIEW_ISSUES, total: snap.counts.issues })}
       {WarningsLine({ els, warnings: snap.trajviz.warnings })}
     </Box>
   )
@@ -316,23 +327,23 @@ export function renderPane(
       : `snapshot ${timeOf(snap.generated_at)} · ${fmtInt(snap.counts.assistant_steps)} steps · computed in ${fmtInt(snap.duration_ms)} ms · wall ${fmtSecs(snap.timing.wall_clock_s)} · watch ${flags.watch ? 'on' : 'off'}`
   return (
     <Box flexDirection="column" gap={1}>
-      <Box flexDirection="row" flexWrap="wrap" gap={1}>
+      <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={0}>
         {TABS.map((label, i) => {
           const n = i + 1
           const style = n === tab ? { variant: 'primary' as const } : { dimColor: true }
           return <Button key={`tab:${n}`} label={label} hotkey={String(n)} plain {...style} onPress={() => writePaneTab($, n)} />
         })}
       </Box>
-      <Box flexDirection="row" flexWrap="wrap" gap={2}>
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={0}>
+        <Button key="dashboard" label="Dashboard" hotkey="d" variant="primary" plain onPress={() => snap !== null ? runSnapshotCommand($, snap, 'dashboard') : runSelectedCommand($, 'dashboard')} />
         <Button key="refresh" label="Refresh" hotkey="r" plain onPress={refresh} />
         <Button key="watch" label={`Watch ${flags.watch ? 'on' : 'off'}`} hotkey="w" plain onPress={watch} />
-        <Button key="dashboard" label="Dashboard" hotkey="d" variant="primary" plain onPress={() => snap !== null ? runSnapshotCommand($, snap, 'dashboard') : runSelectedCommand($, 'dashboard')} />
       </Box>
       {dashboards.insight ? <Text dimColor wrap="wrap">{`Dashboard: ${dashboards.insight.url}`}</Text> : null}
       {dashboards.converge ? <Text dimColor wrap="wrap">{`Compare: ${dashboards.converge.url}`}</Text> : null}
       <Box flexDirection="column">
         <Text weight="semibold">{TABS[tab - 1] ?? TABS[0]}</Text>
-        <Text dimColor wrap="wrap">{TAB_GUIDES[tab - 1] ?? TAB_GUIDES[0]}</Text>
+        {columns >= 72 && e.props.scroll.bodyRows >= 24 ? <Text dimColor wrap="wrap">{TAB_GUIDES[tab - 1] ?? TAB_GUIDES[0]}</Text> : null}
       </Box>
       {body}
       {footer ? <Text dimColor>{footer}</Text> : null}

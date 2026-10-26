@@ -215,8 +215,8 @@ test('wide data uses wrapping records in narrow panes without losing fields or c
     for (const columns of [32, 56, 80]) {
       const ui = await $.ui.mount({ ...pane(columns), surface })
       expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
-      expect(await ui.find({ type: 'Text', text: `1. file: ${path}` })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: 'reads: 123' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: `1. File: ${path}` })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'Reads: 123' })).toBeDefined()
       expect((await ui.find({ type: 'Text', text: 'detail: first line second line' }))?.props['wrap']).toBe('wrap')
       expect(await ui.find({ type: 'Text', text: 'missing: —' })).toBeDefined()
       await ui.unmount()
@@ -241,6 +241,21 @@ test('table selection accounts for separator width and preserves Unicode and mul
       expect(await ui.find({ type: 'Text', text: '1. a: 中文路径/界面.ts' })).toBeDefined()
       expect((await ui.find({ type: 'Text', text: 'b: first\nsecond' }))?.props['wrap']).toBe('wrap')
     }
+    await ui.unmount()
+  }
+})
+
+test('narrow diagnostic records use readable numeric units and preserve every field', async ($, on) => {
+  on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) => MdTable({
+    els: $.ui.resolve(e), rows: [{ label: 'Builder', steps: 1234, tokens: 4120000, tool_calls: 90, duration_s: 95, cache_pct: 94.5, errors: 0 }],
+    columns: ['label', 'steps', 'tokens', 'tool_calls', 'duration_s', 'cache_pct', 'errors'], limit: 5, width: e.props.bodyColumns,
+  }))
+  for (const columns of [24, 32, 56]) {
+    const ui = await $.ui.mount({ ...pane(columns), surface: 'terminal' })
+    for (const text of ['1. Agent: Builder', 'Steps: 1,234', 'Tokens: 4,120,000', 'Tool calls: 90', 'Duration: 1m35s', 'Cache: 95%', 'Errors: 0']) {
+      expect(await ui.find({ type: 'Text', text })).toBeDefined()
+    }
+    expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
     await ui.unmount()
   }
 })

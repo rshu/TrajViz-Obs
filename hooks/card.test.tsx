@@ -113,6 +113,23 @@ test('card draws from its own snapshot id, not latest', async ($, on) => {
   await ui.unmount()
 })
 
+test('native plugin-prefixed command output renders the referenced old card on classic and fullscreen surfaces', async ($, on) => {
+  host(on, [SNAPSHOT, SECOND])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  const first = await obs($)
+  await obs($)
+  for (const isFullscreen of [false, true]) {
+    const ui = await $.ui.mount(row(`trajviz-obs: ${first}`, 'terminal', { columns: 80, rows: 32, isFullscreen }))
+    expect(await ui.find({ key: 'kpis-summary' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^311$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^350$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /computed in 842 ms/ })).toBeDefined()
+    if (isFullscreen) expect((await ui.find({ key: 'dashboard' }))?.props['variant']).toBe('primary')
+    else expect(await ui.find({ type: 'Text', text: /\/obs dashboard/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
 test('buttons only in fullscreen terminal', async ($, on) => {
   const { runs } = host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
@@ -130,7 +147,9 @@ test('buttons only in fullscreen terminal', async ($, on) => {
   ui = await $.ui.mount(row(text, 'terminal', { columns: 120, rows: 40, isFullscreen: true }))
   for (const key of BUTTON_KEYS) expect((await ui.find({ key }))?.type).toBe('Button')
   expect((await ui.find({ key: 'dashboard' }))?.props['label']).toBe('Dashboard')
-  expect((await ui.find({ key: 'json' }))?.props['label']).toBe('JSON')
+  expect((await ui.find({ key: 'json' }))?.props['label']).toBe('Export JSON')
+  expect((await ui.find({ key: 'fixes' }))?.props['label']).toBe('AI fixes')
+  expect((await ui.find({ key: 'analyze' }))?.props['label']).toBe('AI analyze')
   expect(await ui.find({ type: 'Text', text: /\/obs dashboard/ })).toBeUndefined()
   expect(await ui.press({ key: 'dashboard' })).toEqual({ element: 'dashboard' })
   await ui.press({ key: 'analyze' })
@@ -231,18 +250,17 @@ test('narrow viewport has no raster', async ($, on) => {
   expect(await ui.find({ key: 'swimlane' })).toBeUndefined()
   expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
   expect((await ui.find({ type: 'Text', text: /tool success/ }))?.props['color']).toBe('success')
-  expect((await ui.find({ type: 'Text', text: /Cache Efficiency/ }))?.text).toMatch(/^Cache Efficiency\s+95%$/)
+  expect(await ui.find({ key: 'kpis-summary' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^95%$/ })).toBeDefined()
   expect(await ui.findAll({ type: 'Text', text: /^\d\. / })).toHaveLength(3)
   expect(await ui.find({ key: 'dashboard' })).toBeDefined()
   await ui.unmount()
 
-  // 72–99: the series stacked full width (one Raster each), no swimlane.
+  // The default terminal width keeps the summary short; detailed charts are in the pane and dashboard.
   ui = await $.ui.mount(row(text, 'terminal', { columns: 80, rows: 40, isFullscreen: true }))
-  expect((await ui.find({ key: 'tokens' }))?.props).toMatchObject({ columns: 80 })
-  expect((await ui.find({ key: 'durations' }))?.props).toMatchObject({ columns: 80 })
-  expect((await ui.find({ key: 'context' }))?.props).toMatchObject({ columns: 80 })
+  expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
   expect(await ui.find({ key: 'swimlane' })).toBeUndefined()
-  expect(await ui.find({ key: 'kpis' })).toBeDefined()
+  expect(await ui.find({ key: 'kpis-summary' })).toBeDefined()
   await ui.unmount()
 
   // From 100: the three series side by side within the columns, and the swimlane.
@@ -255,7 +273,7 @@ test('narrow viewport has no raster', async ($, on) => {
 
   // No viewport measured yet: drawn as 80 columns.
   ui = await $.ui.mount({ ...row(text, 'terminal', { columns: 80, rows: 1 }), viewport: undefined })
-  expect((await ui.find({ key: 'tokens' }))?.props).toMatchObject({ columns: 80 })
+  expect(await ui.find({ key: 'kpis-summary' })).toBeDefined()
   await ui.unmount()
 })
 

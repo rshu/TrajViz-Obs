@@ -194,9 +194,9 @@ test('the hotkeys switch tabs, and each tab draws its own rows', async ($, on) =
 
   // Agents: the table and the swimlane.
   ui = await openTab($, 5)
-  expect(await ui.find({ type: 'Text', text: /label: Builder check/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^type: general-purpose$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^steps: 49$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Agent: Builder check/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Type: general-purpose$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Steps: 49$/ })).toBeDefined()
   expect((await ui.find({ key: 'swimlane' }))?.type).toBe('Raster')
   await ui.unmount()
 
@@ -213,8 +213,8 @@ test('the hotkeys switch tabs, and each tab draws its own rows', async ($, on) =
   // Timeline: the last steps as a table.
   ui = await openTab($, 7)
   expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /step: 311$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^role: assistant$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Step: 311$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Role: assistant$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Bash: claude plugin test \./ })).toBeDefined()
   await ui.unmount()
 
@@ -229,7 +229,8 @@ test('below 48 columns the overview is a KPI list and the drag line', async ($, 
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await obs($)
   const ui = await $.ui.mount(pane('terminal', 40))
-  expect((await ui.find({ type: 'Text', text: /Cache Efficiency/ }))?.text).toMatch(/^Cache Efficiency\s+95%$/)
+  expect(await ui.find({ key: 'kpis-summary' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^95%$/ })).toBeDefined()
   const drag = await ui.find({ type: 'Text', text: /Widen the pane/ })
   expect(drag?.text).toBe('Widen the pane for charts, or open Dashboard for the full view.')
   expect(drag?.props['dimColor']).toBe(true)
@@ -237,6 +238,40 @@ test('below 48 columns the overview is a KPI list and the drag line', async ($, 
   expect(await ui.find({ key: 'phases' })).toBeUndefined()
   // The tabs still switch.
   expect((await ui.find({ key: 'tab:3' }))?.props['hotkey']).toBe('3')
+  await ui.unmount()
+})
+
+test('the default dock leads with compact metrics and issue titles while preserving detailed issue navigation', async ($, on) => {
+  host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($)
+  const ui = await $.ui.mount(pane('terminal', 56))
+  expect(await ui.find({ key: 'kpis-summary' })).toBeDefined()
+  for (const value of ['311', '24%', '$1.25']) expect(await ui.find({ type: 'Text', text: value })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Top issues$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Edit loop on hooks\/lib\/state\.ts/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Run the test after each edit/ })).toBeUndefined()
+  expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
+  expect(await ui.find({ type: 'Text', text: /Press 3 for evidence/ })).toBeDefined()
+  await ui.press({ key: 'tab:3' })
+  await ui.unmount()
+  const details = await $.ui.mount(pane('terminal', 56))
+  expect(await details.find({ type: 'Text', text: /Run the test after each edit/ })).toBeDefined()
+  expect(await details.find({ type: 'Text', text: /steps 140, 142, 144/ })).toBeDefined()
+  await details.unmount()
+})
+
+test('a short inline pane avoids chart stacks and long issue evidence even on a wide terminal', async ($, on) => {
+  host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($)
+  const event = pane('terminal', 100)
+  const ui = await $.ui.mount({ ...event, props: { ...event.props, placement: 'inline', scroll: { offset: 0, bodyRows: 14 } } })
+  expect(await ui.find({ key: 'kpis-summary' })).toBeDefined()
+  expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
+  expect(await ui.findAll({ type: 'Text', text: /^\d\. / })).toHaveLength(1)
+  expect(await ui.find({ type: 'Text', text: /2 more/ })).toBeDefined()
+  expect((await ui.find({ key: 'dashboard' }))?.props['variant']).toBe('primary')
   await ui.unmount()
 })
 

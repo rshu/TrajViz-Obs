@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.7 — 2026-10-26
+
+- Recognize Claude Code's plugin output prefix so `/obs` renders its custom card.
+- Put dashboard navigation first, with health cards and findings in Overview’s Summary section.
+- Compact Claude Code cards and narrow panes; lead with actions, metrics, and ranked issue titles.
+- Improve diagnostic labels, units, and wrapping records in the native pane.
+- Bound dense agent filters and chart legends, and adapt Workflow to the space available beside the AI panel.
+- Keep dashboards consistently light to match native charts; remove empty chart placeholders.
+
 ## 0.1.6 — 2026-10-26
 
 - Make the full TrajViz dashboard the browser entry point; remove `/obs report` and its export adapter.

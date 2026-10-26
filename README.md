@@ -57,11 +57,11 @@ After the session's first assistant response:
 | Ask for model analysis | `/obs analyze [question]`, `/obs fixes`, `/obs label` |
 | See all commands and options | `/obs help` |
 
-In the dashboard, start with **Overview** for issues and health. Use its **Contents** menu for tools, agents, context, diagnostics, and labels. Click an issue's step number to inspect it in **Workflow**. **Patterns**, **Comparison**, and **Raw Data** provide the rest of TrajViz's single-session features. The session, context-window setting, and saved labels load automatically; expand **Session source and labels** to reload or choose another file.
+In the dashboard, start with **Overview → Summary** for issues and health. Use its **Contents** menu for tools, agents, context, diagnostics, and labels. Click an issue's step number to inspect it in **Workflow**. **Patterns**, **Comparison**, and **Raw Data** provide the rest of TrajViz's single-session features. The session, context-window setting, and saved labels load automatically; expand **Session source and labels** to reload or choose another file.
 
 For larger comparisons, `/obs converge` opens pairwise, batch, and before/after analysis. All registered views are available through `/obs view`, JSON exports through `/obs json`, and schemas through `/obs schemas`. `/obs labels <file> [other-file]` exports all label views and optional label comparisons. DECAF attribution is available through `/obs attribution` and the dashboard when its external checkout and reference data are configured.
 
-The terminal pane has seven tabs: Overview, Tools, Issues, Patterns, Agents, Context, and Timeline. Use `1`–`7` to switch, `r` to refresh, `w` to toggle watch, and `d` for the dashboard. Close it with `/obs pane close`.
+The `/obs` card leads with actions, compact metrics, and ranked findings. The terminal pane has seven tabs: Overview, Tools, Issues, Patterns, Agents, Context, and Timeline. Use `1`–`7` to switch, `r` to refresh, `w` to toggle watch, and `d` for the dashboard. Close it with `/obs pane close`.
 
 An open pane refreshes after main-session turns. Use `/obs watch off` to disable this, or `/obs statusline on` for a summary under the prompt.
 

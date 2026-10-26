@@ -2,10 +2,8 @@
 // `renderCard` is a function declaration taking `$` (validate follows `$`
 // across an import only into one); it reads nothing from state, the hook in
 // register.tsx hands it the snapshot the row's provenance line names. The
-// layout follows the breakpoints of the plan's Global Constraints by the
-// viewport's columns: from 100 the full card, 72–99 the series stacked full
-// width and no swimlane, below 72 chips, a KPI list, the top three issues
-// and no series at all (so no Raster).
+// Wide surfaces show the full charts; narrower surfaces lead with actions,
+// compact metrics and ranked issue titles, with details in the pane/dashboard.
 import type { EngineInterface, RenderElement, RenderInput, SessionUsage } from 'claude-code'
 import type { Snapshot } from '../../types'
 import { runSnapshotCommand } from '../lib/actions'
@@ -40,19 +38,16 @@ export const DEFAULT_COLUMNS = 80
 /** From here the full layout: the series side by side and the swimlane. */
 export const FULL_COLUMNS = 100
 
-/** From here the reduced layout: the series stacked full width; below it the minimal card. */
-export const REDUCED_COLUMNS = 72
-
 /** The button row, in order: each key is the `/obs` subcommand its press runs. */
 export const BUTTONS: readonly { key: string; label: string }[] = [
   { key: 'dashboard', label: 'Dashboard' },
   { key: 'pane', label: 'Live pane' },
-  { key: 'json', label: 'JSON' },
-  { key: 'fixes', label: 'Fixes' },
-  { key: 'analyze', label: 'Analyze' },
+  { key: 'json', label: 'Export JSON' },
+  { key: 'fixes', label: 'AI fixes' },
+  { key: 'analyze', label: 'AI analyze' },
 ]
 
-/** How many issues the card lists: the reduced and full layouts, and the minimal one. */
+/** How many issues the full and compact cards list. */
 const ISSUES_SHOWN = 5
 const ISSUES_SHOWN_MINIMAL = 3
 
@@ -88,7 +83,7 @@ function provenance(text: string): string {
 
 /**
  * The card: the provenance line with the snapshot's compute time, health
- * chips, the KPIs, the series (from 72 columns), tool bars, the phase
+ * chips, the KPIs, the series (from 100 columns), tool bars, the phase
  * ribbon, the swimlane (from 100), the top issues, the bottlenecks, the
  * load warnings, and the button row or the dim line of `/obs` forms.
  */
@@ -98,29 +93,13 @@ export function renderCard($: EngineInterface, e: CardEvent, snap: Snapshot, opt
   const { columns, usage, showButtons } = opts
   const surface = e.surface
   const full = columns >= FULL_COLUMNS
-  const reduced = columns >= REDUCED_COLUMNS
-  const series = seriesOf({ els, surface, snap, columns: full ? Math.floor((columns - 2 * SERIES_GAP) / 3) : columns })
+  const series = full ? seriesOf({ els, surface, snap, columns: Math.floor((columns - 2 * SERIES_GAP) / 3) }) : []
   const bottlenecks = snap.bottlenecks.map(b => `step ${fmtInt(b.step)} ${b.duration_s.toFixed(1)}s (${b.title})`).join(' · ')
   return (
     <Box flexDirection="column" gap={1}>
       <Text dimColor>{`${provenance(e.props.text)} · computed in ${fmtInt(snap.duration_ms)} ms`}</Text>
-      {HealthChips({ els, health: snap.health })}
-      {KpiRow({ els, snap, usage: usage ?? undefined, columns })}
-      {reduced ? (
-        full ? (
-          <Box flexDirection="row" gap={SERIES_GAP}>{series}</Box>
-        ) : (
-          <Box flexDirection="column" gap={1}>{series}</Box>
-        )
-      ) : null}
-      {ToolBars({ els, byTool: snap.tools.by_tool, width: columns })}
-      {PhaseRibbon({ els, phases: snap.phases, total: snap.counts.records, columns })}
-      {full ? Swimlane({ els, surface, lanes: snap.swimlane.lanes, total: snap.swimlane.total_steps, columns }) : null}
-      {IssuesList({ els, issues: snap.issues, limit: reduced ? ISSUES_SHOWN : ISSUES_SHOWN_MINIMAL, total: snap.counts.issues })}
-      {bottlenecks ? <Text dimColor>{`Bottlenecks: ${bottlenecks}`}</Text> : null}
-      {WarningsLine({ els, warnings: snap.trajviz.warnings })}
       {showButtons ? (
-        <Box flexDirection="row" flexWrap="wrap" gap={1}>
+        <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={0}>
           {BUTTONS.map(b => (
             <Button key={b.key} label={b.label} {...(b.key === 'dashboard' ? { variant: 'primary' as const } : {})} onPress={() => runSnapshotCommand($, snap, b.key)} />
           ))}
@@ -128,6 +107,19 @@ export function renderCard($: EngineInterface, e: CardEvent, snap: Snapshot, opt
       ) : (
         DimLine({ els, text: BUTTONS.map(b => `/obs ${b.key}`).join(' · ') })
       )}
+      {HealthChips({ els, health: snap.health })}
+      {KpiRow({ els, snap, usage: usage ?? undefined, columns, summary: !full })}
+      <Box flexDirection="column">
+        <Text weight="semibold">Top issues</Text>
+        {IssuesList({ els, issues: snap.issues, limit: full ? ISSUES_SHOWN : ISSUES_SHOWN_MINIMAL, total: snap.counts.issues, summary: !full })}
+        {!full && snap.issues.length ? <Text dimColor>Run /obs issues for evidence and affected steps.</Text> : null}
+      </Box>
+      {WarningsLine({ els, warnings: snap.trajviz.warnings })}
+      {full ? <Box flexDirection="row" gap={SERIES_GAP}>{series}</Box> : null}
+      {full ? ToolBars({ els, byTool: snap.tools.by_tool, width: columns }) : null}
+      {full ? PhaseRibbon({ els, phases: snap.phases, total: snap.counts.records, columns }) : null}
+      {full ? Swimlane({ els, surface, lanes: snap.swimlane.lanes, total: snap.swimlane.total_steps, columns }) : null}
+      {bottlenecks ? <Text dimColor>{`Bottlenecks: ${bottlenecks}`}</Text> : null}
     </Box>
   )
 }

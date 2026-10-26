@@ -31,7 +31,9 @@ const SNAPSHOT_TIMEOUT_MS = 120_000
 export const BUSY_STALE_MS = SETUP_TIMEOUT_MS + RESOLVE_TIMEOUT_MS + SNAPSHOT_TIMEOUT_MS
 
 const PREFIX = 'obs snapshot '
-const ID_LINE = /^obs snapshot (\d+) · /
+// Native CommandOutput text includes the owning plugin's name. Unit callers
+// and stored overview text use the marker directly; accept exactly those two.
+const ID_LINE = /^(?:trajviz-obs:[ \t]*)?obs snapshot (\d+) · /
 
 /** Whether the document is the empty state. */
 export function isEmpty(snap: Snapshot | EmptySnapshot): snap is EmptySnapshot {
