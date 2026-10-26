@@ -64,6 +64,8 @@ type Host = {
   snapshots: number
   /** How late `fs.stat` and the bridge's `snapshot` answer (0: at once). */
   delayMs: number
+  /** Holds one usage read, without delaying later readers or other commands. */
+  usageBlock: { wait: Promise<void>; started: () => void; usage: typeof USAGE } | null
 }
 
 /**
@@ -76,13 +78,18 @@ type Host = {
  */
 function host(on: On, snapshots: unknown[]): Host {
   const clock = mock.clock(on, { now: NOW })
-  const h: Host = { clock, ran: [], statuses: [], toasts: [], panes: [], stat: { size: 1_000, mtimeMs: NOW - 60_000 }, snapshots: 0, delayMs: 0 }
+  const h: Host = { clock, ran: [], statuses: [], toasts: [], panes: [], stat: { size: 1_000, mtimeMs: NOW - 60_000 }, snapshots: 0, delayMs: 0, usageBlock: null }
   on('command.register', () => ({ value: { command: 'obs' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 'abc' }))
   on('session.cwd', () => ({ value: CWD }))
-  on('session.usage', () => ({ value: USAGE }))
+  on('session.usage', async () => {
+    const block = h.usageBlock
+    h.usageBlock = null
+    if (block) { block.started(); await block.wait }
+    return { value: block?.usage ?? USAGE }
+  })
   mock.env(on, { HOME })
   on('fs.read', (_, e) => (e.path === STATE_PATH ? { value: STATE_JSON } : { deny: `ENOENT: ${e.path}` }))
   on('fs.exists', (_, e) => ({ value: e.path === VENV_PY || e.path === DERIVED }))
@@ -106,6 +113,7 @@ function host(on: On, snapshots: unknown[]): Host {
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('process.run', async (_, e) => {
     h.ran.push([...e.argv])
+    if (e.argv[3] === 'report') return { value: { exitCode: 0, stdout: JSON.stringify({ path: `${CACHE}/sessions/abc/report.html`, bytes: 900 }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[3] !== 'snapshot') return { deny: `cannot start ${e.argv[0]}` }
     if (h.delayMs > 0) await clock.sleep(h.delayMs)
     const doc = snapshots[Math.min(h.snapshots++, snapshots.length - 1)]
@@ -116,6 +124,16 @@ function host(on: On, snapshots: unknown[]): Host {
 
 const obs = ($: Engine, args: string): Promise<string> =>
   $.command.run({ command: 'obs', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never).then(r => r.text ?? '')
+
+/** Delays just the next usage read and exposes when it is actually waiting. */
+function blockUsage(h: Host, usage = USAGE): { started: Promise<void>; release: () => void } {
+  let started: () => void = () => {}
+  let release: () => void = () => {}
+  const entered = new Promise<void>(resolve => { started = resolve })
+  const wait = new Promise<void>(resolve => { release = resolve })
+  h.usageBlock = { wait, started, usage }
+  return { started: entered, release }
+}
 
 /** A turn's end as the engine raises it, on the main loop unless `agentId` is given, then the detached work settled (as far as the clock lets it). */
 async function turnEnds($: Engine, h: Host, agentId?: string): Promise<void> {
@@ -261,6 +279,84 @@ test('statusline on runs the snapshot after a turn and pins the summary line', {
   expect(h.statuses).toHaveLength(3)
   expect(h.statuses[2]).toBe(LINE)
   expect(h.ran).toHaveLength(1)
+})
+
+test('a blocked status-line usage read does not hold up report session selection', { options: { statusline: true, openBrowser: false } }, async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, '')
+  const gate = blockUsage(h)
+  const drawing = obs($, 'statusline on')
+  await gate.started
+  let completed = false
+  const reporting = obs($, 'report').then(text => { completed = true; return text })
+  try {
+    await h.clock.settle()
+    expect(completed).toBe(true)
+    expect(await reporting).toContain('Report written to')
+    expect(h.ran.map(argv => argv[3])).toEqual(['snapshot', 'report'])
+  } finally {
+    gate.release()
+    await Promise.all([drawing, reporting])
+  }
+})
+
+test('a newer status-line draw wins when an older usage read finishes later', { options: { statusline: true } }, async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, '')
+  const gate = blockUsage(h, { ...USAGE, context: { ...USAGE.context, percent: 99 } })
+  const older = obs($, 'statusline on')
+  await gate.started
+  let completed = false
+  const newer = obs($, 'statusline on').then(text => { completed = true; return text })
+  try {
+    await h.clock.settle()
+    expect(completed).toBe(true)
+    expect(h.statuses).toEqual([LINE])
+  } finally {
+    gate.release()
+    await Promise.all([older, newer])
+  }
+  expect(h.statuses).toEqual([LINE])
+})
+
+test('turning the status line off while its usage read is blocked keeps it cleared', { options: { statusline: true } }, async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, '')
+  const gate = blockUsage(h)
+  const drawing = obs($, 'statusline on')
+  await gate.started
+  try {
+    expect(await obs($, 'statusline off')).toBe('obs: statusline off')
+    expect(h.statuses).toEqual([undefined])
+  } finally {
+    gate.release()
+    await drawing
+  }
+  expect(h.statuses).toEqual([undefined])
+})
+
+test('/clear completes while a status-line usage read is blocked and prevents its stale draw', { options: { statusline: true } }, async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  on('classic.SessionStart', () => ({}))
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await $.classic.SessionStart({ source: 'startup', transcript_path: DERIVED, session_id: 'abc' })
+  await obs($, '')
+  const gate = blockUsage(h)
+  const drawing = obs($, 'statusline on')
+  await gate.started
+  let completed = false
+  const clearing = $.classic.SessionStart({ source: 'clear', transcript_path: '/new/def.jsonl', session_id: 'def' }).then(() => { completed = true })
+  try {
+    await h.clock.settle()
+    expect(completed).toBe(true)
+  } finally {
+    gate.release()
+    await Promise.all([drawing, clearing])
+  }
+  expect(h.statuses.every(line => line === undefined)).toBe(true)
 })
 
 test('statusline off while a run is in flight: the finished run leaves the line cleared', { options: { statusline: true } }, async ($, on) => {

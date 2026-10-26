@@ -1,6 +1,6 @@
 {
   "name": "trajviz-obs",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "TrajViz observability for the current Claude Code session: /obs visualizes and diagnoses the session's trajectory",
   "author": { "name": "Rui Shu" },
   "homepage": "https://github.com/rshu/TrajViz-Obs#readme",

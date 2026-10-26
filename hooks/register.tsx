@@ -6,7 +6,7 @@ import { isEmpty, parseSnapshotId } from './lib/snapshot'
 import { OBS_TOOL, serveTool } from './lib/tool'
 import { onTurnComplete } from './lib/watch'
 import { readDashboards, readFlags, readLatest, readPaneTab, readSession, readSnapshotMember, seedFlags } from './lib/state'
-import { dispatch } from './commands/index'
+import { commandFailure, dispatch } from './commands/index'
 import { cardColumns, renderCard, showsButtons } from './render/card'
 import { paneUsage, renderPane } from './render/pane'
 
@@ -32,7 +32,7 @@ export const register: Register = (on, options) => {
     } catch (error) {
       return { text: `obs: ${error instanceof Error ? error.message : String(error)}` }
     }
-  })
+  }).catch((_$, e, next) => commandFailure(e.args, next.error))
 
   // The obs tool, answered here: the model's call never reaches a server.
   on('tool.call', { tool: 'mcp__trajviz-obs__obs' }, ($, e) => serveTool($, options, e))

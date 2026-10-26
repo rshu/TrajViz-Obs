@@ -1,5 +1,5 @@
-import type { CommandPresentation, CommandRunResult, EngineInterface, PluginOptions } from 'claude-code'
-import { BOOLEAN_FLAGS, suggest, type Parsed } from '../lib/args'
+import type { CommandPresentation, CommandRunResult, EngineInterface, HookFailure, PluginOptions } from 'claude-code'
+import { BOOLEAN_FLAGS, parseArgs, suggest, type Parsed } from '../lib/args'
 import { browser } from './browser'
 import { compare } from './compare'
 import { exportCmd } from './exports'
@@ -21,6 +21,15 @@ export type CommandContext = {
 }
 
 export type Handler = ($: EngineInterface, ctx: CommandContext) => Promise<CommandRunResult>
+
+/** Host-level hook failures bypass the handler's JavaScript try/catch. */
+export function commandFailure(args: string, error: HookFailure): CommandRunResult {
+  const sub = parseArgs(args).sub
+  const detail = error.kind === 'timeout'
+    ? 'Claude Code stopped the command handler after its hook time budget expired.'
+    : `The command handler failed${error.message ? `: ${error.message.slice(0, 2000)}` : ' in Claude Code.'}`
+  return { text: `obs ${sub}: ${detail}\nRun /reload-plugins, then retry the command.`, exitCode: 1 }
+}
 
 const VIEW_FLAGS = ['limit', 'offset', 'json']
 const OUTPUT_FLAGS = ['o', 'out']

@@ -1,6 +1,6 @@
 import type { CommandRunResult, EngineInterface } from 'claude-code'
 import { readFlags, readLatest, setFlag } from '../lib/state'
-import { drawStatusLine } from '../lib/watch'
+import { drawStatusLine, setStatusLineEnabled } from '../lib/watch'
 import type { CommandContext } from './index'
 
 /**
@@ -18,6 +18,7 @@ export async function toggles($: EngineInterface, ctx: CommandContext): Promise<
   else return { text: `Usage: /obs ${name} [on|off]` }
   await setFlag($, name, on)
   if (name === 'statusline') {
+    setStatusLineEnabled(on)
     if (on) await drawStatusLine($, await readLatest($))
     else $.ui.status(undefined)
   }

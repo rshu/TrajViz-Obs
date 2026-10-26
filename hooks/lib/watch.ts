@@ -65,16 +65,31 @@ export function statusLine(snap: Snapshot, usage: SessionUsage | null): string {
   return `obs · ctx ${fmtPct(ctx)} · ${fmtInt(snap.tools.calls)} tools ${fmtPct(snap.tools.success_rate)} · ${issues} issue${issues === 1 ? '' : 's'}`
 }
 
-/** Draws the status line from `snap` (nothing for no snapshot or an empty one). */
+/** A later draw supersedes an older one still waiting for live usage. */
+let statusDrawSequence = 0
+/** Host state reads are fixed per dispatch; explicit toggles must supersede them. */
+let statuslineOverride: boolean | undefined
+
+/** Invalidates pending draws when the person changes the status-line setting. */
+export function setStatusLineEnabled(enabled: boolean): void {
+  statuslineOverride = enabled
+  statusDrawSequence++
+}
+
+/** Draws the status line without holding publication while live usage is read. */
 export async function drawStatusLine($: EngineInterface, snap: Snapshot | EmptySnapshot | null, generation = publicationGeneration()): Promise<void> {
-  const release = await lockPublication()
-  try {
-    if (generation !== publicationGeneration()) return
-    if (snap === null || isEmpty(snap)) { $.ui.status(undefined); return }
+  if (generation !== publicationGeneration()) return
+  const draw = ++statusDrawSequence
+  let text: string | undefined
+  if (snap !== null && !isEmpty(snap)) {
     const selected = (await readSession($)).selected
     const usage = selected ? null : await sessionUsage($)
-    if ((await readFlags($)).statusline) $.ui.status(statusLine(snap, usage))
-  } finally { release() }
+    const flags = await readFlags($)
+    if (!(statuslineOverride ?? flags.statusline)) return
+    text = statusLine(snap, usage)
+  }
+  if (generation !== publicationGeneration() || draw !== statusDrawSequence) return
+  $.ui.status(text)
 }
 
 /** Whether the pane is open (placed or not), by the engine's own record. */

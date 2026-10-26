@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 — 2026-10-26
+
+- Prevent status-line usage lookups from blocking reports, dashboards, and session changes.
+- Discard superseded status updates and honor off toggles during concurrent commands.
+- Report hook timeouts and failures instead of falling through to the missing-handler message.
+
 ## 0.1.3 — 2026-10-25
 
 - Keep installer cancellation safe under repeated termination signals.
