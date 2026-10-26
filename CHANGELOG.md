@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.6 — 2026-10-26
+
+- Make the full TrajViz dashboard the browser entry point; remove `/obs report` and its export adapter.
+- Improve pane navigation and narrow layouts, and group dashboard source controls, charts, and guidance.
+- Restart dashboards when the selected session, data root, or launch settings change.
+- Preserve Claude Code's context window and saved labels in the dashboard, and export every label view.
+- Clarify session-model analysis versus the dashboard's environment-configured AI controls.
+
 ## 0.1.5 — 2026-10-26
 
 - Fix standalone report fonts, responsive cards, and tooltip overflow.

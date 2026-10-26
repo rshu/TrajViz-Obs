@@ -108,7 +108,7 @@ async function pending($: EngineInterface, options: PluginOptions, extra?: Extra
 }
 
 /** What each extra brings, for the question and the rows. */
-const EXTRA_WHAT: Record<Extra, string> = { charts: 'the HTML report', app: 'the dashboards' }
+const EXTRA_WHAT: Record<Extra, string> = { charts: 'chart views', app: 'the dashboards' }
 
 /** What an extra's install costs, for the question and the announcing row. */
 const EXTRA_COST = 'downloads additional packages'
@@ -120,7 +120,7 @@ export function installingText(extra: Extra): string {
 
 /**
  * The environment, built on the first run, and `extra` (`charts` for the
- * report, `app` for the dashboards) installed when it is not yet. The first
+ * chart views, `app` for the dashboards) installed when it is not yet. The first
  * run is announced by its toast (the spec's setup line); an extra's install
  * by a row of the transcript before it starts (`$.ui.log`, which the person
  * sees in an interactive session and a headless host receives as `ui_log`).

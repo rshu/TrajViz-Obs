@@ -12,12 +12,13 @@
 // state is reached only through the functions in state.ts.
 import type { EngineInterface, ProcessSpawnChunk, ProcessSpawnResult, Timer } from 'claude-code'
 import type { Dashboards } from '../../types'
+import { publicationGeneration } from './publication'
 import { resetDashboards, setDashboard } from './state'
 
 export type Kind = keyof Dashboards
 
 /** A child's URL line: where it serves, and whether the session preload was wired (always true for converge). */
-export type UrlLine = { url: string; preloaded: boolean }
+export type UrlLine = { url: string; preloaded: boolean; labels_preloaded?: boolean }
 
 /** What a start answers: the child's URL line, or why it did not start. */
 export type Started = UrlLine | { error: string }
@@ -63,9 +64,9 @@ const parseJson = (line: string): unknown => {
 export function parseUrlLine(line: string): UrlLine | null {
   const doc = parseJson(line)
   if (typeof doc !== 'object' || doc === null) return null
-  const { url, preloaded } = doc as { url?: unknown; preloaded?: unknown }
+  const { url, preloaded, labels_preloaded } = doc as { url?: unknown; preloaded?: unknown; labels_preloaded?: unknown }
   if (typeof url !== 'string' || !url) return null
-  return { url, preloaded: preloaded !== false }
+  return { url, preloaded: preloaded !== false, ...(typeof labels_preloaded === 'boolean' ? { labels_preloaded } : {}) }
 }
 
 /** The message of the bridge's `{"error": {…}}` envelope on a line; null for any other line. */
@@ -83,16 +84,21 @@ export function portOf(url: string): number {
   return Number(/^[a-z]+:\/\/[^/]*:(\d+)(?:\/|$)/i.exec(url)?.[1] ?? 0)
 }
 
-type Server = { stream: ServerStream; url: string; cancelled: boolean; cancel: () => void }
+type Server = { stream: ServerStream; url: string; identity: string; preloaded: boolean; labelsPreloaded?: boolean; cancelled: boolean; cancel: () => void }
 
 /** The running children by kind; an entry exists from the URL line until the stream ends. */
 const servers = new Map<Kind, Server>()
 const starts = new Map<Kind, Promise<Started>>()
+const startIdentities = new Map<Kind, string>()
 const startTokens = new Map<Kind, object>()
 
-/** The URL dashboard `kind` runs at; null when it is not running. */
-export function running(kind: Kind): string | null {
-  return servers.get(kind)?.url || null
+/** Launch arguments plus an optional revision of a file loaded at startup. */
+const identityOf = (argv: readonly string[], revision = ''): string => JSON.stringify([argv, revision])
+
+/** Its URL, optionally restricted to the exact launch arguments; null when the source differs. */
+export function running(kind: Kind, argv?: readonly string[], revision = ''): string | null {
+  const server = servers.get(kind)
+  return server && (argv === undefined || server.identity === identityOf(argv, revision)) ? server.url || null : null
 }
 
 /** Whether a dashboard process is running or still announcing its URL. */
@@ -119,7 +125,7 @@ async function end(stream: ServerStream): Promise<void> {
  * child exited, or `stopServer` returned the stream) and then clears the
  * entry, unless a later start already holds the kind.
  */
-export async function startServerFrom($: EngineInterface, kind: Kind, stream: ServerStream): Promise<Started> {
+export async function startServerFrom($: EngineInterface, kind: Kind, stream: ServerStream, identity = ''): Promise<Started> {
   let settle: (s: Started) => void = () => {}
   const first = new Promise<Started>(resolve => {
     settle = resolve
@@ -130,7 +136,7 @@ export async function startServerFrom($: EngineInterface, kind: Kind, stream: Se
     if ('error' in result && servers.get(kind) === server) servers.delete(kind)
     settle(result)
   }
-  const server: Server = { stream, url: '', cancelled: false, cancel: () => finish({ error: 'the dashboard start was cancelled' }) }
+  const server: Server = { stream, url: '', identity, preloaded: true, cancelled: false, cancel: () => finish({ error: 'the dashboard start was cancelled' }) }
   servers.set(kind, server)
   const buffers: Record<ProcessSpawnChunk['stream'], LineBuffer> = { stdout: new LineBuffer(), stderr: new LineBuffer() }
   let last = ''
@@ -149,6 +155,8 @@ export async function startServerFrom($: EngineInterface, kind: Kind, stream: Se
     const url = parseUrlLine(line)
     if (url !== null) {
       server.url = url.url
+      server.preloaded = url.preloaded
+      server.labelsPreloaded = url.labels_preloaded
       servers.set(kind, server)
       await setDashboard($, kind, { url: url.url, port: portOf(url.url) })
       if (server.cancelled) return 'failed'
@@ -221,27 +229,38 @@ export async function startServerFrom($: EngineInterface, kind: Kind, stream: Se
 /**
  * Starts dashboard `kind` as the child `argv` in the session's directory
  * (TrajViz's `.env` loading then sees the project's file) and answers its
- * URL line, or why it did not start. One already running answers its URL
- * (as preloaded: the row for one already up makes no claim about it) and
- * starts nothing.
+ * URL line, or why it did not start. Matching launch arguments reuse the
+ * process; changing the transcript, data root, labels, window or port
+ * cancels the old process before starting its replacement.
  */
-export async function startServer($: EngineInterface, kind: Kind, argv: string[]): Promise<Started> {
-  const live = running(kind)
-  if (live !== null) return { url: live, preloaded: true }
+export async function startServer($: EngineInterface, kind: Kind, argv: string[], revision = '', generation?: number): Promise<Started> {
+  if (generation !== undefined && generation !== publicationGeneration()) return { error: 'The selected session changed during analysis; run /obs again.' }
+  const identity = identityOf(argv, revision)
+  const live = servers.get(kind)
+  if (live?.url && live.identity === identity) return { url: live.url, preloaded: live.preloaded, ...(live.labelsPreloaded !== undefined ? { labels_preloaded: live.labelsPreloaded } : {}) }
   const existing = starts.get(kind)
-  if (existing) return existing
+  if (existing && startIdentities.get(kind) === identity) return existing
+  // Cancel a different source before reserving this start. Do not await yet:
+  // the reservation must be visible to another request during state cleanup.
+  const stopped = hasServer(kind) ? stopServer($, kind) : Promise.resolve()
   const token = {}
   startTokens.set(kind, token)
   const pending = (async () => {
+    await stopped
     const cwd = await $.session.cwd()
     if (startTokens.get(kind) !== token) return { error: 'the dashboard start was cancelled' }
-    return startServerFrom($, kind, $.process.spawn({ argv, cwd }))
+    if (generation !== undefined && generation !== publicationGeneration()) return { error: 'The selected session changed during analysis; run /obs again.' }
+    return startServerFrom($, kind, $.process.spawn({ argv, cwd }), identity)
   })()
   starts.set(kind, pending)
+  startIdentities.set(kind, identity)
   try {
     return await pending
   } finally {
-    if (starts.get(kind) === pending) starts.delete(kind)
+    if (starts.get(kind) === pending) {
+      starts.delete(kind)
+      startIdentities.delete(kind)
+    }
     if (startTokens.get(kind) === token) startTokens.delete(kind)
   }
 }
@@ -256,6 +275,7 @@ export async function startServer($: EngineInterface, kind: Kind, argv: string[]
 export async function stopServer($: EngineInterface, kind: Kind): Promise<void> {
   startTokens.delete(kind)
   starts.delete(kind)
+  startIdentities.delete(kind)
   const server = servers.get(kind)
   if (!server) return
   servers.delete(kind)

@@ -40,9 +40,9 @@ test('real bridge snapshot renders every pane tab on terminal and desktop', asyn
       await ui.press({ key: `tab:${tab}` })
       expect(await ui.find({ key: 'refresh' })).toBeDefined()
       if (tab === 4) {
-        expect(await ui.find({ type: 'Text', text: 'error clusters' })).toBeDefined()
-        expect(await ui.find({ type: 'Text', text: 'failure chains' })).toBeDefined()
-        expect(await ui.find({ type: 'Text', text: 'hotspots' })).toBeDefined()
+        expect(await ui.find({ type: 'Text', text: 'Error clusters' })).toBeDefined()
+        expect(await ui.find({ type: 'Text', text: 'Failure chains' })).toBeDefined()
+        expect(await ui.find({ type: 'Text', text: 'Hotspots' })).toBeDefined()
       }
       if (surface === 'desktop') expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
       await ui.unmount()

@@ -242,8 +242,7 @@ def _artifacts(folder: Path | None) -> dict:
         return str(path) if path is not None and path.exists() else None
 
     root = folder if folder is not None and folder.is_dir() else None
-    return {"dir": existing(root), "report": existing(root and root / "report.html"),
-            "views": existing(root and root / "views"), "labels": existing(root and root / "labels.json")}
+    return {"dir": existing(root), "views": existing(root and root / "views"), "labels": existing(root and root / "labels.json")}
 
 
 def _display_previews(value: Any, path: tuple[str | int, ...], clipped: list[str]) -> Any:

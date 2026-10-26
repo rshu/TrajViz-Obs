@@ -36,15 +36,15 @@ const OUTPUT_FLAGS = ['o', 'out']
 const COMMAND_FLAGS: Record<string, readonly string[]> = {
   overview: [], pane: [], view: VIEW_FLAGS,
   issues: VIEW_FLAGS, health: VIEW_FLAGS, patterns: VIEW_FLAGS, agents: VIEW_FLAGS, context: VIEW_FLAGS, timeline: VIEW_FLAGS,
-  report: [...OUTPUT_FLAGS, 'dark', 'offline'], json: [...OUTPUT_FLAGS, 'view', 'with-trajectory'], bundle: OUTPUT_FLAGS, schemas: OUTPUT_FLAGS,
+  json: [...OUTPUT_FLAGS, 'view', 'with-trajectory'], bundle: OUTPUT_FLAGS, schemas: OUTPUT_FLAGS,
   dashboard: ['port'], converge: ['data-root', 'port'],
   compare: ['anchor-patch', 'fuzzy-commands', 'reverse'], scorecard: ['fuzzy-commands', 'labels', 'no-self'], labels: [],
   fixes: ['limit'], label: [...OUTPUT_FLAGS, 'assistant-only', 'model', 'max-steps'],
   attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [], setup: ['extras', 'source'], doctor: [], help: [],
 }
 
-const NO_POSITIONALS = ['overview', 'help', 'doctor', 'setup', 'report', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline']
-const SESSION_COMMANDS = ['overview', 'pane', 'view', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'report', 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution']
+const NO_POSITIONALS = ['overview', 'help', 'doctor', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline']
+const SESSION_COMMANDS = ['overview', 'pane', 'view', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution']
 
 /** Reject grammar that would otherwise be ignored, before setup or external work. */
 function argumentError(ctx: CommandContext): string | undefined {
@@ -96,7 +96,6 @@ export async function dispatch($: EngineInterface, ctx: CommandContext): Promise
     case 'context':
     case 'timeline':
       return inline($, ctx)
-    case 'report':
     case 'json':
     case 'bundle':
     case 'schemas':
@@ -125,6 +124,8 @@ export async function dispatch($: EngineInterface, ctx: CommandContext): Promise
       return toggles($, ctx)
     case 'help':
       return help($, ctx)
+    case 'report':
+      return { text: 'HTML reports have been removed. Run /obs dashboard for the full interactive view.' }
     default:
       break
   }

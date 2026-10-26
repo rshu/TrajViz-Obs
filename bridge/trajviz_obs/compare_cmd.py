@@ -11,6 +11,9 @@ sidecar's views and, given a second sidecar, the phase comparison of the two. Ea
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -18,6 +21,7 @@ from typing import Any
 import agent_trajviz as tv
 from agent_trajviz import Trajectory
 
+from . import paths
 from .cli import register
 from .compat import EmptySession, load_plugins, load_run, protect_run_outputs, resolve_input_path
 from .errors import BridgeError
@@ -235,8 +239,26 @@ def label_views_payload(sidecar: str, other: str | None) -> dict:
         counts, durations = pair["label_phase_count_comparison"].data, pair["label_phase_duration_comparison"].data
         out["comparison"] = {side: {"name": counts[side]["name"], **_phases(counts[side], durations[side])}
                              for side in ("reference", "compared")}
+        views.update(pair)
+    out["views"] = {vid: view.to_dict() for vid, view in views.items()}
     out["text"] = _labels_text(summary, phases, out.get("comparison"))
     return out
+
+
+def _label_sources(sidecar: Path) -> list[Path]:
+    """Inputs label aggregation may read: the sidecar and its optional legacy trajectory fallback."""
+    sources = [sidecar]
+    document = json.loads(sidecar.read_text(encoding="utf-8"))
+    trajectory = document.get("trajectory_file")
+    if not trajectory or any(isinstance(step, dict) and step.get("role") == "user"
+                             for step in document["steps"]):
+        return sources
+    candidate = Path(trajectory)
+    if not candidate.is_file():
+        candidate = sidecar.absolute().parent / candidate.name
+    if candidate.is_file():
+        sources.extend(session_files(candidate.resolve()))
+    return sources
 
 
 # -- subcommands -----------------------------------------------------------------
@@ -263,6 +285,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("labels", help="The label views of a step-labels sidecar, or two compared.")
     p.add_argument("--sidecar", required=True, help="The labels sidecar.")
     p.add_argument("--other", default=None, help="A second sidecar, the reference of the comparison.")
+    p.add_argument("--artifacts", type=Path, default=None, help="The folder for the complete labels view JSON.")
 
 
 @register("compare")
@@ -289,4 +312,15 @@ def _scorecard(args: argparse.Namespace) -> dict:
 
 @register("labels")
 def _labels_cmd(args: argparse.Namespace) -> dict:
-    return label_views_payload(args.sidecar, args.other)
+    result = label_views_payload(args.sidecar, args.other)
+    sidecars = [Path(args.sidecar), *([Path(args.other)] if args.other is not None else [])]
+    identity = hashlib.sha256("\0".join(str(path.resolve()) for path in sidecars).encode()).hexdigest()[:24]
+    folder = args.artifacts if args.artifacts is not None else (
+        paths.cache_root(os.environ) / "trajviz-obs" / "label-views")
+    destination = folder / f"labels-{identity}.json"
+    protect_inputs([destination], [path for sidecar in sidecars for path in _label_sources(sidecar)])
+    folder.mkdir(parents=True, exist_ok=True)
+    _write_json(destination, {"views": result.pop("views")})
+    result["path"] = str(destination)
+    result["text"] += f"\nLabel views written to {destination}."
+    return result

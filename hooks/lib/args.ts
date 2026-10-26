@@ -11,7 +11,7 @@ export type Parsed = {
 /** Every subcommand the grammar names, in the help table's order. */
 export const SUBCOMMANDS: readonly string[] = [
   'overview', 'pane', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'view',
-  'report', 'json', 'bundle', 'schemas',
+  'json', 'bundle', 'schemas',
   'dashboard', 'converge',
   'compare', 'scorecard', 'converge-cli', 'labels',
   'analyze', 'fixes', 'label',
@@ -20,7 +20,7 @@ export const SUBCOMMANDS: readonly string[] = [
 
 const DEFAULT_SUB = 'overview'
 /** Flags that never consume the next positional, regardless of their order. */
-export const BOOLEAN_FLAGS: readonly string[] = ['dark', 'offline', 'with-trajectory', 'json', 'fuzzy-commands', 'reverse', 'no-self', 'assistant-only']
+export const BOOLEAN_FLAGS: readonly string[] = ['with-trajectory', 'json', 'fuzzy-commands', 'reverse', 'no-self', 'assistant-only']
 
 /**
  * Splits as a POSIX shell would: whitespace separates, single quotes keep

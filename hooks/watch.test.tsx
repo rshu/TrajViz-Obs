@@ -113,7 +113,7 @@ function host(on: On, snapshots: unknown[]): Host {
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('process.run', async (_, e) => {
     h.ran.push([...e.argv])
-    if (e.argv[3] === 'report') return { value: { exitCode: 0, stdout: JSON.stringify({ path: `${CACHE}/sessions/abc/report.html`, bytes: 900 }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (e.argv[3] === 'json') return { value: { exitCode: 0, stdout: JSON.stringify({ path: `${CACHE}/sessions/abc/views`, bytes: 900, files: ['index.json'] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[3] !== 'snapshot') return { deny: `cannot start ${e.argv[0]}` }
     if (h.delayMs > 0) await clock.sleep(h.delayMs)
     const doc = snapshots[Math.min(h.snapshots++, snapshots.length - 1)]
@@ -281,7 +281,7 @@ test('statusline on runs the snapshot after a turn and pins the summary line', {
   expect(h.ran).toHaveLength(1)
 })
 
-test('a blocked status-line usage read does not hold up report session selection', { options: { statusline: true, openBrowser: false } }, async ($, on) => {
+test('a blocked status-line usage read does not hold up export session selection', { options: { statusline: true, openBrowser: false } }, async ($, on) => {
   const h = host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await obs($, '')
@@ -289,12 +289,12 @@ test('a blocked status-line usage read does not hold up report session selection
   const drawing = obs($, 'statusline on')
   await gate.started
   let completed = false
-  const reporting = obs($, 'report').then(text => { completed = true; return text })
+  const reporting = obs($, 'json').then(text => { completed = true; return text })
   try {
     await h.clock.settle()
     expect(completed).toBe(true)
-    expect(await reporting).toContain('Report written to')
-    expect(h.ran.map(argv => argv[3])).toEqual(['snapshot', 'report'])
+    expect(await reporting).toContain('written to')
+    expect(h.ran.map(argv => argv[3])).toEqual(['snapshot', 'json'])
   } finally {
     gate.release()
     await Promise.all([drawing, reporting])

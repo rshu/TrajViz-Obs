@@ -2,12 +2,11 @@
 
 Writes a machine-readable ledger and private raw events under --output.
 The test deliberately produces a failed tool call, fixes a tiny program, then
-checks the live session through /obs, its views, exports, report and analysis.
+checks the live session through /obs, its views, exports, dashboards and analysis.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import queue
@@ -92,16 +91,6 @@ def validate_export(directory: Path, session_id: str) -> dict:
     require(any(row.get('kind') == 'error' for row in json_object(directory / 'issues.json').get('data', [])),
             'No error diagnostic in export')
     return {'views': len(index['views']), 'steps': len(steps), 'source': trajectory['source']}
-
-
-def validate_report(path: Path) -> dict:
-    require(path.is_file(), f'Report was not written: {path}')
-    text = path.read_text()
-    require(text.count('<!DOCTYPE html>') == 1 and 'Plotly' in text, 'Not a complete Plotly HTML report')
-    require(path.stat().st_size > 1_000_000, 'Offline report has no embedded Plotly bundle')
-    require(re.search(r'<script\b[^>]*\bsrc=[\"\'][^\"\']*plotly', text, re.IGNORECASE) is None,
-            'Offline report still loads a Plotly script externally')
-    return {'path': str(path), 'bytes': path.stat().st_size, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
 def feature_replies(artifacts: Path, feature: str) -> dict:
@@ -277,7 +266,7 @@ def exercise_command_matrix(turn, output: Path, session_id: str) -> dict:
         ('/obs health --limit 0', r'limit.*(?:1|500)'),
         ('/obs view missing_view', r'No view'),
         ('/obs view health nonsense=x', r'No option'),
-        ('/obs report --out', r'needs an output path'),
+        ('/obs bundle --out', r'needs an output path'),
         ('/obs doctor unexpected', r'Unexpected arguments|Usage:'),
         ('/obs health --unexpected', r'Unknown option'),
         ('/obs --session', r'--session needs'),
@@ -295,7 +284,6 @@ def main() -> None:
     parser.add_argument('--cache', type=Path)
     parser.add_argument('--model', default='haiku')
     parser.add_argument('--skip-llm', action='store_true')
-    parser.add_argument('--skip-report', action='store_true')
     parser.add_argument('--skip-dashboard', action='store_true')
     parser.add_argument('--test-obs-tool', action='store_true', help='Additional paid turn using the plugin tool')
     parser.add_argument('--test-llm-all', action='store_true', help='Also exercise one fixes and one label model call')
@@ -331,7 +319,7 @@ def main() -> None:
     events: queue.Queue[dict | None] = queue.Queue()
     ledger: dict = {'claude_version': subprocess.check_output(['claude', '--version'], text=True).strip(),
                     'commands': [], 'checks': [], 'output': str(output), 'cache': str(cache), 'status': 'running',
-                    'coverage': {'report': not args.skip_report, 'analysis': not args.skip_llm,
+                    'coverage': {'analysis': not args.skip_llm,
                                  'dashboards': not args.skip_dashboard, 'model_obs_tool': args.test_obs_tool,
                                  'fixes': args.test_llm_all, 'label': args.test_llm_all, 'subagents': args.test_subagent,
                                  'command_matrix': args.test_command_matrix}}
@@ -445,18 +433,12 @@ Use the tools to do this work; do not merely describe commands.'''
             if args.test_command_matrix:
                 check('native command and view matrix',
                       lambda: exercise_command_matrix(turn, output, ledger['session_id']))
-            extras = ['charts'] if not args.skip_report else []
-            if not args.skip_dashboard:
-                extras.append('app')
+            extras = ['app'] if not args.skip_dashboard else []
             if extras:
                 turn('/obs setup --extras ' + ','.join(extras), 'optional extras setup', timeout=600,
                      expected=r'TrajViz \S+ is set up at .*extras ')
                 require(set(extras) <= set(json_object(cache / 'trajviz-obs' / 'state.json').get('extras', [])),
                         'Setup did not record the requested extras')
-            if not args.skip_report:
-                turn(f'/obs report --offline -o "{output / "report.html"}"', 'offline HTML report', timeout=360,
-                     expected=r'Report written to ')
-                check('offline HTML report content', lambda: validate_report(output / 'report.html'))
             if not args.skip_llm:
                 analysis = turn('/obs analyze Identify the failed tool call and the recovery. Be concise.',
                                 'session-model analysis', timeout=360, expected=r'analyze: 1 call')

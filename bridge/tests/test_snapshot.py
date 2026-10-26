@@ -122,7 +122,7 @@ def test_snapshot_keeps_long_provenance_and_artifact_paths_exact(tmp_path):
     source.rename(transcript)
     artifacts = nested / "artifacts"
     artifacts.mkdir()
-    (artifacts / "report.html").write_text("report")
+    (artifacts / "labels.json").write_text("{}")
     run = load_run(str(transcript))
     snap = build_snapshot(run, transcript_path=str(transcript), facts=scan_transcript(str(transcript)),
                           agents_meta={}, artifacts=artifacts)
@@ -130,7 +130,7 @@ def test_snapshot_keeps_long_provenance_and_artifact_paths_exact(tmp_path):
     assert snap["transcript"]["path"] == str(transcript)
     assert snap["transcript"]["sha256"] == run.sha256
     assert snap["artifacts"]["dir"] == str(artifacts)
-    assert snap["artifacts"]["report"] == str(artifacts / "report.html")
+    assert snap["artifacts"]["labels"] == str(artifacts / "labels.json")
 
 
 def test_snapshot_cli_empty_current(run_cli, tmp_path):
@@ -161,13 +161,11 @@ def test_snapshot_warnings_carry_skipped_children(tmp_session_with_bad_child):
 
 
 def test_snapshot_cli_on_fixture(run_cli, fixture_session, tmp_artifacts):
-    (tmp_artifacts / "report.html").write_text("<html></html>")
     code, out = run_cli(["snapshot", "--transcript", str(fixture_session), "--window", "1000000",
                          "--artifacts", str(tmp_artifacts), "--max-points", "10"])
     assert code == 0 and out["counts"]["assistant_steps"] == 23
     assert out["context"]["window"] == 1_000_000 and out["context"]["window_source"] == "override"
-    assert out["artifacts"] == {"dir": str(tmp_artifacts), "report": str(tmp_artifacts / "report.html"),
-                                "views": None, "labels": None}
+    assert out["artifacts"] == {"dir": str(tmp_artifacts), "views": None, "labels": None}
     assert len(out["series"]["tokens"]["output"]) <= 10 and out["duration_ms"] >= 0
 
 

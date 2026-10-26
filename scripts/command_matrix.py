@@ -111,11 +111,6 @@ def run_matrix(python: str, output: Path) -> dict:
             require(archive.testzip() is None and len(archive.namelist()) == bundle['members_total'], 'Invalid ZIP')
             require(any(archive.read(name) == source.read_bytes() for name in archive.namelist()),
                     'Bundle does not preserve the source transcript')
-        for dark in ([], ['--dark']):
-            report = call('report', *common, '--offline', '--out', str(output / ('dark.html' if dark else 'light.html')),
-                          *dark)
-            html = Path(report['path']).read_text(encoding='utf-8')
-            require('<!DOCTYPE html>' in html and 'Plotly' in html and report['bytes'] > 1_000_000, 'Invalid report')
         for reverse in ([], ['--reverse']):
             compared = call('compare', *common, '--other', str(exported / 'trajectory.json'),
                             '--fuzzy-commands', *reverse)
@@ -165,7 +160,7 @@ def run_matrix(python: str, output: Path) -> dict:
             (['resolve', '--session', str(output / 'missing.jsonl')], 1, 'not_found'),
             (['sessions', '--limit', '501'], 2, 'usage'),
             (['json', *common, '--out', str(output / 'bad'), '--view', 'missing_view'], 1, 'unknown_view'),
-            (['report', *common, '--out', str(source)], 1, 'bad_output'),
+            (['bundle', '--transcript', str(source), '--out', str(source)], 1, 'bad_output'),
         ]:
             call(argv[0], *argv[1:], status=status, error=code)
         require(hashlib.sha256(source.read_bytes()).hexdigest() == before, 'The source fixture was changed')

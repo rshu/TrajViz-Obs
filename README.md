@@ -4,7 +4,7 @@
 [![Plugin version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frshu%2FTrajViz-Obs%2Fmain%2F.claude-plugin%2Fplugin.json&query=%24.version&label=plugin&prefix=v&color=blue)](https://github.com/rshu/TrajViz-Obs/blob/main/.claude-plugin/plugin.json)
 [![License](https://img.shields.io/github/license/rshu/TrajViz-Obs)](LICENSE)
 
-Visualize and diagnose Claude Code sessions with [TrajViz](https://github.com/rshu/TrajViz). Run `/obs` to inspect health, token and context use, tools, bottlenecks, issues, and subagents. Open a live pane, export a report, or compare sessions.
+Visualize and diagnose Claude Code sessions with [TrajViz](https://github.com/rshu/TrajViz). Use `/obs` for a quick health check and `/obs dashboard` to explore the session, inspect individual steps, and compare runs.
 
 Diagnostics run locally without model calls. Optional `analyze`, `fixes`, and `label` commands use a model and may incur usage charges.
 
@@ -43,21 +43,25 @@ After the session's first assistant response:
 
 ```text
 /obs
-/obs pane
-/obs report --offline
+/obs dashboard
 ```
 
 | Task | Command |
 | --- | --- |
 | Inspect issues or subagents | `/obs issues`, `/obs agents` |
 | Browse diagnostic views | `/obs view`, `/obs view tool_usage --limit 10` |
-| Open a dashboard | `/obs dashboard`; close it with `/obs dashboard stop` |
+| Open the full dashboard | `/obs dashboard`; close it with `/obs dashboard stop` |
+| Keep a terminal pane open | `/obs pane` |
 | Export data | `/obs json`, `/obs bundle` |
 | Find or compare sessions | `/obs sessions 20`, `/obs compare <session-id>` |
 | Ask for model analysis | `/obs analyze [question]`, `/obs fixes`, `/obs label` |
 | See all commands and options | `/obs help` |
 
-The pane has seven tabs: Overview, Tools, Issues, Patterns, Agents, Context, and Timeline. Use `1` to `7` to switch tabs, `r` to refresh, `w` to toggle watch, `o` for a report, and `d` for the dashboard. Close it with `/obs pane close`.
+In the dashboard, start with **Overview** for issues and health. Use its **Contents** menu for tools, agents, context, diagnostics, and labels. Click an issue's step number to inspect it in **Workflow**. **Patterns**, **Comparison**, and **Raw Data** provide the rest of TrajViz's single-session features. The session, context-window setting, and saved labels load automatically; expand **Session source and labels** to reload or choose another file.
+
+For larger comparisons, `/obs converge` opens pairwise, batch, and before/after analysis. All registered views are available through `/obs view`, JSON exports through `/obs json`, and schemas through `/obs schemas`. `/obs labels <file> [other-file]` exports all label views and optional label comparisons. DECAF attribution is available through `/obs attribution` and the dashboard when its external checkout and reference data are configured.
+
+The terminal pane has seven tabs: Overview, Tools, Issues, Patterns, Agents, Context, and Timeline. Use `1`–`7` to switch, `r` to refresh, `w` to toggle watch, and `d` for the dashboard. Close it with `/obs pane close`.
 
 An open pane refreshes after main-session turns. Use `/obs watch off` to disable this, or `/obs statusline on` for a summary under the prompt.
 
@@ -80,7 +84,7 @@ Change options in Claude Code's `/config` menu, or run `claude plugin configure 
 | `labelMaxSteps` | `50` | Maximum labeling calls in a headless session. |
 | `watch` | `true` | Refresh an open pane after turns. |
 | `statusline` | `false` | Show a summary under the prompt. |
-| `openBrowser` | `true` | Open reports and dashboard URLs automatically. |
+| `openBrowser` | `true` | Open dashboard URLs automatically. |
 
 For a local checkout loaded with `--plugin-dir`, settings use the short plugin name:
 
@@ -100,9 +104,11 @@ Installed plugins use `trajviz-obs@trajviz-obs` as the key. A one-time `/obs set
 
 ## Data and model use
 
-Overview, reports, and exports do not upload transcripts. Only `analyze`, `fixes`, and `label` send redacted prompts to the configured model. They show the planned calls, estimated input tokens, and model first. Interactive sessions ask before more than four calls; headless labeling is capped by `labelMaxSteps`. Env mode reads the working directory's `.env` and uses TrajViz's HTTP client.
+Overview and exports run locally. `/obs analyze`, `/obs fixes`, and `/obs label` send redacted prompts to the configured model, showing planned calls, estimated input tokens, and model first. Interactive sessions ask before more than four calls; headless labeling is capped by `labelMaxSteps`.
 
-Reports, bundles, cached prompts, and analysis history contain session data and stay on the host unless you share them. Use `report --offline` for a report with embedded chart assets. Dashboards bind to `127.0.0.1` and stop on request, plugin reload, or session end.
+The browser's AI sidebar and fix button use TrajViz's `ANALYZE_*` / `LABEL_*` environment settings or the project's `.env`. They do not use the plugin's `llm=session` client; use `/obs analyze` or `/obs fixes` for that client. Browser model calls send excerpts to that configured provider when requested.
+
+Exports, bundles, cached prompts, and analysis history contain session data and stay on the host unless you share them. Dashboards bind to `127.0.0.1` and stop on request, plugin reload, or session end. TrajViz's own **Export HTML** button remains available inside the dashboard.
 
 ## Troubleshooting and limits
 
@@ -112,7 +118,7 @@ The cache defaults to `~/.cache/trajviz-obs/`, or `$XDG_CACHE_HOME/trajviz-obs/`
 
 - Timing and tool wait are transcript-based estimates. Workflow-spawned work is not fully recognized, and subagent finish times are often unavailable.
 - Each refresh reloads the full trajectory. Sessions above **32 MiB** need manual refreshes.
-- Reports and dashboards render at most **2,000 steps**. Overview, views, and JSON analysis use the full trajectory, with bounded UI previews.
+- Dashboards render at most **2,000 steps**. Overview, views, and JSON analysis use the full trajectory, with bounded UI previews.
 - DECAF attribution requires a separate installation and reference data; merged subagent sessions are unsupported.
 - Real-session testing covers **macOS**. Linux and Windows still need platform-specific end-to-end validation.
 
@@ -145,7 +151,7 @@ python3 scripts/e2e.py --output /tmp/trajviz-obs-e2e-new --model haiku --budget 
   --test-command-matrix --test-obs-tool --test-subagent --test-llm-all
 ```
 
-Use an empty output directory outside this repository. The harness checks tool failure/recovery, commands, exports, dashboards and cleanup, a real subagent, the plugin tool, and model features. `--skip-llm`, `--skip-report`, and `--skip-dashboard` narrow coverage.
+Use an empty output directory outside this repository. The harness checks tool failure/recovery, commands, exports, dashboards and cleanup, a real subagent, the plugin tool, and model features. `--skip-llm` and `--skip-dashboard` narrow coverage.
 
 </details>
 

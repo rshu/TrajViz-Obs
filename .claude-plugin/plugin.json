@@ -1,6 +1,6 @@
 {
   "name": "trajviz-obs",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "TrajViz observability for the current Claude Code session: /obs visualizes and diagnoses the session's trajectory",
   "author": { "name": "Rui Shu" },
   "homepage": "https://github.com/rshu/TrajViz-Obs#readme",
@@ -61,7 +61,7 @@
     "openBrowser": {
       "type": "boolean",
       "title": "Open browser",
-      "description": "Open reports and dashboards in the browser",
+      "description": "Open dashboards in the browser",
       "default": true
     }
   }

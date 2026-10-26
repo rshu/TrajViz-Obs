@@ -45,9 +45,8 @@ export const REDUCED_COLUMNS = 72
 
 /** The button row, in order: each key is the `/obs` subcommand its press runs. */
 export const BUTTONS: readonly { key: string; label: string }[] = [
-  { key: 'pane', label: 'Pane' },
-  { key: 'report', label: 'Report' },
   { key: 'dashboard', label: 'Dashboard' },
+  { key: 'pane', label: 'Live pane' },
   { key: 'json', label: 'JSON' },
   { key: 'fixes', label: 'Fixes' },
   { key: 'analyze', label: 'Analyze' },
@@ -121,9 +120,9 @@ export function renderCard($: EngineInterface, e: CardEvent, snap: Snapshot, opt
       {bottlenecks ? <Text dimColor>{`Bottlenecks: ${bottlenecks}`}</Text> : null}
       {WarningsLine({ els, warnings: snap.trajviz.warnings })}
       {showButtons ? (
-        <Box flexDirection="row" gap={1}>
+        <Box flexDirection="row" flexWrap="wrap" gap={1}>
           {BUTTONS.map(b => (
-            <Button key={b.key} label={b.label} onPress={() => runSnapshotCommand($, snap, b.key)} />
+            <Button key={b.key} label={b.label} {...(b.key === 'dashboard' ? { variant: 'primary' as const } : {})} onPress={() => runSnapshotCommand($, snap, b.key)} />
           ))}
         </Box>
       ) : (

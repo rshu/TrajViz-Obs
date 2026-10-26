@@ -1,8 +1,7 @@
-"""``report`` and ``bundle``: TrajViz's HTML report as one file, and the session as a ZIP for a hosted dashboard.
+"""Bundle a native session and its subagents for upload into a TrajViz dashboard.
 
-The report goes to ``<artifacts>/report.html`` (overwritten each time) unless ``--out`` names another file; it
-loads plotly.js from Plotly's CDN when opened, or embeds it with ``--offline``. The bundle holds the parent
-transcript and every file under ``<session-id>/subagents/``, the layout TrajViz's dashboards accept as an upload.
+Preserve the parent transcript and every file under ``<session-id>/subagents/`` in the native directory
+layout. Output is replaced atomically and must not overwrite any session input.
 """
 
 from __future__ import annotations
@@ -11,15 +10,10 @@ import argparse
 import zipfile
 from pathlib import Path
 
-import agent_trajviz as tv
-from agent_trajviz import ReportError, Trajectory
-
 from .cli import register
-from .compat import EmptySession, protect_run_outputs
 from .errors import BridgeError
 from .outputs import protect_inputs, session_files, staged_path
-from .report_html import adapt_report_html
-from .views_cmd import _artifacts, _load, _session_args
+from .views_cmd import _artifacts
 
 #: Most member names ``bundle`` lists on stdout.
 MEMBERS_LISTED = 200
@@ -31,23 +25,6 @@ def _file_dest(dest: Path) -> Path:
         raise BridgeError("bad_path", f"{dest} is a folder; give a file path.", path=str(dest))
     dest.parent.mkdir(parents=True, exist_ok=True)
     return dest
-
-
-def write_report_file(run: Trajectory, dest: Path, *, dark: bool, offline: bool) -> dict:
-    """TrajViz's HTML report for *run* written to the file *dest* (replaced atomically): ``{"path", "bytes"}``.
-
-    ``MissingExtraError`` (no ``charts`` extra) propagates; TrajViz's ``ReportError`` becomes
-    ``BridgeError("report_failed")``.
-    """
-    protect_run_outputs(run, [dest])
-    dest = _file_dest(dest)
-    try:
-        with staged_path(dest) as tmp:
-            tv.write_report(run, tmp, dark=dark, inline_plotly=offline)
-            tmp.write_text(adapt_report_html(tmp.read_text(encoding="utf-8")), encoding="utf-8")
-    except ReportError as exc:
-        raise BridgeError("report_failed", str(exc), path=run.source) from exc
-    return {"path": str(dest), "bytes": dest.stat().st_size}
 
 
 def bundle_session(transcript_path: str, dest: Path) -> dict:
@@ -73,26 +50,11 @@ def bundle_session(transcript_path: str, dest: Path) -> dict:
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
-    p = sub.add_parser("report", help="TrajViz's HTML report, written to report.html in the artifact folder.")
-    _session_args(p)
-    p.add_argument("--out", type=Path, default=None, help="The file (default: <artifacts>/report.html).")
-    p.add_argument("--dark", action="store_true", help="The dark theme.")
-    p.add_argument("--offline", action="store_true", help="Embed plotly.js (default: loaded from Plotly's CDN).")
-
     p = sub.add_parser("bundle", help="The transcript and its sub-agent logs as a ZIP for a hosted dashboard.")
     p.add_argument("--transcript", required=True, help="The session transcript.")
     p.add_argument("--artifacts", type=Path, default=None,
                    help="The session's artifact folder (default: <cache>/trajviz-obs/sessions/<session-id>).")
     p.add_argument("--out", type=Path, default=None, help="The file (default: <artifacts>/bundle.zip).")
-
-
-@register("report")
-def _report(args: argparse.Namespace) -> dict:
-    try:
-        run = _load(args)
-    except EmptySession as exc:
-        return {"empty": True, "reason": exc.reason}
-    return write_report_file(run, args.out or _artifacts(args) / "report.html", dark=args.dark, offline=args.offline)
 
 
 @register("bundle")

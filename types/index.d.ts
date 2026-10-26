@@ -157,7 +157,6 @@ export type Skill = { skill: string; calls: number }
 
 export type Artifacts = {
   dir: string | null
-  report: string | null
   views: string | null
   labels: string | null
 }

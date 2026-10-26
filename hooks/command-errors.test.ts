@@ -2,9 +2,9 @@ import { expect, test } from 'claude-code/testing'
 import { commandFailure } from './commands/index'
 
 test('host timeout explains the failed command instead of reporting a missing handler', () => {
-  const result = commandFailure('report --offline', { kind: 'timeout', budget: 1000 })
+  const result = commandFailure('dashboard', { kind: 'timeout', budget: 1000 })
   expect(result.exitCode).toBe(1)
-  expect(result.text).toContain('obs report: Claude Code stopped the command handler')
+  expect(result.text).toContain('obs dashboard: Claude Code stopped the command handler')
   expect(result.text).toContain('hook time budget expired')
   expect(result.text).toContain('/reload-plugins')
   expect(result.text).not.toContain('no command.run hook answered')

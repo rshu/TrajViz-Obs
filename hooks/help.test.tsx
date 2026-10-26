@@ -11,7 +11,7 @@ test('parseArgs splits sub, flags, k=v and passthrough', async () => {
   expect(parseArgs('').sub).toBe('overview')
   expect(parseArgs('--session abc').sub).toBe('overview')
   expect(parseArgs('--session abc').flags).toEqual({ session: 'abc' })
-  expect(parseArgs('report --dark -o out.html').flags).toEqual({ dark: true, o: 'out.html' })
+  expect(parseArgs('json --with-trajectory -o out').flags).toEqual({ 'with-trajectory': true, o: 'out' })
   expect(parseArgs('json --view steps --view tools').flags).toEqual({ view: 'tools' })
   expect(parseArgs('view --json steps')).toEqual({ sub: 'view', positional: ['steps'], flags: { json: true }, passthrough: [] })
   expect(parseArgs('scorecard --no-self def --fuzzy-commands ghi').positional).toEqual(['def', 'ghi'])
@@ -43,8 +43,10 @@ test('/obs help answers the grouped table', async ($, on) => {
   expect((await $.command.run({ command: 'obs', args: 'qqqq' } as never)).text).toBe(
     "Unknown subcommand 'qqqq'. /obs help lists everything.",
   )
-  expect((await $.command.run({ command: 'obs', args: 'report --offlne' } as never)).text).toBe("Unknown option '--offlne' for /obs report. /obs help lists the supported options.")
-  expect((await $.command.run({ command: 'obs', args: 'report --dark=false' } as never)).text).toBe('--dark does not take a value.')
+  expect((await $.command.run({ command: 'obs', args: 'dashboard --offlne' } as never)).text).toBe("Unknown option '--offlne' for /obs dashboard. /obs help lists the supported options.")
+  expect((await $.command.run({ command: 'obs', args: 'json --with-trajectory=false' } as never)).text).toBe('--with-trajectory does not take a value.')
+  expect(out.text).not.toContain('report [')
+  expect((await $.command.run({ command: 'obs', args: 'report' } as never)).text).toBe('HTML reports have been removed. Run /obs dashboard for the full interactive view.')
 })
 
 test('extra arguments and unsupported session selectors fail before any external work', async ($, on) => {
@@ -52,7 +54,7 @@ test('extra arguments and unsupported session selectors fail before any external
   on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
-  for (const args of ['overview extra', 'help extra', 'doctor extra', 'setup extra', 'report extra', 'json extra', 'bundle extra', 'fixes extra', 'label extra', 'attribution extra', 'issues extra', 'health extra', 'patterns extra', 'agents extra', 'context extra', 'timeline extra', 'pane unknown', 'pane close extra', 'schemas first second', 'view steps junk', 'report -- ignored']) {
+  for (const args of ['overview extra', 'help extra', 'doctor extra', 'setup extra', 'json extra', 'bundle extra', 'fixes extra', 'label extra', 'attribution extra', 'issues extra', 'health extra', 'patterns extra', 'agents extra', 'context extra', 'timeline extra', 'pane unknown', 'pane close extra', 'schemas first second', 'view steps junk', 'json -- ignored']) {
     const result = await $.command.run({ command: 'obs', args } as never)
     expect(result.text).toContain('Unexpected arguments')
   }

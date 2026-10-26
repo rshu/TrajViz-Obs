@@ -1,18 +1,25 @@
 import type { CommandRunResult, EngineInterface } from 'claude-code'
-import { launcherArgv } from '../lib/bridge'
+import { BridgeError, launcherArgv } from '../lib/bridge'
 import { openTarget, type OpenResult } from '../lib/open'
 import { configDir, projectSlug } from '../lib/paths'
+import { publicationGeneration } from '../lib/publication'
 import { type Kind, hasServer, portOf, running, startServer, stopServer } from '../lib/servers'
 import { ensureReady, sessionArgv } from '../lib/snapshot'
 import type { CommandContext } from './index'
 import { errorRow, sessionSpec } from './overview'
 
 const MAX_PORT = 65_535
+let unverifiedSidecar = 0
 
 /** The subcommand of each dashboard kind, and the name its rows use. */
 const KINDS: Record<'dashboard' | 'converge', { kind: Kind; name: string }> = {
   dashboard: { kind: 'insight', name: 'Insight dashboard' },
   converge: { kind: 'converge', name: 'Converge dashboard' },
+}
+
+/** A delayed dashboard request must not replace a newer session selection. */
+function checkGeneration(generation?: number): void {
+  if (generation !== undefined && generation !== publicationGeneration()) throw new BridgeError('session_changed', 'The selected session changed during analysis; run /obs again.')
 }
 
 /** The usage row of `dashboard` or `converge`. */
@@ -54,13 +61,21 @@ function openedTail(sub: 'dashboard' | 'converge', url: string, opened: OpenResu
  * <error>` when the child did not start (the bridge's envelope message, say
  * a busy port's, or its exit).
  */
-async function serve($: EngineInterface, ctx: CommandContext, sub: 'dashboard' | 'converge', argv: string[], what: (preloaded: boolean) => string): Promise<string> {
+async function serve($: EngineInterface, ctx: CommandContext, sub: 'dashboard' | 'converge', argv: string[], what: (preloaded: boolean) => string, revision = '', generation?: number): Promise<string> {
+  checkGeneration(generation)
   const { kind, name } = KINDS[sub]
-  const live = running(kind)
-  if (live !== null) return `${name} already running at ${live}${openedTail(sub, live, await openTarget($, ctx.options, live))}`
-  const started = await startServer($, kind, await launcherArgv($, argv))
+  const launch = await launcherArgv($, argv)
+  checkGeneration(generation)
+  const sourceRevision = generation === undefined ? revision : JSON.stringify([revision, generation])
+  const live = running(kind, launch, sourceRevision)
+  const started = await startServer($, kind, launch, sourceRevision, generation)
+  checkGeneration(generation)
   if ('error' in started) return `obs ${sub}: ${started.error}`
-  return `${name} at ${started.url} ${what(started.preloaded)}${openedTail(sub, started.url, await openTarget($, ctx.options, started.url))}`
+  const labelsAt = argv.indexOf('--labels')
+  const labels = labelsAt >= 0 ? argv[labelsAt + 1] : undefined
+  const labelNote = started.labels_preloaded === false && labels ? `; labels were not preloaded: upload ${labels} in the Labels tab` : ''
+  const title = live !== null ? `${name} already running at ${started.url}` : `${name} at ${started.url} ${what(started.preloaded)}`
+  return `${title}${labelNote}${openedTail(sub, started.url, await openTarget($, ctx.options, started.url))}`
 }
 
 /**
@@ -74,14 +89,29 @@ async function dashboard($: EngineInterface, ctx: CommandContext, port: number |
   const spec = sessionSpec(ctx)
   try {
     await ensureReady($, ctx.options, 'app')
-    const { transcript } = await sessionArgv($, spec)
+    const { transcript, argv: session, generation } = await sessionArgv($, spec)
     const argv = ['dashboard', '--transcript', transcript.path]
+    const windowAt = session.indexOf('--window')
+    if (windowAt >= 0) argv.push('--window', session[windowAt + 1]!)
+    const artifactsAt = session.indexOf('--artifacts')
+    const labels = artifactsAt >= 0 ? `${session[artifactsAt + 1]}/labels.json` : undefined
+    let revision = ''
+    if (labels && await $.fs.exists(labels)) {
+      argv.push('--labels', labels)
+      try {
+        const stat = await $.fs.stat(labels)
+        revision = `${stat.size}:${stat.mtimeMs}`
+      } catch {
+        // Without file metadata, reopen instead of retaining stale labels.
+        revision = `unverified:${++unverifiedSidecar}`
+      }
+    }
     if (port !== undefined) argv.push('--port', String(port))
     const what = (preloaded: boolean): string =>
       preloaded
         ? `with session ${transcript.sessionId} loaded`
         : `without session ${transcript.sessionId} loaded (the preload could not be wired): drop the ZIP /obs bundle writes into it`
-    return await serve($, ctx, 'dashboard', argv, what)
+    return await serve($, ctx, 'dashboard', argv, what, revision, generation)
   } catch (e) {
     return errorRow(e, spec)
   }

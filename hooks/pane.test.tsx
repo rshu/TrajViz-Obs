@@ -127,7 +127,6 @@ test('the pane draws the latest snapshot with its tabs, on terminal and desktop'
     // The action row.
     expect((await ui.find({ key: 'refresh' }))?.props).toMatchObject({ hotkey: 'r' })
     expect((await ui.find({ key: 'watch' }))?.props).toMatchObject({ hotkey: 'w', label: 'Watch on' })
-    expect((await ui.find({ key: 'report' }))?.props).toMatchObject({ hotkey: 'o' })
     expect((await ui.find({ key: 'dashboard' }))?.props).toMatchObject({ hotkey: 'd' })
     // The overview: chips, KPIs with the live context, the series, the ribbon, the top issues and the warning.
     expect((await ui.find({ type: 'Text', text: /tool success/ }))?.props['color']).toBe('success')
@@ -189,13 +188,15 @@ test('the hotkeys switch tabs, and each tab draws its own rows', async ($, on) =
   const tables = await ui.findAll({ type: 'Markdown' })
   expect(tables.length).toBe(8)
   expect(tables.some(t => t.text?.includes('| sequence | count |'))).toBe(true)
-  expect(await ui.find({ type: 'Text', text: /^hotspots$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^failure chains$/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^Hotspots$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Failure chains$/ })).toBeUndefined()
   await ui.unmount()
 
   // Agents: the table and the swimlane.
   ui = await openTab($, 5)
-  expect((await ui.find({ type: 'Markdown' }))?.text).toContain('| Builder check | general-purpose | 49 |')
+  expect(await ui.find({ type: 'Text', text: /label: Builder check/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^type: general-purpose$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^steps: 49$/ })).toBeDefined()
   expect((await ui.find({ key: 'swimlane' }))?.type).toBe('Raster')
   await ui.unmount()
 
@@ -211,10 +212,10 @@ test('the hotkeys switch tabs, and each tab draws its own rows', async ($, on) =
 
   // Timeline: the last steps as a table.
   ui = await openTab($, 7)
-  const timeline = await ui.find({ type: 'Markdown' })
-  expect(timeline?.text).toContain('| step | role | category |')
-  expect(timeline?.text).toContain('| 311 | assistant | tool |')
-  expect(timeline?.text).toContain('Bash: claude plugin test .')
+  expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /step: 311$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^role: assistant$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Bash: claude plugin test \./ })).toBeDefined()
   await ui.unmount()
 
   // Back to the overview.
@@ -228,9 +229,9 @@ test('below 48 columns the overview is a KPI list and the drag line', async ($, 
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await obs($)
   const ui = await $.ui.mount(pane('terminal', 40))
-  expect((await ui.find({ type: 'Text', text: /Cache Efficiency/ }))?.text).toMatch(/^Cache Efficiency\s+95%  \(113k written\)$/)
-  const drag = await ui.find({ type: 'Text', text: /drag/i })
-  expect(drag?.text).toBe('Drag the dock wider for the tables and series.')
+  expect((await ui.find({ type: 'Text', text: /Cache Efficiency/ }))?.text).toMatch(/^Cache Efficiency\s+95%$/)
+  const drag = await ui.find({ type: 'Text', text: /Widen the pane/ })
+  expect(drag?.text).toBe('Widen the pane for charts, or open Dashboard for the full view.')
   expect(drag?.props['dimColor']).toBe(true)
   expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
   expect(await ui.find({ key: 'phases' })).toBeUndefined()
@@ -239,7 +240,7 @@ test('below 48 columns the overview is a KPI list and the drag line', async ($, 
   await ui.unmount()
 })
 
-test('the action keys refresh, toggle watch, and run report and dashboard', async ($, on) => {
+test('the action keys refresh, toggle watch, and run dashboard', async ($, on) => {
   const h = host(on, [SNAPSHOT, SECOND])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await obs($)
@@ -265,10 +266,9 @@ test('the action keys refresh, toggle watch, and run report and dashboard', asyn
   await ui.unmount()
   ui = await $.ui.mount(pane('terminal', 80))
   expect((await ui.find({ key: 'watch' }))?.props['label']).toBe('Watch on')
-  // `o` and `d` run their `/obs` forms.
-  await ui.press({ key: 'report' })
+  // `d` opens the full interactive dashboard.
   await ui.press({ key: 'dashboard' })
-  expect(h.runs).toEqual(['report', 'dashboard'])
+  expect(h.runs).toEqual(['dashboard'])
   await ui.unmount()
   // The refresh's snapshot took id 2: the next `/obs` is 3.
   expect(await obs($)).toMatch(/^obs snapshot 3 · /)
@@ -282,7 +282,7 @@ test('a running dashboard is named beside its key', async ($, on) => {
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await obs($)
   const ui = await $.ui.mount(pane('terminal', 80))
-  expect((await ui.find({ type: 'Text', text: /insight/ }))?.text).toBe('insight http://127.0.0.1:7860')
+  expect((await ui.find({ type: 'Text', text: /Dashboard:/ }))?.text).toBe('Dashboard: http://127.0.0.1:7860')
   await ui.unmount()
 })
 
@@ -293,9 +293,8 @@ test('the pane without a snapshot says so, and with an empty one', async ($, on)
   expect((await ui.find({ type: 'Text', text: /No snapshot yet/ }))?.text).toBe('No snapshot yet: press r or run /obs.')
   expect((await ui.find({ key: 'refresh' }))?.props['hotkey']).toBe('r')
   expect(await ui.find({ key: 'tab:3' })).toBeDefined()
-  await ui.press({ key: 'report' })
   await ui.press({ key: 'dashboard' })
-  expect(h.runs).toEqual(['report', 'dashboard'])
+  expect(h.runs).toEqual(['dashboard'])
   await ui.unmount()
 
   // An empty result is stored too, so the pane replaces any preceding data.
@@ -318,7 +317,7 @@ test('an empty latest snapshot draws the empty row', async ($, on) => {
   await ui.unmount()
 })
 
-test('empty and not-yet-loaded saved-session panes keep report and dashboard actions on the selection', async ($, on) => {
+test('empty and not-yet-loaded saved-session panes keep dashboard actions on the selection', async ($, on) => {
   const h = host(on, [SNAPSHOT])
   const path = '/outside/my run.jsonl'
   let snapshot: unknown = null
@@ -328,11 +327,10 @@ test('empty and not-yet-loaded saved-session panes keep report and dashboard act
   for (const value of [null, { schema_version: 1, empty: true, reason: 'no_steps', transcript: { path } }]) {
     snapshot = value
     const ui = await $.ui.mount(pane('terminal', 80))
-    await ui.press({ key: 'report' })
     await ui.press({ key: 'dashboard' })
     await ui.unmount()
   }
-  expect(h.runs.map(args => parseArgs(args).flags['session'])).toEqual([path, path, path, path])
+  expect(h.runs.map(args => parseArgs(args).flags['session'])).toEqual([path, path])
 })
 
 test('/obs pane opens with focus, inline on the main screen; pane close closes', async ($, on) => {
@@ -361,10 +359,8 @@ test('/obs pane --session refreshes an existing pane and its refresh keeps the s
   expect(h.bridgeCalls.filter(c => c[0] === 'resolve').map(c => c.slice(-2))).toEqual([['--session', '/outside/my run.jsonl']])
   const ui = await $.ui.mount(pane('terminal', 80))
   expect(await ui.find({ type: 'Text', text: /^350$/ })).toBeDefined()
-  await ui.press({ key: 'report' })
   await ui.press({ key: 'dashboard' })
   expect(h.runs.map(args => parseArgs(args))).toEqual([
-    { sub: 'report', positional: [], flags: { session: '/outside/my run.jsonl' }, passthrough: [] },
     { sub: 'dashboard', positional: [], flags: { session: '/outside/my run.jsonl' }, passthrough: [] },
   ])
   await ui.press({ key: 'refresh' })

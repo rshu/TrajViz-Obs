@@ -64,7 +64,7 @@ const obs = ($: { command: { run: (args: never) => Promise<{ text?: string }> } 
 const row = (text: string, surface: RenderSurface, viewport: RenderViewport) =>
   ({ plugin: 'trajviz-obs', surface, component: 'CommandOutput', requestId: `row-${surface}-${viewport.columns}`, props: { command: 'obs', args: '', text, isErrored: false }, viewport }) as const
 
-const BUTTON_KEYS = ['pane', 'report', 'dashboard', 'json', 'fixes', 'analyze']
+const BUTTON_KEYS = ['dashboard', 'pane', 'json', 'fixes', 'analyze']
 
 test('card draws from its own snapshot id, not latest', async ($, on) => {
   host(on, [SNAPSHOT, SECOND])
@@ -121,25 +121,25 @@ test('buttons only in fullscreen terminal', async ($, on) => {
   // The main screen: no button can be pressed, so the equivalent forms on one dim line.
   let ui = await $.ui.mount(row(text, 'terminal', { columns: 120, rows: 40, isFullscreen: false }))
   for (const key of BUTTON_KEYS) expect(await ui.find({ key })).toBeUndefined()
-  const forms = await ui.find({ type: 'Text', text: /\/obs report/ })
-  expect(forms?.text).toBe('/obs pane · /obs report · /obs dashboard · /obs json · /obs fixes · /obs analyze')
+  const forms = await ui.find({ type: 'Text', text: /\/obs dashboard/ })
+  expect(forms?.text).toBe('/obs dashboard · /obs pane · /obs json · /obs fixes · /obs analyze')
   expect(forms?.props['dimColor']).toBe(true)
   await ui.unmount()
 
   // Fullscreen: the button row, each pressing its `/obs` form.
   ui = await $.ui.mount(row(text, 'terminal', { columns: 120, rows: 40, isFullscreen: true }))
   for (const key of BUTTON_KEYS) expect((await ui.find({ key }))?.type).toBe('Button')
-  expect((await ui.find({ key: 'report' }))?.props['label']).toBe('Report')
+  expect((await ui.find({ key: 'dashboard' }))?.props['label']).toBe('Dashboard')
   expect((await ui.find({ key: 'json' }))?.props['label']).toBe('JSON')
-  expect(await ui.find({ type: 'Text', text: /\/obs report/ })).toBeUndefined()
-  expect(await ui.press({ key: 'report' })).toEqual({ element: 'report' })
+  expect(await ui.find({ type: 'Text', text: /\/obs dashboard/ })).toBeUndefined()
+  expect(await ui.press({ key: 'dashboard' })).toEqual({ element: 'dashboard' })
   await ui.press({ key: 'analyze' })
-  expect(runs).toEqual(['report', 'analyze'])
+  expect(runs).toEqual(['dashboard', 'analyze'])
   await ui.unmount()
 
   // A remote surface presses buttons whatever its layout says.
   ui = await $.ui.mount(row(text, 'desktop', { columns: 120, rows: 40, isFullscreen: false }))
-  expect((await ui.find({ key: 'report' }))?.type).toBe('Button')
+  expect((await ui.find({ key: 'dashboard' }))?.type).toBe('Button')
   await ui.unmount()
   ui = await $.ui.mount(row(text, 'vscode', { columns: 120, rows: 40 }))
   expect((await ui.find({ key: 'analyze' }))?.type).toBe('Button')
@@ -174,10 +174,10 @@ test('saved-card actions quote its path and never follow a newer selected snapsh
   } }))
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount(row('obs snapshot 41 · saved', 'desktop', { columns: 120, rows: 40 }))
-  await ui.press({ key: 'report' })
+  await ui.press({ key: 'dashboard' })
   await ui.press({ key: 'analyze' })
   expect(runs.map(args => parseArgs(args))).toEqual([
-    { sub: 'report', positional: [], flags: { session: path }, passthrough: [] },
+    { sub: 'dashboard', positional: [], flags: { session: path }, passthrough: [] },
     { sub: 'analyze', positional: [], flags: { session: path }, passthrough: [] },
   ])
   await ui.unmount()
@@ -193,8 +193,8 @@ test('native transcript path keeps current-card actions plain even outside the d
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await $.classic.SessionStart({ source: 'startup', transcript_path: path, session_id: 'current' })
   const ui = await $.ui.mount(row('obs snapshot 51 · native', 'desktop', { columns: 120, rows: 40 }))
-  await ui.press({ key: 'report' })
-  expect(runs).toEqual(['report'])
+  await ui.press({ key: 'dashboard' })
+  expect(runs).toEqual(['dashboard'])
   await ui.unmount()
 })
 
@@ -231,9 +231,9 @@ test('narrow viewport has no raster', async ($, on) => {
   expect(await ui.find({ key: 'swimlane' })).toBeUndefined()
   expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
   expect((await ui.find({ type: 'Text', text: /tool success/ }))?.props['color']).toBe('success')
-  expect((await ui.find({ type: 'Text', text: /Cache Efficiency/ }))?.text).toMatch(/^Cache Efficiency\s+95%  \(113k written\)$/)
+  expect((await ui.find({ type: 'Text', text: /Cache Efficiency/ }))?.text).toMatch(/^Cache Efficiency\s+95%$/)
   expect(await ui.findAll({ type: 'Text', text: /^\d\. / })).toHaveLength(3)
-  expect(await ui.find({ key: 'report' })).toBeDefined()
+  expect(await ui.find({ key: 'dashboard' })).toBeDefined()
   await ui.unmount()
 
   // 72–99: the series stacked full width (one Raster each), no swimlane.

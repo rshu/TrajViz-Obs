@@ -47,6 +47,10 @@ type World = {
   /** What the person answers an install ask: an option's label, or `dismiss` (the dialog closed, the call rejects). Default: Install. */
   answer?: string
   bridge?: Record<string, RunAnswer>
+  files?: Record<string, string>
+  stats?: Record<string, { size: number; mtimeMs: number }>
+  beforeExists?: (path: string) => Promise<void> | void
+  beforeStat?: (path: string) => Promise<void> | void
 }
 
 type Host = {
@@ -67,7 +71,7 @@ function host(on: On, world: World = {}): Host {
   const spawned: Host['spawned'] = []
   const rows: string[] = []
   const timeline: string[] = []
-  const files: Record<string, string> = { [STATE_PATH]: stateJson(world.extras ?? ['llm', 'charts', 'app']) }
+  const files: Record<string, string> = { [STATE_PATH]: stateJson(world.extras ?? ['llm', 'charts', 'app']), ...world.files }
   on('command.register', () => ({ value: { command: 'obs' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -77,12 +81,20 @@ function host(on: On, world: World = {}): Host {
   on('session.usage', () => ({ value: USAGE }))
   mock.env(on, { HOME, ...(world.env ?? {}) })
   mock.clock(on, { now: NOW })
-  on('fs.read', (_, e) => (e.path in files ? { value: files[e.path] as string } : { deny: `ENOENT: ${e.path}` }))
+  on('fs.read', (_, e) => e.path in files ? { value: files[e.path] as string } : { deny: `ENOENT: ${e.path}` })
   on('fs.write', (_, e) => {
     files[e.path] = e.text
     return { value: undefined }
   })
-  on('fs.exists', (_, e) => ({ value: e.path === VENV_PY || e.path === DERIVED }))
+  on('fs.exists', async (_, e) => {
+    await world.beforeExists?.(e.path)
+    return { value: e.path in files || e.path === VENV_PY || e.path === DERIVED }
+  })
+  on('fs.stat', async (_, e) => {
+    await world.beforeStat?.(e.path)
+    const stat = world.stats?.[e.path]
+    return stat ? { value: { kind: 'file' as const, ...stat, isLink: false } } : { deny: `ENOENT: ${e.path}` }
+  })
   on('ui.toast', () => ({ value: undefined }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', (_, e) => {
@@ -173,7 +185,7 @@ test('dashboard asks, announces and installs the app extra, starts the bridge ch
   expect(rows).toEqual([INSTALLING_APP])
   expect(timeline).toEqual(['ask', 'row', 'pip', 'child', 'open'])
   expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz>=0.2.0,<0.3', extras: ['llm', 'charts', 'llm', 'charts', 'app'] })
-  expect(children(spawned)).toEqual([['dashboard', '--transcript', DERIVED, '--port', '7777']])
+  expect(children(spawned)).toEqual([['dashboard', '--transcript', DERIVED, '--window', '1000000', '--port', '7777']])
   expect(spawned[1]?.argv.slice(0, 2)).toEqual([VENV_PY, '-I'])
   expect(spawned[1]?.argv[2]).toMatch(/\/bridge\/trajviz_obs_cli\.py$/)
   expect(spawned[1]?.cwd).toBe(CWD)
@@ -222,6 +234,134 @@ test('dashboard --session persists its resolved selection and sends only dashboa
   expect(children(spawned)).toEqual([['dashboard', '--transcript', '/outside/my run.jsonl', '--port', '7899']])
   expect(selection()).toEqual({ path: '/outside/my run.jsonl', id: 'other', label: 'other' })
   await $.session.end(END)
+})
+
+test('dashboard passes available labels and explains a label preload fallback', async ($, on) => {
+  const labels = `${CACHE}/sessions/abc/labels.json`
+  const { spawned } = host(on, {
+    files: { [labels]: '{"labels":[]}' },
+    child: { dashboard: { chunks: [{ stream: 'stdout', text: `{"url":"${URL}","preloaded":true,"labels_preloaded":false}\n` }], code: 0 } },
+  })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  const out = await obs($, 'dashboard')
+  expect(children(spawned)).toEqual([['dashboard', '--transcript', DERIVED, '--window', '1000000', '--labels', labels]])
+  expect(out.text).toContain(`labels were not preloaded: upload ${labels} in the Labels tab`)
+  await $.session.end(END)
+})
+
+test('dashboard and Converge restart for a changed session or data root', async ($, on) => {
+  const releases: (() => void)[] = []
+  const alive = () => ({ chunks: [URL_CHUNK], code: 0, gate: new Promise<void>(resolve => { releases.push(resolve) }) })
+  const world: World = {
+    child: { dashboard: alive(), converge: alive() },
+    bridge: { resolve: { exitCode: 0, stdout: JSON.stringify({ path: '/runs/other.jsonl', session_id: 'other', kind: 'file' }) } },
+  }
+  const { spawned } = host(on, world)
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, 'dashboard')
+  world.child!.dashboard = alive()
+  expect((await obs($, 'dashboard --session /runs/other.jsonl')).text).toContain('with session other loaded')
+  expect(children(spawned).slice(0, 2)).toEqual([
+    ['dashboard', '--transcript', DERIVED, '--window', '1000000'],
+    ['dashboard', '--transcript', '/runs/other.jsonl'],
+  ])
+  await obs($, 'converge --data-root /runs/first')
+  world.child!.converge = alive()
+  expect((await obs($, 'converge --data-root /runs/second')).text).toContain('over /runs/second')
+  expect(children(spawned).slice(2)).toEqual([
+    ['converge', '--data-root', '/runs/first'], ['converge', '--data-root', '/runs/second'],
+  ])
+  await $.session.end(END)
+  for (const release of releases) release()
+})
+
+test('regenerating the same labels sidecar refreshes the dashboard without changing its launch arguments', async ($, on) => {
+  const labels = `${CACHE}/sessions/abc/labels.json`
+  const releases: (() => void)[] = []
+  const alive = () => ({ chunks: [URL_CHUNK], code: 0, gate: new Promise<void>(resolve => { releases.push(resolve) }) })
+  const world: World = {
+    files: { [labels]: '{"labels":[]}' }, stats: { [labels]: { size: 100, mtimeMs: NOW } }, child: { dashboard: alive() },
+  }
+  const { spawned } = host(on, world)
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, 'dashboard')
+  expect((await obs($, 'dashboard')).text).toContain('already running')
+  expect(children(spawned)).toHaveLength(1)
+  world.stats![labels]!.mtimeMs++
+  world.child!.dashboard = alive()
+  expect((await obs($, 'dashboard')).text).not.toContain('already running')
+  expect(children(spawned)).toHaveLength(2)
+  expect(children(spawned)[1]).toEqual(children(spawned)[0])
+  world.stats![labels]!.size++
+  world.child!.dashboard = alive()
+  await obs($, 'dashboard')
+  expect(children(spawned)).toHaveLength(3)
+  await $.session.end(END)
+  for (const release of releases) release()
+})
+
+test('a dashboard delayed in labels metadata cannot replace a newer selected session', async ($, on) => {
+  const labels = `${CACHE}/sessions/abc/labels.json`
+  let releaseMetadata = () => {}
+  const metadataGate = new Promise<void>(resolve => { releaseMetadata = resolve })
+  let metadataStarted = () => {}
+  const metadataReady = new Promise<void>(resolve => { metadataStarted = resolve })
+  let releaseChild = () => {}
+  const { spawned, ran } = host(on, {
+    files: { [labels]: '{"labels":[]}' }, commands: DARWIN,
+    stats: { [labels]: { size: 100, mtimeMs: NOW } },
+    beforeStat: async path => {
+      if (path !== labels) return
+      metadataStarted()
+      await metadataGate
+    },
+    child: { dashboard: { chunks: [URL_CHUNK], code: 0, gate: new Promise<void>(resolve => { releaseChild = resolve }) } },
+    bridge: { resolve: { exitCode: 0, stdout: JSON.stringify({ path: '/runs/newer.jsonl', session_id: 'newer', kind: 'file' }) } },
+  })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  const older = obs($, 'dashboard')
+  await metadataReady
+  expect((await obs($, 'dashboard --session /runs/newer.jsonl')).text).toContain('with session newer loaded')
+  releaseMetadata()
+  expect((await older).text).toBe('The selected session changed during analysis; run /obs again.')
+  expect(children(spawned)).toEqual([['dashboard', '--transcript', '/runs/newer.jsonl']])
+  expect(ran.filter(argv => argv[0] === 'open')).toHaveLength(1)
+  await $.session.end(END)
+  releaseChild()
+})
+
+test('a dashboard delayed while validating its launcher cannot replace a newer selected session', async ($, on) => {
+  const labels = `${CACHE}/sessions/abc/labels.json`
+  let armLauncher = false
+  let releaseLauncher = () => {}
+  const launcherGate = new Promise<void>(resolve => { releaseLauncher = resolve })
+  let launcherStarted = () => {}
+  const launcherReady = new Promise<void>(resolve => { launcherStarted = resolve })
+  let releaseChild = () => {}
+  const { spawned, ran } = host(on, {
+    files: { [labels]: '{"labels":[]}' }, commands: DARWIN,
+    stats: { [labels]: { size: 100, mtimeMs: NOW } },
+    beforeStat: path => { if (path === labels) armLauncher = true },
+    beforeExists: async path => {
+      if (path === VENV_PY && armLauncher) {
+        armLauncher = false
+        launcherStarted()
+        await launcherGate
+      }
+    },
+    child: { dashboard: { chunks: [URL_CHUNK], code: 0, gate: new Promise<void>(resolve => { releaseChild = resolve }) } },
+    bridge: { resolve: { exitCode: 0, stdout: JSON.stringify({ path: '/runs/newer.jsonl', session_id: 'newer', kind: 'file' }) } },
+  })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  const older = obs($, 'dashboard')
+  await launcherReady
+  expect((await obs($, 'dashboard --session /runs/newer.jsonl')).text).toContain('with session newer loaded')
+  releaseLauncher()
+  expect((await older).text).toBe('The selected session changed during analysis; run /obs again.')
+  expect(children(spawned)).toEqual([['dashboard', '--transcript', '/runs/newer.jsonl']])
+  expect(ran.filter(argv => argv[0] === 'open')).toHaveLength(1)
+  await $.session.end(END)
+  releaseChild()
 })
 
 test('a busy port is the row, nothing opens and nothing stays registered', async ($, on) => {
@@ -289,7 +429,7 @@ test('the app install is declined by Not now or a dismissed ask, and not asked o
   expect(rows).toEqual([INSTALLING_APP])
   expect(timeline).toEqual(['ask', 'ask', 'row', 'pip', 'child', 'open'])
   expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz>=0.2.0,<0.3', extras: ['llm', 'charts', 'llm', 'charts', 'app'] })
-  expect(children(spawned)).toEqual([['dashboard', '--transcript', DERIVED]])
+  expect(children(spawned)).toEqual([['dashboard', '--transcript', DERIVED, '--window', '1000000']])
   await $.session.end(END)
 })
 

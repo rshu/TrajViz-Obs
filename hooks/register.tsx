@@ -15,7 +15,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'obs',
       description: "Visualize and diagnose this session's trajectory with TrajViz",
-      argumentHint: '[overview|pane|report|dashboard|issues|health|analyze|fixes|json|help] [--session id]',
+      argumentHint: '[overview|dashboard|pane|issues|health|analyze|fixes|json|help] [--session id]',
       immediate: true,
     })
     await $.tool.register(OBS_TOOL)

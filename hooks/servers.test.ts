@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { EngineInterface, ProcessSpawnChunk, ProcessSpawnRequest, ProcessSpawnResult, StateAddress } from 'claude-code'
 import { LineBuffer, START_TIMEOUT_MS, hasServer, parseUrlLine, portOf, resetServers, running, startServer, startServerFrom, stopAll, stopServer, type ServerStream } from './lib/servers'
+import { invalidatePublication, publicationGeneration } from './lib/publication'
 
 type Step = IteratorResult<ProcessSpawnChunk, ProcessSpawnResult>
 
@@ -132,6 +133,49 @@ test('concurrent starts share one child and stopping before its URL cancels it',
   expect(running('insight')).toBeNull()
 })
 
+test('dashboard reuse keeps the source identity and replaces a different transcript or root', async () => {
+  const a = fakeStream()
+  const b = fakeStream()
+  const f = await fresh([a.stream, b.stream])
+  const oldArgv = ['dashboard', '--transcript', '/runs/first.jsonl']
+  const newArgv = ['dashboard', '--transcript', '/runs/second.jsonl']
+  const first = startServer(f.$, 'insight', oldArgv)
+  a.out('{"url":"http://127.0.0.1:7860","preloaded":false}\n')
+  expect(await first).toEqual({ url: 'http://127.0.0.1:7860', preloaded: false })
+  expect(await startServer(f.$, 'insight', oldArgv)).toEqual({ url: 'http://127.0.0.1:7860', preloaded: false })
+  expect(f.spawned).toHaveLength(1)
+  expect(running('insight', newArgv)).toBeNull()
+  const second = startServer(f.$, 'insight', newArgv)
+  await settle()
+  expect(a.returned).toBe(true)
+  expect(f.spawned).toHaveLength(2)
+  b.out(URL_LINE)
+  expect(await second).toEqual({ url: 'http://127.0.0.1:7860', preloaded: true })
+  expect(running('insight', oldArgv)).toBeNull()
+  expect(running('insight', newArgv)).toBe('http://127.0.0.1:7860')
+  await stopAll(f.$)
+})
+
+test('a newer source cancels an in-flight start and only the latest source spawns', async () => {
+  const ready = fakeStream()
+  const f = await fresh([ready.stream])
+  let release = () => {}
+  const gate = new Promise<void>(resolve => { release = resolve })
+  f.$.session.cwd = async () => { await gate; return CWD }
+  const a = startServer(f.$, 'converge', ['converge', '--data-root', '/a'])
+  await settle()
+  const b = startServer(f.$, 'converge', ['converge', '--data-root', '/b'])
+  const c = startServer(f.$, 'converge', ['converge', '--data-root', '/c'])
+  release()
+  await settle()
+  expect(f.spawned.map(s => s.argv)).toEqual([['converge', '--data-root', '/c']])
+  ready.out(URL_LINE)
+  expect(await a).toEqual({ error: 'the dashboard start was cancelled' })
+  expect(await b).toEqual({ error: 'the dashboard start was cancelled' })
+  expect(await c).toMatchObject({ url: 'http://127.0.0.1:7860' })
+  await stopAll(f.$)
+})
+
 test('stopping while the host is resolving cwd cancels a start before it spawns a child', async () => {
   const s = fakeStream()
   const f = await fresh([s.stream])
@@ -143,6 +187,21 @@ test('stopping while the host is resolving cwd cancels a start before it spawns 
   await stopServer(f.$, 'insight')
   release()
   expect(await pending).toEqual({ error: 'the dashboard start was cancelled' })
+  expect(f.spawned).toEqual([])
+  expect(hasServer('insight')).toBe(false)
+})
+
+test('changing session while cwd is resolving supersedes the dashboard before it spawns', async () => {
+  const child = fakeStream()
+  const f = await fresh([child.stream])
+  let release = () => {}
+  const gate = new Promise<void>(resolve => { release = resolve })
+  f.$.session.cwd = async () => { await gate; return CWD }
+  const pending = startServer(f.$, 'insight', ['dashboard'], '', publicationGeneration())
+  await settle()
+  invalidatePublication()
+  release()
+  expect(await pending).toEqual({ error: 'The selected session changed during analysis; run /obs again.' })
   expect(f.spawned).toEqual([])
   expect(hasServer('insight')).toBe(false)
 })
@@ -214,6 +273,7 @@ test('parseUrlLine reads {"url": …} with its preloaded flag, and nothing else'
   expect(parseUrlLine('  {"url":"http://127.0.0.1:7861/"}  ')).toEqual({ url: 'http://127.0.0.1:7861/', preloaded: true })
   expect(parseUrlLine('{"url": "http://127.0.0.1:7860", "preloaded": false}')).toEqual({ url: 'http://127.0.0.1:7860', preloaded: false })
   expect(parseUrlLine('{"url": "http://127.0.0.1:7860", "preloaded": true}')).toEqual({ url: 'http://127.0.0.1:7860', preloaded: true })
+  expect(parseUrlLine('{"url":"http://127.0.0.1:7860","preloaded":true,"labels_preloaded":false}')).toEqual({ url: 'http://127.0.0.1:7860', preloaded: true, labels_preloaded: false })
   expect(parseUrlLine('{"error": {"code": "missing_extra", "message": "no app"}}')).toBeNull()
   expect(parseUrlLine('{"url": 5}')).toBeNull()
   expect(parseUrlLine('Running on local URL: http://127.0.0.1:7860')).toBeNull()

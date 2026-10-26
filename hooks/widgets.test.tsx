@@ -60,7 +60,7 @@ function probe(els: Els, surface: RenderSurface, columns: number): RenderElement
       {IssuesList({ els, issues: s.issues, limit: 2 })}
       {WarningsLine({ els, warnings: s.trajviz.warnings })}
       {MdTable({ els, rows: s.agents, columns: ['label', 'steps', 'tokens'], limit: 1 })}
-      {DimLine({ els, text: 'equivalent: /obs pane · /obs report' })}
+      {DimLine({ els, text: 'equivalent: /obs pane · /obs dashboard' })}
     </Box>
   )
 }
@@ -157,7 +157,7 @@ test('the widgets draw on every surface; Rasters only on the terminal', async ($
     expect(await ui.find({ type: 'Text', text: /1 more/ })).toBeDefined()
 
     const dim = await ui.find({ type: 'Text', text: /equivalent:/ })
-    expect(dim?.text).toBe('equivalent: /obs pane · /obs report')
+    expect(dim?.text).toBe('equivalent: /obs pane · /obs dashboard')
     expect(dim?.props['dimColor']).toBe(true)
 
     await ui.unmount()
@@ -196,12 +196,53 @@ test('seriesOf draws the three series the card and the pane share, in order', as
   }
 })
 
-test('below 72 columns the KPIs are a list, one line each', async ($, on) => {
+test('below 72 columns the KPIs separate values from supporting detail', async ($, on) => {
   on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) => probe($.ui.resolve(e), e.surface, e.props.bodyColumns))
   const ui = await $.ui.mount({ ...pane(60), surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /Cache Efficiency/ }))?.text).toMatch(/^Cache Efficiency\s+95%  \(113k written\)$/)
+  expect((await ui.find({ type: 'Text', text: /Cache Efficiency/ }))?.text).toMatch(/^Cache Efficiency\s+95%$/)
+  expect((await ui.find({ type: 'Text', text: /^113k written$/ }))?.props['dimColor']).toBe(true)
   expect(await ui.findAll({ type: 'Raster' })).toHaveLength(3)
   await ui.unmount()
+})
+
+test('wide data uses wrapping records in narrow panes without losing fields or cell text', async ($, on) => {
+  const path = '/workspace/a very long directory/component | name/source.ts'
+  const rows = [{ file: path, reads: 123, detail: 'first line second line', missing: null }]
+  on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) => MdTable({
+    els: $.ui.resolve(e), rows, columns: ['file', 'reads', 'detail', 'missing'], limit: 5, width: e.props.bodyColumns,
+  }))
+  for (const surface of SURFACES) {
+    for (const columns of [32, 56, 80]) {
+      const ui = await $.ui.mount({ ...pane(columns), surface })
+      expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: `1. file: ${path}` })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'reads: 123' })).toBeDefined()
+      expect((await ui.find({ type: 'Text', text: 'detail: first line second line' }))?.props['wrap']).toBe('wrap')
+      expect(await ui.find({ type: 'Text', text: 'missing: —' })).toBeDefined()
+      await ui.unmount()
+    }
+    const wide = await $.ui.mount({ ...pane(200), surface })
+    expect((await wide.find({ type: 'Markdown' }))?.text).toContain('component \\| name/source.ts')
+    expect(await wide.find({ key: 'records' })).toBeUndefined()
+    await wide.unmount()
+  }
+})
+
+test('table selection accounts for separator width and preserves Unicode and multiline cells', async ($, on) => {
+  on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) => {
+    const rows = e.props.bodyColumns === 10 ? [{ a: '', b: '' }] : [{ a: '中文路径/界面.ts', b: 'first\nsecond' }]
+    return MdTable({ els: $.ui.resolve(e), rows, columns: ['a', 'b'], limit: 5, width: e.props.bodyColumns })
+  })
+  for (const columns of [10, 32, 200]) {
+    const ui = await $.ui.mount({ ...pane(columns), surface: 'terminal' })
+    expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+    if (columns === 10) expect(await ui.find({ type: 'Text', text: '1. a: —' })).toBeDefined()
+    else {
+      expect(await ui.find({ type: 'Text', text: '1. a: 中文路径/界面.ts' })).toBeDefined()
+      expect((await ui.find({ type: 'Text', text: 'b: first\nsecond' }))?.props['wrap']).toBe('wrap')
+    }
+    await ui.unmount()
+  }
 })
 
 test('the KPI tiles and the phase ribbon fit their columns at every breakpoint', async ($, on) => {

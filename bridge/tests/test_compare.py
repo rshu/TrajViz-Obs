@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 from pathlib import Path
 
+import agent_trajviz as tv
 import pytest
 from conftest import make_session
+from jsonschema import Draft202012Validator
 
 from trajviz_obs.compare_cmd import compare_sessions, label_views_payload, scorecard
 from trajviz_obs.compat import labeler_chat
@@ -131,6 +134,11 @@ def test_label_views_payload_phases_and_text(sidecar_path):
     assert out["summary"]["classified"] == 23 and out["phases"]["counts"] == {"understand": 23}
     assert set(out["phases"]["durations_s"]) == {"understand"} and "comparison" not in out
     assert "23 classified" in out["text"] and "| understand | 23 |" in out["text"]
+    assert set(out["views"]) == set(tv.label_views(sidecar_path))
+    assert out["views"]["label_action_counts"]["data"]["counts"] == {"code_reading": 23}
+    assert len(out["views"]["label_timeline"]["data"]["steps"]) == 24
+    for vid, view in out["views"].items():
+        Draft202012Validator(tv.view_schema(vid)).validate(view)
 
 
 def test_label_views_payload_comparison(sidecar_path, other_sidecar):
@@ -140,6 +148,10 @@ def test_label_views_payload_comparison(sidecar_path, other_sidecar):
     assert comparison["compared"]["counts"] == {"understand": 23}
     assert set(comparison["compared"]["durations_s"]) == {"understand"}
     assert "| implement | 10 | 0 |" in out["text"]
+    expected = {**tv.label_views(sidecar_path), **tv.label_comparison_views(other_sidecar, sidecar_path)}
+    assert set(out["views"]) == set(expected)
+    for vid, view in out["views"].items():
+        assert view == expected[vid].to_dict()
 
 
 def test_cli_compare(run_cli, fixture_session, synthetic_session, tmp_artifacts):
@@ -177,9 +189,49 @@ def test_cli_scorecard_no_self_skips_the_current_session(run_cli, tmp_path, synt
     assert code == 0 and [r["path"] for r in out["rows"]] == [synthetic_session, third]
 
 
-def test_cli_labels(run_cli, sidecar_path, other_sidecar):
-    code, out = run_cli(["labels", "--sidecar", sidecar_path, "--other", other_sidecar])
+def test_cli_labels(run_cli, sidecar_path, other_sidecar, tmp_artifacts):
+    code, out = run_cli(["labels", "--sidecar", sidecar_path, "--other", other_sidecar,
+                         "--artifacts", str(tmp_artifacts)])
     assert code == 0 and out["summary"]["classified"] == 23 and "comparison" in out
+    path = Path(out["path"])
+    assert path.parent == tmp_artifacts and str(path) in out["text"]
+    views = json.loads(path.read_text(encoding="utf-8"))["views"]
+    assert len(views) == 8 and "views" not in out
+    for vid, view in views.items():
+        Draft202012Validator(tv.view_schema(vid)).validate(view)
+
+
+def test_cli_labels_writes_complete_large_timeline_without_flooding_stdout(run_cli, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    sidecar = tmp_path / "labels.json"
+    sidecar.write_text(json.dumps({"taxonomy_version": "2", "model": "test", "steps": [
+        {"index": i, "phase": "understand", "action": "code_reading", "text_preview": "x" * 512}
+        for i in range(1000)
+    ]}), encoding="utf-8")
+    code, out = run_cli(["labels", "--sidecar", str(sidecar)])
+    assert code == 0 and len(json.dumps(out).encode()) < 256 * 1024
+    exported = Path(out["path"])
+    assert exported.is_relative_to(tmp_path / "cache" / "trajviz-obs" / "label-views")
+    views = json.loads(exported.read_text(encoding="utf-8"))["views"]
+    assert len(views) == 6 and len(views["label_timeline"]["data"]["steps"]) == 1000
+    assert exported.stat().st_size > 256 * 1024
+
+
+@pytest.mark.parametrize("sibling_fallback", [False, True])
+def test_labels_export_protects_trajectory_read_for_legacy_timeline(run_cli, tmp_path, fixture_session,
+                                                                 sibling_fallback):
+    sidecar = tmp_path / "labels.json"
+    identity = hashlib.sha256(str(sidecar.resolve()).encode()).hexdigest()[:24]
+    transcript = tmp_path / f"labels-{identity}.json"
+    original = fixture_session.read_bytes()
+    transcript.write_bytes(original)
+    recorded = str(tmp_path / "moved" / transcript.name) if sibling_fallback else str(transcript)
+    sidecar.write_text(json.dumps({"taxonomy_version": "1", "trajectory_file": recorded, "steps": [
+        {"index": 1, "phase": "understand", "action": "code_reading"},
+    ]}), encoding="utf-8")
+    code, out = run_cli(["labels", "--sidecar", str(sidecar), "--artifacts", str(tmp_path)])
+    assert code == 1 and out["error"]["code"] == "bad_output"
+    assert transcript.read_bytes() == original
 
 
 def test_cli_labels_not_a_sidecar(run_cli, fixture_session):

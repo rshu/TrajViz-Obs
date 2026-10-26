@@ -130,18 +130,20 @@ function packTiles(items: Kpi[], columns: number): Kpi[][] {
  * The KPIs by the breakpoints: from 72 columns tiles (a dim label over the
  * value over a dim sub), packed into as few rows as their measured widths
  * fit in `columns` (one row where the width allows, two or three on the
- * narrower terminals); below 72 a list of `label  value  (sub)` lines. The
+ * narrower terminals); below 72, each value and its dim detail on separate lines. The
  * tiles sit under a Box keyed `kpis`, one row Box each.
  */
 export function KpiRow({ els, snap, usage, columns }: { els: Els; snap: Snapshot; usage?: Snapshot['engine_usage']; columns: number }): RenderElement {
   const { Box, Text } = els
   const items = kpis(snap, usage)
   if (columns < 72) {
-    const width = Math.max(...items.map(k => k.label.length))
     return (
-      <Box flexDirection="column">
+      <Box key="kpis-compact" flexDirection="column" gap={1}>
         {items.map(k => (
-          <Text>{`${k.label.padEnd(width)}  ${k.value}${k.sub ? `  (${k.sub})` : ''}`}</Text>
+          <Box flexDirection="column">
+            <Text weight="semibold" wrap="wrap">{`${k.label}  ${k.value}`}</Text>
+            {k.sub ? <Text dimColor wrap="wrap">{k.sub}</Text> : null}
+          </Box>
         ))}
       </Box>
     )
@@ -216,7 +218,7 @@ export function StackedBlock({ els, surface, label, stacks, columns, rows, key }
   const totals = Array.from({ length: n }, (_, i) => stacks.reduce((sum, s) => sum + Math.max(0, s.values[i] ?? 0), 0))
   return (
     <Box flexDirection="column">
-      <Box flexDirection="row" gap={2}>
+      <Box flexDirection="row" flexWrap="wrap" gap={2}>
         <Text dimColor>{label}</Text>
         {stacks.map(s => (
           <Text color={hex(s.color)}>{`■ ${s.name}`}</Text>
@@ -313,13 +315,20 @@ export function seriesOf(p: SeriesProps): RenderElement[] {
 export function ToolBars({ els, byTool, width }: { els: Els; byTool: ToolRow[]; width: number }): RenderElement {
   const { Box, Text } = els
   if (byTool.length === 0) return <Text dimColor>No tool calls.</Text>
+  // A bar, tool label and counters cannot share a very narrow dock. Keep the
+  // full tool names and counts in a wrapping list instead of clipping them.
+  if (width < 40) return (
+    <Box flexDirection="column">
+      {byTool.map(t => <Text wrap="wrap">{`${t.tool} · ${fmtInt(t.calls)} calls${t.errors ? ` · ${fmtInt(t.errors)} failed` : ''}`}</Text>)}
+    </Box>
+  )
   const name = Math.min(14, Math.max(...byTool.map(t => t.tool.length)))
   const max = Math.max(...byTool.map(t => t.calls))
   const barWidth = Math.max(4, Math.min(40, width - name - 16))
   return (
     <Box flexDirection="column">
       {byTool.map(t => (
-        <Box flexDirection="row" gap={1}>
+        <Box flexDirection="row" flexWrap="wrap" gap={1}>
           <Text>{clip(t.tool, name).padEnd(name)}</Text>
           <Text color="claude">{bar(t.calls, max, barWidth)}</Text>
           <Text dimColor>{fmtInt(t.calls).padStart(5)}</Text>
@@ -464,7 +473,7 @@ export function IssuesList({ els, issues, limit, total = issues.length }: { els:
     <Box flexDirection="column">
       {shown.map((issue, i) => (
         <Box flexDirection="column">
-          <Box flexDirection="row" gap={1}>
+          <Box flexDirection="row" flexWrap="wrap" gap={1}>
             <Text weight="semibold">{`${i + 1}. ${issue.title}`}</Text>
             {issue.steps.length > 0 ? <Text dimColor>{stepsText(issue.steps)}</Text> : null}
           </Box>
@@ -493,20 +502,48 @@ function cellText(v: unknown): string {
   return s.replace(/\|/g, '\\|').replace(/\n/g, ' ')
 }
 
-/** The Markdown table of `rows` over `columns` (its keys, in order), to `limit` rows, the rest counted. */
-export function MdTable({ els, rows, columns, limit }: { els: Els; rows: Record<string, unknown>[]; columns: readonly string[]; limit: number }): RenderElement {
+/** A table when its cells fit `width`, otherwise wrapping records; the remaining rows are counted. */
+export function MdTable({ els, rows, columns, limit, width }: { els: Els; rows: Record<string, unknown>[]; columns: readonly string[]; limit: number; width?: number }): RenderElement {
   const { Box, Markdown, Text } = els
   const shown = rows.slice(0, Math.max(0, limit))
   if (shown.length === 0 || columns.length === 0) return <Text dimColor>No rows.</Text>
+  // Markdown's table layout has no horizontal-scroll contract in the host.
+  // Measure the actual columns before choosing it; a dock gets a wrapping
+  // record list instead, retaining every field and the complete cell values.
+  const cells = columns.reduce((n, c) => n + Math.max(3, c.length, ...shown.map(r => cellText(r[c]).length)) + 3, 1)
+  // Code-point counts cannot predict a host font's CJK/emoji width. Keep
+  // those cells, and multiline values, in records with native text wrapping.
+  const singleWidth = columns.every(c => /^[\x20-\x7e]*$/.test(c) && shown.every(r => {
+    const value = r[c]
+    const text = value === null || value === undefined ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value)
+    return /^[\x20-\x7e]*$/.test(text)
+  }))
+  const more = rows.length - shown.length
+  if (width !== undefined && (!singleWidth || cells > Math.max(1, width))) return (
+    <Box key="records" flexDirection="column" gap={1}>
+      {shown.map((row, i) => (
+        <Box flexDirection="column">
+          <Text weight="semibold" wrap="wrap">{`${i + 1}. ${columns[0]!.replace(/_/g, ' ')}: ${plainCell(row[columns[0]!])}`}</Text>
+          {columns.slice(1).map(c => <Text wrap="wrap">{`${c.replace(/_/g, ' ')}: ${plainCell(row[c])}`}</Text>)}
+        </Box>
+      ))}
+      {more > 0 ? <Text dimColor>{`… ${fmtInt(more)} more; open Dashboard for the full view.`}</Text> : null}
+    </Box>
+  )
   const lines = [`| ${columns.join(' | ')} |`, `| ${columns.map(() => '---').join(' | ')} |`]
   for (const row of shown) lines.push(`| ${columns.map(c => cellText(row[c])).join(' | ')} |`)
-  const more = rows.length - shown.length
   return (
     <Box flexDirection="column">
       <Markdown text={lines.join('\n')} />
       {more > 0 ? <Text dimColor>{`… ${fmtInt(more)} more`}</Text> : null}
     </Box>
   )
+}
+
+/** Plain cells bypass Markdown escaping in the narrow record layout. */
+function plainCell(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—'
+  return typeof value === 'object' ? JSON.stringify(value) : String(value)
 }
 
 /** One dim line. */

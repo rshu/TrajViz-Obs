@@ -2,7 +2,6 @@ import type { CommandRunResult, EngineInterface } from 'claude-code'
 import { flagValues } from '../lib/args'
 import { runBridge } from '../lib/bridge'
 import { fmtBytes, fmtInt } from '../lib/format'
-import { openTarget, type OpenResult } from '../lib/open'
 import { artifactsDir } from '../lib/paths'
 import { ensureReady, sessionArgv } from '../lib/snapshot'
 import type { CommandContext } from './index'
@@ -13,7 +12,6 @@ const EXPORT_TIMEOUT_MS = 600_000
 
 type Empty = { empty: true; reason: string }
 type Written = { path: string; bytes: number }
-type ReportDoc = Empty | Written
 type JsonDoc = Empty | (Written & { files: string[] })
 type BundleDoc = Written & { members: string[]; members_total: number }
 type SchemasDoc = Written & { files: string[] }
@@ -38,35 +36,6 @@ export function outputError(ctx: CommandContext): string | undefined {
 export function outFlag(ctx: CommandContext): string | undefined {
   const o = ctx.parsed.flags['o'] ?? ctx.parsed.flags['out']
   return typeof o === 'string' && o ? o : undefined
-}
-
-/** The report's row: where it is, then whether the browser has it (the path is always printed). */
-export function reportLine(path: string, bytes: number, opened: OpenResult): string {
-  const written = `Report written to ${path} (${fmtBytes(bytes)})`
-  switch (opened) {
-    case 'opened':
-      return `${written}; opened in the browser.`
-    case 'skipped-ssh':
-      return `${written}; not opened over SSH: copy it to your machine (scp) and open it there.`
-    case 'disabled':
-      return `${written}; not opened (openBrowser is off in /config).`
-    case 'failed':
-      return `${written}; no browser could be opened here, so open the file yourself.`
-  }
-}
-
-/** `report [--dark] [--offline] [-o PATH]`: the `charts` extra, the bridge's report, the browser, the path. */
-async function report($: EngineInterface, ctx: CommandContext, spec: string | undefined): Promise<string> {
-  await ensureReady($, ctx.options, 'charts')
-  const { argv } = await sessionArgv($, spec)
-  const call = ['report', ...argv]
-  const out = outFlag(ctx)
-  if (out) call.push('--out', out)
-  if (ctx.parsed.flags['dark'] !== undefined) call.push('--dark')
-  if (ctx.parsed.flags['offline'] !== undefined) call.push('--offline')
-  const doc = await runBridge<ReportDoc>($, call, { timeoutMs: EXPORT_TIMEOUT_MS })
-  if ('empty' in doc) return EMPTY_TEXT
-  return reportLine(doc.path, doc.bytes, await openTarget($, ctx.options, doc.path))
 }
 
 /**
@@ -112,15 +81,13 @@ async function schemas($: EngineInterface, ctx: CommandContext): Promise<string>
   return `JSON Schemas of ${count(doc.files.length, 'view')} (${fmtBytes(doc.bytes)}) written to ${doc.path}.`
 }
 
-/** `/obs report | json | bundle | schemas`: one bridge export each, its row naming what was written. */
+/** `/obs json | bundle | schemas`: one bridge export each, its row naming what was written. */
 export async function exportCmd($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
   const invalidOutput = outputError(ctx)
   if (invalidOutput) return { text: invalidOutput }
   const spec = sessionSpec(ctx)
   try {
     switch (ctx.parsed.sub) {
-      case 'report':
-        return { text: await report($, ctx, spec) }
       case 'json':
         return { text: await exportJson($, ctx, spec) }
       case 'bundle':

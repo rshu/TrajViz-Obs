@@ -19,7 +19,7 @@ export const SESSION_USAGE = '--session needs a session id, prefix, or transcrip
 
 /** The hidden note the model reads after the card: where the artifacts are and how to get more. */
 const contextNote = (dir: string): string =>
-  `TrajViz artifacts for this session go under ${dir} (report.html, views/<id>.json, labels.json, analyze.json). ` +
+  `TrajViz artifacts for this session go under ${dir} (views/<id>.json, labels.json, analyze.json). ` +
   'For more of the same data, call the obs tool (mcp__trajviz-obs__obs, listed behind ToolSearch) with ' +
   '{ what: "brief" | "issues" | "health" | "view", view?: string, options?: object, limit?: number }: ' +
   'it answers top-N JSON and the path of the full file.'

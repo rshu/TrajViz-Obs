@@ -1271,7 +1271,6 @@ export const NATIVE_SNAPSHOT: Snapshot = {
   "skills": [],
   "artifacts": {
     "dir": null,
-    "report": null,
     "views": null,
     "labels": null
   },

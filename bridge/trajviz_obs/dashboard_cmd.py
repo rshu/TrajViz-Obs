@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import inspect
 import json
-import os
 import signal
 import socket
 import sys
@@ -25,8 +25,10 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 from .cli import register
-from .compat import load_plugins
+from .compat import dashboard_server_options, dashboard_window_callback, load_plugins
+from .dashboard_ui import decorate_dashboard, presentation
 from .errors import BridgeError
+from .sessions import _positive_int
 
 if TYPE_CHECKING:
     import gradio as gr
@@ -73,11 +75,66 @@ def _add_preload(app: gr.Blocks, transcript_path: str) -> bool:
     return True
 
 
-def build_preloaded_insight(transcript_path: str) -> gr.Blocks:
+def _apply_context_window(app: gr.Blocks, transcript_path: str, window: int | None) -> None:
+    """Adapt the app's own loader only for its selected transcript, before it computes any views."""
+    if window is None:
+        return
+    callbacks = [block for block in app.fns.values()
+                 if getattr(block.fn, "__module__", "") == "agent_trajviz.insight.ui.load"
+                 and getattr(block.fn, "__name__", "") == "_do_load"]
+    if len(callbacks) != 1:
+        raise BridgeError("dashboard_incompatible", "TrajViz's dashboard loader changed; cannot preserve the "
+                          "Claude Code context window. Update the plugin or use /obs context.")
+    callbacks[0].fn = dashboard_window_callback(callbacks[0].fn, transcript_path, window)
+
+
+def _add_labels_preload(app: gr.Blocks, transcript_path: str, labels_path: str) -> bool:
+    """Restore labels through the native reset/change handlers, after its normal trajectory reset.
+
+    The native Load click resets label charts and clears the label file. Supplying the known sidecar as
+    that reset's last output makes the existing file-change handler draw all five label charts. Its new
+    trajectory input prevents that sidecar from leaking into a different uploaded run.
+    """
+    import gradio as gr
+
+    trajectory_file = _trajectory_file(app)
+    label_files = [block for block in app.blocks.values()
+                   if isinstance(block, gr.File) and block.label == "Labels (optional)"]
+    if trajectory_file is None or len(label_files) != 1:
+        return False
+    labels_file = label_files[0]
+    callbacks = [block for block in app.fns.values()
+                 if getattr(block.fn, "__module__", "") == "agent_trajviz.insight.ui.overview_tab"
+                 and getattr(block.fn, "__name__", "") == "_reset_labels"
+                 and not block.inputs and block.outputs and block.outputs[-1] is labels_file]
+    if len(callbacks) != 1 or inspect.signature(callbacks[0].fn).parameters:
+        return False
+    callback = callbacks[0]
+    reset = callback.fn
+    selected = Path(transcript_path).resolve()
+
+    def reset_labels(upload_obj):
+        path = upload_obj if isinstance(upload_obj, str) else getattr(upload_obj, "name", None)
+        same_run = bool(path) and Path(path).resolve() == selected
+        outputs = list(reset())
+        outputs[-1] = gr.update(value=labels_path if same_run else None)
+        return tuple(outputs)
+
+    gr.set_static_paths([labels_path])
+    callback.fn = reset_labels
+    callback.inputs = [trajectory_file]
+    return True
+
+
+def build_preloaded_insight(transcript_path: str, *, window: int | None = None,
+                            labels_path: str | None = None) -> gr.Blocks:
     """The Insight dashboard that loads *transcript_path* when the page opens (unchanged if that cannot be wired)."""
     app = _dashboard().insight_app()
+    _apply_context_window(app, transcript_path, window)
     _add_preload(app, transcript_path)
-    return app
+    if labels_path is not None:
+        _add_labels_preload(app, transcript_path, labels_path)
+    return decorate_dashboard(app, "insight")
 
 
 def _check_port(port: int | None) -> None:
@@ -120,7 +177,8 @@ def _wait_for_shutdown(*, exit_on_stdin: bool) -> None:
             signal.signal(sig, handler)
 
 
-def serve_insight(transcript_path: str, port: int | None, *, exit_on_stdin: bool = False) -> None:
+def serve_insight(transcript_path: str, port: int | None, *, exit_on_stdin: bool = False,
+                  window: int | None = None, labels_path: str | None = None) -> None:
     """Serve the preloaded Insight dashboard until terminated; ``{"url"}`` is the first stdout line.
 
     When the preload cannot be wired (a TrajViz release changed the upload row) the dashboard still starts and
@@ -129,13 +187,17 @@ def serve_insight(transcript_path: str, port: int | None, *, exit_on_stdin: bool
     _check_port(port)
     dashboard = _dashboard()
     app = dashboard.insight_app()
+    _apply_context_window(app, transcript_path, window)
     preloaded = _add_preload(app, transcript_path)
+    labels_preloaded = labels_path is not None and _add_labels_preload(app, transcript_path, labels_path)
+    app = decorate_dashboard(app, "insight")
     try:
         with contextlib.redirect_stdout(sys.stderr):  # Gradio's prints: the URL stays the first stdout line
-            _, url, _ = app.launch(server_name="127.0.0.1", server_port=port, prevent_thread_lock=True, quiet=True,
-                                   allowed_paths=[os.path.dirname(transcript_path)],
-                                   **dashboard.insight_presentation())
-        _announce(url, **({} if preloaded else {"preloaded": False}))
+            _, url, _ = app.launch(**dashboard_server_options(port), prevent_thread_lock=True, quiet=True,
+                                   allowed_paths=[transcript_path, *([labels_path] if labels_path is not None else [])],
+                                   **presentation("insight", dashboard.insight_presentation()))
+        _announce(url, **({} if preloaded else {"preloaded": False}),
+                  **({"labels_preloaded": labels_preloaded} if labels_path is not None else {}))
         _wait_for_shutdown(exit_on_stdin=exit_on_stdin)
     finally:
         with contextlib.redirect_stdout(sys.stderr):
@@ -146,17 +208,17 @@ def serve_converge(data_root: str, port: int | None, *, exit_on_stdin: bool = Fa
     """Serve the Converge dashboard over *data_root* until terminated; ``{"url"}`` is the first stdout line."""
     _check_port(port)
     dashboard = _dashboard()
-    import gradio as gr
-
+    app = decorate_dashboard(dashboard.converge_app(data_root=data_root), "converge")
     try:
         with contextlib.redirect_stdout(sys.stderr):  # Gradio's prints: the URL stays the first stdout line
-            _, url, _ = dashboard.launch_converge(host="127.0.0.1", port=port, data_root=data_root,
-                                                  prevent_thread_lock=True, quiet=True)
+            _, url, _ = app.launch(**dashboard_server_options(port),
+                                   prevent_thread_lock=True, quiet=True,
+                                   **presentation("converge", dashboard.converge_presentation()))
         _announce(url)
         _wait_for_shutdown(exit_on_stdin=exit_on_stdin)
     finally:
         with contextlib.redirect_stdout(sys.stderr):
-            gr.close_all()
+            app.close()
 
 
 def _port(text: str) -> int:
@@ -175,6 +237,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     stdin_help = "Stop when stdin closes (standalone pipe use; default: serve until terminated)."
     p = sub.add_parser("dashboard", help="The Insight dashboard with the session preloaded, until terminated.")
     p.add_argument("--transcript", required=True, help="The session transcript.")
+    p.add_argument("--window", type=_positive_int, default=None, help="The preloaded session's context window.")
+    p.add_argument("--labels", type=Path, default=None, help="A labels sidecar to preload for this session.")
     p.add_argument("--port", type=_port, default=None, help=port_help)
     p.add_argument("--exit-on-stdin", action="store_true", help=stdin_help)
 
@@ -191,7 +255,15 @@ def _serve_dashboard(args: argparse.Namespace) -> None:
     if not path.is_file():
         raise BridgeError("not_found", f"No such transcript: {path}", path=str(path))
     load_plugins()  # as TrajViz's own dashboard command does on start, so the app reads plugins' formats
-    serve_insight(str(path), args.port, exit_on_stdin=args.exit_on_stdin)
+    labels = args.labels.resolve() if args.labels is not None else None
+    if labels is not None:
+        if not labels.is_file():
+            raise BridgeError("not_found", f"No such labels sidecar: {labels}", path=str(labels))
+        import agent_trajviz as tv
+
+        tv.label_views(labels)  # Surface invalid sidecars before announcing a running dashboard.
+    serve_insight(str(path), args.port, exit_on_stdin=args.exit_on_stdin,
+                  window=args.window, labels_path=str(labels) if labels is not None else None)
 
 
 @register("converge")
@@ -200,4 +272,5 @@ def _serve_converge(args: argparse.Namespace) -> None:
     root = Path(args.data_root).resolve()
     if not root.is_dir():
         raise BridgeError("not_found", f"No such folder: {root}", path=str(root))
+    load_plugins()
     serve_converge(str(root), args.port, exit_on_stdin=args.exit_on_stdin)

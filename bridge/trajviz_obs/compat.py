@@ -3,7 +3,7 @@
 The plugin ships against the published ``agent-trajviz>=0.2.0,<0.3``. Two things have no public path there:
 
 1. **The real context window everywhere.** ``context_pressure(window_limit=)`` and the ``context_*`` views take
-   an override, but the issues, the brief, the report and the export do not. :func:`load_run` writes the window
+   an override, but the issues, the brief and the export do not. :func:`load_run` writes the window
    into ``run.raw["metadata"]["context_window_limit"]`` before anything is computed, so every consumer measures
    against it (TrajViz then calls it ``declared``; :func:`window_info` reports ``override``).
 2. **Session-mode labeling.** ``label_trajectory()`` has no ``chat=``; :func:`labeler_chat` patches the
@@ -160,6 +160,63 @@ def window_info(run: Trajectory) -> dict[str, Any]:
     stats = run.context_pressure()["stats"]
     return {"window": stats.get("window_limit"), "window_source": stats.get("window_source"),
             "window_note": stats.get("window_note") or ""}
+
+
+def dashboard_window_callback(callback: Callable, transcript: str, window: int) -> Callable:
+    """Give one Insight load callback the host's window for its preloaded file only.
+
+    TrajViz 0.2 does not expose a dashboard loader option. Clone the two small function objects that
+    dispatch loading, retaining their code and closures while replacing only their globals mappings.
+    Other apps, library calls and files uploaded later keep TrajViz's original loader. Applying the
+    metadata before ``session_from_run`` also gives issues and charts the same window as ``/obs``.
+    """
+    check_supported()
+    from agent_trajviz.insight.session import LoadError as SessionLoadError
+    from agent_trajviz.insight.session import session_from_run
+    from agent_trajviz.insight.ui import load as ui_load
+
+    if (not isinstance(callback, types.FunctionType) or callback.__name__ != "_do_load"
+            or callback.__module__ != ui_load.__name__
+            or callback.__globals__.get("do_load") is not ui_load.do_load
+            or ui_load.do_load.__globals__.get("load_session") is not ui_load.load_session):
+        raise BridgeError("dashboard_incompatible", "TrajViz's dashboard loader changed; cannot preserve the "
+                          "Claude Code context window. Update the plugin or use /obs context.")
+    target = Path(transcript).resolve()
+    native_load = ui_load.load_session
+
+    def load_selected(path: str, format_hint: str = ""):
+        if not path or Path(path).resolve() != target:
+            return native_load(path, format_hint=format_hint)
+        try:
+            run = load_run(path, window_limit=window)
+        except LoadError:
+            # Keep TrajViz's format/read error classification and visible banners unchanged.
+            return native_load(path, format_hint=format_hint)
+        if format_hint in agent_trajviz.FORMATS and run.format != format_hint:
+            return native_load(path, format_hint=format_hint)
+        try:
+            return session_from_run(run, path)
+        except Exception as exc:  # noqa: BLE001 - same visible failure contract as the native loader
+            return SessionLoadError(code="analysis_error", message=(
+                f"The file loaded but could not be analysed ({type(exc).__name__}: {str(exc)[:160]})."))
+
+    def clone(function: types.FunctionType, replacements: dict[str, Any]) -> types.FunctionType:
+        copied = types.FunctionType(function.__code__, {**function.__globals__, **replacements},
+                                    function.__name__, function.__defaults__, function.__closure__)
+        copied.__kwdefaults__ = function.__kwdefaults__
+        copied.__annotations__ = function.__annotations__
+        return copied
+
+    return clone(callback, {"do_load": clone(ui_load.do_load, {"load_session": load_selected})})
+
+
+def dashboard_server_options(port: int | None) -> dict[str, Any]:
+    """The native dashboard's login and upload cap, pinned to loopback for plugin-managed servers."""
+    check_supported()
+    from agent_trajviz import _serve
+
+    return _serve.server_kwargs(host="127.0.0.1", port=port, share=False,
+                                max_file_size=_serve.DEFAULT_MAX_FILE_SIZE, auth=_serve.auth_from_env())
 
 
 def llm_config_from_env(*, load_dotenv: bool = False) -> Any:

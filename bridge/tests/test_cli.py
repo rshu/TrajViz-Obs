@@ -100,8 +100,9 @@ def test_extras_import_names_match_trajviz():
     assert doctor.EXTRAS == _extras.EXTRAS
 
 
-def test_unknown_subcommand_is_usage_error(run_cli):
-    code, out = run_cli(["nonsense"])
+@pytest.mark.parametrize("command", ["nonsense", "report"])
+def test_unknown_subcommand_is_usage_error(command, run_cli):
+    code, out = run_cli([command])
     assert code == 2
     assert out["error"]["code"] == "usage"
 
@@ -134,7 +135,7 @@ def test_missing_extra_maps_to_missing_extra(run_cli):
 
     @cli.register("boom")
     def _boom(args):
-        raise agent_trajviz.MissingExtraError("charts", ["plotly"], "The report")
+        raise agent_trajviz.MissingExtraError("charts", ["plotly"], "The chart")
 
     code, out = run_cli(["boom"])
     assert code == 1

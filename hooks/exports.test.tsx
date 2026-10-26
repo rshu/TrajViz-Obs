@@ -11,7 +11,6 @@ const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef01234567
 const STATE_PATH = `${CACHE}/state.json`
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const ARTIFACTS = `${CACHE}/sessions/abc`
-const REPORT = `${ARTIFACTS}/report.html`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 12 }, rateLimits: [] }
 const NOW = 1_761_150_000_000
 
@@ -110,7 +109,6 @@ function host(on: On, world: World = {}): Host {
 }
 
 const json = (doc: unknown): RunAnswer => ({ exitCode: 0, stdout: `${JSON.stringify(doc)}\n` })
-const ok: RunAnswer = { exitCode: 0, stdout: '' }
 
 const obs = ($: { command: { run: (args: never) => Promise<{ text?: string; context?: readonly string[] }> } }, args: string) =>
   $.command.run({ command: 'obs', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
@@ -126,86 +124,6 @@ const STEPS_VIEW = {
   rows_total: 311,
   inline: { table: STEPS_TABLE },
 }
-
-test('report over SSH prints the path and opens nothing', async ($, on) => {
-  const { ran } = host(on, {
-    extras: ['llm', 'charts'],
-    env: { SSH_TTY: '/dev/pts/3' },
-    bridge: { report: json({ path: REPORT, bytes: 1_234_567 }) },
-    commands: { uname: { exitCode: 0, stdout: 'Darwin\n' }, open: ok },
-  })
-  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  const out = await obs($, 'report')
-  expect(out.text).toContain(REPORT)
-  expect(out.text).toContain('1.2 MB')
-  expect(out.text).toContain('SSH')
-  expect(ran.map(r => r[0])).not.toContain('open')
-  expect(ran.map(r => r[0])).not.toContain('uname')
-  expect(bridgeCalls(ran)).toEqual([['report', ...SESSION_ARGV]])
-})
-
-/** Answers `$.ui.ask` (the engine's AskUserQuestion call) with `answer` for every question, recording the questions. */
-function asks(on: On, answer: string): string[] {
-  const asked: string[] = []
-  on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
-    const questions = (e as { questions?: { question: string }[] }).questions ?? []
-    for (const q of questions) asked.push(q.question)
-    return { result: { questions, answers: Object.fromEntries(questions.map(q => [q.question, answer])) } }
-  })
-  return asked
-}
-
-test('report repairs legacy metadata missing the mandatory charts extra once, then opens the file', async ($, on) => {
-  forgetPlatform()
-  const { ran, spawned, rows, timeline } = host(on, {
-    extras: ['llm'],
-    bridge: { report: json({ path: REPORT, bytes: 900 }) },
-    commands: { uname: { exitCode: 0, stdout: 'Darwin\n' }, open: ok },
-  })
-  const asked = asks(on, 'Install')
-  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  const out = await obs($, 'report --dark --offline -o /tmp/r.html')
-  // Charts are part of every valid base environment: inconsistent metadata
-  // rebuilds the base, and never treats its repair as an optional install.
-  expect(asked).toEqual([])
-  expect(rows).toEqual([])
-  expect(timeline).toEqual(['spawn'])
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz>=0.2.0,<0.3', extras: ['llm', 'charts', 'charts'] })
-  expect(bridgeCalls(ran)).toEqual([['report', ...SESSION_ARGV, '--out', '/tmp/r.html', '--dark', '--offline']])
-  expect(ran.filter(r => r[0] === 'open')).toEqual([['open', REPORT]])
-  expect(out.text).toContain(REPORT)
-  expect(out.text).toContain('opened')
-  // The extra is recorded: a second report installs nothing and asks uname nothing more.
-  await obs($, 'report')
-  expect(spawned).toHaveLength(1)
-  expect(ran.filter(r => r[0] === 'uname')).toHaveLength(1)
-  expect(ran.filter(r => r[0] === 'open')).toHaveLength(2)
-})
-
-test('a first report builds its base charts without an optional-extra confirmation', async ($, on) => {
-  const { ran, spawned, rows } = host(on, { extras: null, bridge: { report: json({ path: REPORT, bytes: 900 }) } })
-  const asked = asks(on, 'Not now')
-  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  const out = await obs($, 'report')
-  expect(out.text).toContain(`Report written to ${REPORT}`)
-  expect(asked).toEqual([])
-  expect(rows).toEqual([])
-  expect(spawned).toHaveLength(1)
-  expect(bridgeCalls(ran)).toEqual([['report', ...SESSION_ARGV]])
-})
-
-test('report with openBrowser off prints the path and opens nothing', { options: { openBrowser: false } }, async ($, on) => {
-  const { ran } = host(on, {
-    extras: ['llm', 'charts'],
-    bridge: { report: json({ path: REPORT, bytes: 900 }) },
-    commands: { uname: { exitCode: 0, stdout: 'Darwin\n' }, open: ok },
-  })
-  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  const out = await obs($, 'report')
-  expect(out.text).toContain(REPORT)
-  expect(out.text).toContain('openBrowser')
-  expect(ran.map(r => r[0])).not.toContain('open')
-})
 
 test('view passes paging flags, draws the inline table and names the file in context', async ($, on) => {
   const { ran } = host(on, { bridge: { view: json(STEPS_VIEW) } })
@@ -271,11 +189,10 @@ test('an unknown view is the bridge message; an empty session is the spec row', 
 
 test('an empty session answers the spec row for view and the exports', async ($, on) => {
   const empty = json({ empty: true, reason: 'no_steps' })
-  host(on, { extras: ['llm', 'charts'], bridge: { view: empty, report: empty, json: empty } })
+  host(on, { extras: ['llm', 'charts'], bridge: { view: empty, json: empty } })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const row = 'Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.'
   expect((await obs($, 'issues')).text).toBe(row)
-  expect((await obs($, 'report')).text).toBe(row)
   expect((await obs($, 'json')).text).toBe(row)
 })
 
@@ -310,7 +227,7 @@ test('bundle counts all ZIP members when the bridge caps its member preview', as
 test('an output flag without a path is refused before exports run', async ($, on) => {
   const { ran } = host(on)
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  for (const args of ['report -o', 'json --out', 'bundle --out=']) {
+  for (const args of ['json -o', 'json --out', 'bundle --out=']) {
     expect((await obs($, args)).text).toBe('-o/--out needs an output path.')
   }
   expect(bridgeCalls(ran)).toEqual([])
@@ -335,7 +252,7 @@ test('json takes every --view as the spec writes it and refuses one without an i
 test('a bare --session is refused instead of analyzing the current session', async ($, on) => {
   const { ran } = host(on)
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  for (const args of ['--session', 'view steps --session', 'report --session=']) {
+  for (const args of ['--session', 'view steps --session', 'json --session=']) {
     expect((await obs($, args)).text).toBe('--session needs a session id, prefix, or transcript path.')
   }
   expect(bridgeCalls(ran)).toEqual([])

@@ -1,7 +1,7 @@
 // The live pane: `$.ui.open({ id: 'obs' })`, drawn by the `Pane` render hook
 // in register.tsx from the latest snapshot. A tab bar of plain Buttons with
 // hotkeys `1`–`7` (writing `paneTab`), an action row (`r` refresh, `w`
-// watch, `o` report, `d` dashboard), the open tab's body sized to
+// watch, `d` dashboard), the open tab's body sized to
 // `e.props.bodyColumns`, and a footer naming the snapshot. `openPane` and
 // `renderPane` are function declarations taking `$` (validate follows `$`
 // across an import only into one); state is reached through state.ts.
@@ -46,7 +46,7 @@ export const NARROW_COLUMNS = 48
 export const TABS: readonly string[] = ['Overview', 'Tools', 'Issues', 'Patterns', 'Agents', 'Context', 'Timeline']
 
 export const NO_SNAPSHOT_TEXT = 'No snapshot yet: press r or run /obs.'
-export const DRAG_TEXT = 'Drag the dock wider for the tables and series.'
+export const DRAG_TEXT = 'Widen the pane for charts, or open Dashboard for the full view.'
 
 /** The pane as the hook sees it, on whichever surface. */
 export type PaneEvent = RenderInput<'Pane'>
@@ -65,7 +65,7 @@ const OVERVIEW_ISSUES = 3
 const PATTERN_ROWS = 8
 
 /** Rows a table of agents or timeline steps shows before counting the rest. */
-const TABLE_ROWS = 60
+const TABLE_ROWS = 20
 
 /** The pattern lists in drawing order, each with its heading. */
 const PATTERN_SECTIONS: readonly { key: keyof Snapshot['patterns']; title: string }[] = [
@@ -165,7 +165,7 @@ function toolsBody({ els, snap, columns }: Body): RenderElement {
       {ToolBars({ els, byTool: tools.by_tool, width: columns })}
       <Box flexDirection="column">
         <Text dimColor>{`files: ${fmtInt(files.unique)} touched · ${fmtInt(files.reads)} reads · ${fmtInt(files.writes)} writes · ${fmtInt(files.searches)} searches`}</Text>
-        {files.top.length ? MdTable({ els, rows: files.top, columns: FILE_COLUMNS, limit: files.top.length }) : null}
+        {files.top.length ? MdTable({ els, rows: files.top, columns: FILE_COLUMNS, limit: files.top.length, width: columns }) : null}
       </Box>
       {skills.length ? <Text dimColor>{`skills: ${skills.map(s => `${s.skill} ×${fmtInt(s.calls)}`).join(' · ')}`}</Text> : null}
     </Box>
@@ -199,7 +199,7 @@ export function patternRows(data: Snapshot['patterns'][keyof Snapshot['patterns'
 }
 
 /** Tab 4: one table per non-empty pattern view, TrajViz's rows as given. */
-function patternsBody({ els, snap }: Body): RenderElement {
+function patternsBody({ els, snap, columns }: Body): RenderElement {
   const { Box, Text } = els
   const sections = PATTERN_SECTIONS.map(s => ({ ...s, rows: patternRows(snap.patterns[s.key]) })).filter(s => s.rows.length > 0)
   if (sections.length === 0) return <Text dimColor>No patterns found.</Text>
@@ -207,8 +207,8 @@ function patternsBody({ els, snap }: Body): RenderElement {
     <Box flexDirection="column" gap={1}>
       {sections.map(s => (
         <Box flexDirection="column">
-          <Text weight="semibold">{s.title}</Text>
-          {MdTable({ els, rows: s.rows, columns: keysOf(s.rows), limit: PATTERN_ROWS })}
+          <Text weight="semibold">{s.title.replace(/^./, c => c.toUpperCase())}</Text>
+          {MdTable({ els, rows: s.rows, columns: keysOf(s.rows), limit: PATTERN_ROWS, width: columns })}
         </Box>
       ))}
     </Box>
@@ -220,7 +220,7 @@ function agentsBody({ els, e, snap, columns }: Body): RenderElement {
   const { Box } = els
   return (
     <Box flexDirection="column" gap={1}>
-      {MdTable({ els, rows: snap.agents, columns: AGENT_COLUMNS, limit: TABLE_ROWS })}
+      {MdTable({ els, rows: snap.agents, columns: AGENT_COLUMNS, limit: TABLE_ROWS, width: columns })}
       {Swimlane({ els, surface: e.surface, lanes: snap.swimlane.lanes, total: snap.swimlane.total_steps, columns })}
     </Box>
   )
@@ -253,8 +253,8 @@ function contextBody({ els, e, snap, columns, usage }: Body): RenderElement {
 }
 
 /** Tab 7: the last steps as a table. */
-function timelineBody({ els, snap }: Body): RenderElement {
-  return MdTable({ els, rows: snap.timeline, columns: TIMELINE_COLUMNS, limit: TABLE_ROWS })
+function timelineBody({ els, snap, columns }: Body): RenderElement {
+  return MdTable({ els, rows: snap.timeline, columns: TIMELINE_COLUMNS, limit: TABLE_ROWS, width: columns })
 }
 
 function tabBody(tab: number, b: Body): RenderElement {
@@ -316,7 +316,7 @@ export function renderPane(
       : `snapshot ${timeOf(snap.generated_at)} · ${fmtInt(snap.counts.assistant_steps)} steps · computed in ${fmtInt(snap.duration_ms)} ms · wall ${fmtSecs(snap.timing.wall_clock_s)} · watch ${flags.watch ? 'on' : 'off'}`
   return (
     <Box flexDirection="column" gap={1}>
-      <Box flexDirection="row" flexWrap="wrap" gap={2}>
+      <Box flexDirection="row" flexWrap="wrap" gap={1}>
         {TABS.map((label, i) => {
           const n = i + 1
           const style = n === tab ? { variant: 'primary' as const } : { dimColor: true }
@@ -326,13 +326,27 @@ export function renderPane(
       <Box flexDirection="row" flexWrap="wrap" gap={2}>
         <Button key="refresh" label="Refresh" hotkey="r" plain onPress={refresh} />
         <Button key="watch" label={`Watch ${flags.watch ? 'on' : 'off'}`} hotkey="w" plain onPress={watch} />
-        <Button key="report" label="Report" hotkey="o" plain onPress={() => snap !== null ? runSnapshotCommand($, snap, 'report') : runSelectedCommand($, 'report')} />
-        <Button key="dashboard" label="Dashboard" hotkey="d" plain onPress={() => snap !== null ? runSnapshotCommand($, snap, 'dashboard') : runSelectedCommand($, 'dashboard')} />
-        {dashboards.insight ? <Text dimColor>{`insight ${dashboards.insight.url}`}</Text> : null}
-        {dashboards.converge ? <Text dimColor>{`converge ${dashboards.converge.url}`}</Text> : null}
+        <Button key="dashboard" label="Dashboard" hotkey="d" variant="primary" plain onPress={() => snap !== null ? runSnapshotCommand($, snap, 'dashboard') : runSelectedCommand($, 'dashboard')} />
+      </Box>
+      {dashboards.insight ? <Text dimColor wrap="wrap">{`Dashboard: ${dashboards.insight.url}`}</Text> : null}
+      {dashboards.converge ? <Text dimColor wrap="wrap">{`Compare: ${dashboards.converge.url}`}</Text> : null}
+      <Box flexDirection="column">
+        <Text weight="semibold">{TABS[tab - 1] ?? TABS[0]}</Text>
+        <Text dimColor wrap="wrap">{TAB_GUIDES[tab - 1] ?? TAB_GUIDES[0]}</Text>
       </Box>
       {body}
       {footer ? <Text dimColor>{footer}</Text> : null}
     </Box>
   )
 }
+
+/** Explain the question each diagnostic tab answers, without adding controls. */
+const TAB_GUIDES = [
+  'Session health and recent activity. Start with the top issues below.',
+  'Tool usage, failures, files touched, and skills used.',
+  'Ranked findings with evidence, affected steps, and suggested next checks.',
+  'Repeated behavior that may explain wasted work or failures.',
+  'Agent workload and when each agent was active.',
+  'Transcript context estimates alongside Claude Code’s current context usage.',
+  'Recent steps in order. Open Dashboard to inspect the full workflow.',
+] as const

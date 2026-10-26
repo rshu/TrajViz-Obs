@@ -79,7 +79,7 @@ def test_output_protection_also_covers_hardlinks(tmp_path):
 
 
 @pytest.mark.parametrize("command,relative", [("view", "views/health.json"), ("json", "views/trajectory.json"),
-                                               ("report", "report.html"), ("llm-prompt", "prompts-analyze.json"),
+                                               ("llm-prompt", "prompts-analyze.json"),
                                                ("ask", "analyze.json")])
 def test_reloaded_export_protects_its_actual_input_not_embedded_provenance(command, relative, fixture_run,
                                                                          tmp_path, run_cli):
@@ -140,7 +140,7 @@ def test_protection_covers_every_native_child_discovery_layout(layout, tmp_sessi
 
 
 @pytest.mark.parametrize("command,relative", [("view", "views/health.json"), ("json", "views/health.json"),
-                                               ("report", "report.html"), ("bundle", "bundle.zip")])
+                                               ("bundle", "bundle.zip")])
 def test_artifact_staging_cannot_follow_a_preexisting_symlink(command, relative, fixture_session, tmp_path, run_cli):
     artifacts = tmp_path / "artifacts"
     destination = artifacts / relative

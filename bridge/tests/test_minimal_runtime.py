@@ -65,6 +65,5 @@ sys.exit(main(sys.argv[1:]))
             run(["labels", "--sidecar", result["path"]])
     for feature in ("ask", "fixes", "label"):
         run([feature, *session], error="llm_not_configured")
-    run(["report", *session])
     run(["dashboard", "--transcript", str(fixture_session)], error="missing_extra")
     run(["converge", "--data-root", str(tmp_path)], error="missing_extra")

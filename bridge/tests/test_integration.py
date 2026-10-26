@@ -54,7 +54,6 @@ def test_every_subcommand_runs_on_fixture(run_cli, fixture_session, synthetic_se
     assert Path(ok(["view", *session, "tool_usage"])["path"]).is_file()
     assert (Path(ok(["json", *session, "--view", "tool_usage"])["path"]) / "index.json").is_file()
     assert ok(["schemas", "--out", str(tmp_path / "schemas")])["files"]
-    assert Path(ok(["report", *session])["path"]).is_file()
     assert Path(ok(["bundle", "--transcript", str(fixture_session), "--artifacts", str(tmp_artifacts)])["path"]).is_file()
     assert ok(["brief", *session])["brief"]
     assert ok(["attribution", *session])["available"] is False

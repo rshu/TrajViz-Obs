@@ -26,7 +26,7 @@ def test_current_snapshot_tolerates_only_an_in_progress_tail(fixture_session, tm
     assert code == 1 and out["error"]["code"] == "load_error"
 
 
-@pytest.mark.parametrize("command", ["snapshot", "view", "json", "report", "brief", "attribution", "compare",
+@pytest.mark.parametrize("command", ["snapshot", "view", "json", "brief", "attribution", "compare",
                                      "scorecard", "llm-prompt", "ask", "fixes", "label"])
 @pytest.mark.parametrize("state", ["missing", "user-only"])
 def test_current_session_before_its_first_assistant_is_empty(command, state, fixture_session, tmp_path, run_cli):
@@ -83,7 +83,7 @@ def test_label_replies_are_stale_when_only_a_subagent_changes(tmp_session, tmp_p
     assert not (tmp_path / "labels.json").exists()
 
 
-@pytest.mark.parametrize("command", ["snapshot", "view", "json", "report", "brief", "attribution", "compare",
+@pytest.mark.parametrize("command", ["snapshot", "view", "json", "brief", "attribution", "compare",
                                      "scorecard", "llm-prompt", "ask", "fixes", "label"])
 def test_current_session_corruption_is_reported_by_every_loading_entrypoint(command, fixture_session, tmp_path,
                                                                           run_cli):

@@ -197,7 +197,7 @@ export const SNAPSHOT: Snapshot = {
   },
   plan: { items: 5, done: 4, stalled: 0 },
   skills: [{ skill: 'superpowers:test-driven-development', calls: 1 }],
-  artifacts: { dir: '/Users/me/.cache/trajviz-obs/sessions/abc', report: null, views: null, labels: null },
+  artifacts: { dir: '/Users/me/.cache/trajviz-obs/sessions/abc', views: null, labels: null },
   text: [
     'Health: tool_success ok (96%) · context warn (71%) · loops warn (2) · pace ok (6.8s)',
     '311 assistant steps · 7 prompts · 2 agents · 4.8M tokens (118k fresh / 4.5M cache / 61k out) · 196 tool calls, 96% ok · 52m02s',

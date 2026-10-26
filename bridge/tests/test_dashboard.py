@@ -13,11 +13,13 @@ import threading
 import urllib.request
 from pathlib import Path
 
+import agent_trajviz as tv
 import gradio
 import pytest
 from agent_trajviz import MissingExtraError
 
 from trajviz_obs.dashboard_cmd import build_preloaded_insight
+from trajviz_obs.errors import BridgeError
 
 
 def test_preloaded_app_has_load_event(fixture_session):
@@ -39,6 +41,112 @@ def test_preloaded_file_keeps_its_real_path(fixture_session):
     """Gradio would hand TrajViz a cache copy, losing ``<id>/subagents/``; the transcript is served in place."""
     build_preloaded_insight(str(fixture_session))
     assert gradio.utils.is_static_file(str(fixture_session))
+
+
+def _loader(app):
+    return next(block for block in app.fns.values() if getattr(block.fn, "__name__", "") == "_do_load")
+
+
+def _loaded_run(block, path):
+    values = block.fn(str(path), False, "")
+    return next(value for value in values.values() if isinstance(value, tv.Trajectory))
+
+
+def test_host_context_window_reaches_native_dashboard_without_affecting_other_uploads(fixture_session,
+                                                                                     synthetic_session):
+    """The actual native load callback drives every chart/issue; no process-global loader is replaced."""
+    baseline = tv.load(fixture_session).context_pressure()["stats"]["window_limit"]
+    other_window = tv.load(synthetic_session).context_pressure()["stats"]["window_limit"]
+    app = build_preloaded_insight(str(fixture_session), window=1_000_000)
+    loader = _loader(app)
+    run = _loaded_run(loader, fixture_session)
+    assert run.context_pressure()["stats"]["window_limit"] == 1_000_000
+    assert run.raw["metadata"]["context_window_limit"] == 1_000_000
+    assert _loaded_run(loader, synthetic_session).context_pressure()["stats"]["window_limit"] == other_window
+    assert tv.load(fixture_session).context_pressure()["stats"]["window_limit"] == baseline
+    second_app = build_preloaded_insight(str(fixture_session), window=500_000)
+    assert _loaded_run(_loader(second_app), fixture_session).context_pressure()["stats"]["window_limit"] == 500_000
+    assert _loaded_run(loader, fixture_session).context_pressure()["stats"]["window_limit"] == 1_000_000
+
+
+def test_dashboard_window_loader_preserves_explicit_format_mismatch(fixture_session):
+    app = build_preloaded_insight(str(fixture_session), window=1_000_000)
+    loaded = _loader(app).fn(str(fixture_session), False, "codex")
+    assert any("Format mismatch" in str(value) for value in loaded.values())
+    assert not any(isinstance(value, tv.Trajectory) for value in loaded.values())
+
+
+def test_changed_dashboard_loader_cannot_silently_drop_context_window(fixture_session, monkeypatch):
+    from trajviz_obs import dashboard_cmd
+
+    app = build_preloaded_insight(str(fixture_session))
+    _loader(app).fn = lambda *args: None
+    monkeypatch.setattr(dashboard_cmd._dashboard(), "insight_app", lambda: app)
+    with pytest.raises(BridgeError, match="context window") as caught:
+        build_preloaded_insight(str(fixture_session), window=1_000_000)
+    assert caught.value.code == "dashboard_incompatible"
+
+
+@pytest.fixture
+def dashboard_labels(tmp_path):
+    path = tmp_path / "labels.json"
+    path.write_text(json.dumps({"taxonomy_version": "2", "model": "test", "steps": [
+        {"index": 1, "role": "assistant", "phase": "understand", "action": "code_reading",
+         "duration_s": 2.0, "tokens_total": 12, "text_preview": "Read the fixture"},
+    ]}), encoding="utf-8")
+    return path
+
+
+def test_labels_preload_uses_all_native_charts_and_resets_for_other_trajectories(fixture_session,
+                                                                              synthetic_session,
+                                                                              dashboard_labels):
+    app = build_preloaded_insight(str(fixture_session), labels_path=str(dashboard_labels))
+    label_file = next(block for block in app.blocks.values()
+                      if isinstance(block, gradio.File) and block.label == "Labels (optional)")
+    reset = next(block for block in app.fns.values() if getattr(block.fn, "__name__", "") == "reset_labels")
+    assert reset.inputs == [next(block for block in app.blocks.values()
+                                if isinstance(block, gradio.File) and str(block.label).startswith("Trajectory"))]
+    assert reset.fn(str(fixture_session))[-1]["value"] == str(dashboard_labels)
+    assert reset.fn(str(synthetic_session))[-1]["value"] is None
+    assert reset.outputs[-1] is label_file and gradio.utils.is_static_file(str(dashboard_labels))
+    native = next(block for block in app.fns.values() if getattr(block.fn, "__name__", "") == "do_load_labels")
+    values = native.fn(str(dashboard_labels), False)
+    assert all(values[index]["visible"] for index in (2, 5, 8))
+    assert all(values[index].data for index in (3, 4, 6, 7, 9))
+    assert any(target == (label_file._id, "change") for target in native.targets) or any(
+        (label_file._id, "change") in block.targets for block in app.fns.values()
+        if getattr(block.fn, "__name__", "") == "do_load_labels")
+
+
+def test_dashboard_rejects_invalid_label_sidecar_before_launch(fixture_session, tmp_path, run_cli):
+    labels = tmp_path / "invalid.json"
+    labels.write_text("{}", encoding="utf-8")
+    code, out = run_cli(["dashboard", "--transcript", str(fixture_session), "--labels", str(labels)])
+    assert code == 1 and out["error"]["trajviz_code"] == "invalid_labels"
+
+
+def test_dashboard_rejects_missing_label_sidecar_before_launch(fixture_session, tmp_path, run_cli):
+    code, out = run_cli(["dashboard", "--transcript", str(fixture_session),
+                         "--labels", str(tmp_path / "gone.json")])
+    assert code == 1 and out["error"]["code"] == "not_found"
+
+
+def test_dashboard_rejects_nonpositive_window(fixture_session, run_cli):
+    code, out = run_cli(["dashboard", "--transcript", str(fixture_session), "--window", "0"])
+    assert code == 2 and out["error"]["code"] == "usage"
+
+
+def test_dashboard_launch_preserves_native_auth_and_upload_limit(monkeypatch):
+    from trajviz_obs.compat import dashboard_server_options
+
+    monkeypatch.setenv("TRAJVIZ_AUTH", "reader:secret:with:colons")
+    assert dashboard_server_options(8765) == {
+        "server_name": "127.0.0.1", "server_port": 8765, "share": False,
+        "auth": ("reader", "secret:with:colons"), "max_file_size": "500mb",
+    }
+    monkeypatch.setenv("TRAJVIZ_AUTH", "invalid")
+    with pytest.raises(ValueError, match="TRAJVIZ_AUTH"):
+        dashboard_server_options(None)
 
 
 class _EofAfterProbe(io.StringIO):
@@ -155,12 +263,13 @@ def test_missing_data_root_is_not_found(tmp_path, run_cli):
     assert code == 1 and out["error"]["code"] == "not_found"
 
 
-def test_failing_plugin_is_reported_before_any_url(fixture_session, run_cli, fake_plugins):
+@pytest.mark.parametrize("kind", ["dashboard", "converge"])
+def test_failing_plugin_is_reported_before_any_url(kind, fixture_session, run_cli, fake_plugins):
     def broken() -> None:
         raise RuntimeError("boom")
 
     fake_plugins("broken", broken)
-    code, out = run_cli(["dashboard", "--transcript", str(fixture_session)])
+    code, out = run_cli(_argv(kind, fixture_session, fixture_session.parent))
     assert code == 1 and out["error"]["code"] == "plugin_error" and "boom" in out["error"]["message"]
 
 
