@@ -92,6 +92,16 @@ export async function drawStatusLine($: EngineInterface, snap: Snapshot | EmptyS
   $.ui.status(text)
 }
 
+/** Manual refreshes update the enabled line without holding up command output. */
+export async function syncStatusLine($: EngineInterface, snap: Snapshot | EmptySnapshot, generation: number): Promise<void> {
+  try {
+    if (!(statuslineOverride ?? (await readFlags($)).statusline)) return
+    await drawStatusLine($, snap, generation)
+  } catch (error) {
+    $.ui.log(`obs statusline: ${error instanceof Error ? error.message : String(error)}`, { to: 'debug' })
+  }
+}
+
 /** Whether the pane is open (placed or not), by the engine's own record. */
 async function isPaneOpen($: EngineInterface): Promise<boolean> {
   return (await $.ui.panes()).some(p => p.id === PANE_ID)
@@ -120,18 +130,22 @@ async function sayLarge($: EngineInterface): Promise<void> {
 
 /** The trailing refresh a turn inside the debounce scheduled; one at most, cleared as it fires. */
 let trailing: Timer | null = null
+let trailingGeneration = 0
 
 /**
  * Schedules the trailing refresh `waitMs` from now, when a turn ended inside
- * the debounce window and nothing else would show it: `onTurnComplete`
- * again, decided afresh (flags, stat, `shouldRefresh`) when it fires. One
- * is enough while it is pending; a module reload cancels it.
+ * the debounce window, or before the native host flushed its final assistant
+ * record. Decided afresh (flags, stat, `shouldRefresh`) when it fires. One
+ * is enough while pending; this callback never renews the settling check.
  */
 function scheduleTrailing($: EngineInterface, options: PluginOptions, waitMs: number): void {
-  if (trailing !== null) return
+  const generation = publicationGeneration()
+  if (trailing !== null && trailingGeneration === generation) return
+  trailing?.cancel()
+  trailingGeneration = generation
   trailing = $.clock.after(waitMs, () => {
     trailing = null
-    void onTurnComplete($, options)
+    if (generation === publicationGeneration()) void refreshSafely($, options)
   })
 }
 
@@ -146,7 +160,7 @@ function scheduleTrailing($: EngineInterface, options: PluginOptions, waitMs: nu
  * said once. The run's errors go to the debug log; a `busy` refusal
  * (another run holds the lock) changes nothing.
  */
-async function refreshAfterTurn($: EngineInterface, options: PluginOptions): Promise<void> {
+async function refreshAfterTurn($: EngineInterface, options: PluginOptions): Promise<'too-large' | void> {
   const flags = await readFlags($)
   if (!flags.statusline && !(flags.watch && (await isPaneOpen($)))) return
   const beforeStat = publicationGeneration()
@@ -156,7 +170,10 @@ async function refreshAfterTurn($: EngineInterface, options: PluginOptions): Pro
   if (publicationGeneration() !== beforeStat) return
   const startedAt = await $.clock.now()
   const decision = shouldRefresh(startedAt, await readRefresh($), stat, stat.size)
-  if (decision.reason === 'too-large') return sayLarge($)
+  if (decision.reason === 'too-large') {
+    await sayLarge($)
+    return 'too-large'
+  }
   if (decision.reason === 'debounce') scheduleTrailing($, options, decision.waitMs ?? MIN_DEBOUNCE_MS)
   if (!decision.run) return
   let snap: Snapshot | EmptySnapshot | null = null
@@ -182,9 +199,27 @@ async function refreshAfterTurn($: EngineInterface, options: PluginOptions): Pro
  * its failures (no transcript, a stat that fails) logged to the debug log
  * and never raised.
  */
-export async function onTurnComplete($: EngineInterface, options: PluginOptions): Promise<void> {
+async function refreshSafely($: EngineInterface, options: PluginOptions): Promise<boolean> {
   try {
-    await refreshAfterTurn($, options)
+    return (await refreshAfterTurn($, options)) !== 'too-large'
+  } catch (e) {
+    $.ui.log(`obs watch: ${e instanceof Error ? e.message : String(e)}`, { to: 'debug' })
+    return true
+  }
+}
+
+/**
+ * Native turn.complete can precede the final JSONL flush. One bounded check
+ * after the normal debounce catches that append, including an unchanged or
+ * missing file at the first attempt. Only a real main turn renews it.
+ */
+export async function onTurnComplete($: EngineInterface, options: PluginOptions): Promise<void> {
+  const generation = publicationGeneration()
+  try {
+    const flags = await readFlags($)
+    if (!flags.statusline && !(flags.watch && await isPaneOpen($))) return
+    const settle = await refreshSafely($, options)
+    if (settle && generation === publicationGeneration()) scheduleTrailing($, options, MIN_DEBOUNCE_MS)
   } catch (e) {
     $.ui.log(`obs watch: ${e instanceof Error ? e.message : String(e)}`, { to: 'debug' })
   }

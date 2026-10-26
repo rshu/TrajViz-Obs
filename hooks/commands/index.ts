@@ -39,7 +39,7 @@ const COMMAND_FLAGS: Record<string, readonly string[]> = {
   json: [...OUTPUT_FLAGS, 'view', 'with-trajectory'], bundle: OUTPUT_FLAGS, schemas: OUTPUT_FLAGS,
   dashboard: ['port'], converge: ['data-root', 'port'],
   compare: ['anchor-patch', 'fuzzy-commands', 'reverse'], scorecard: ['fuzzy-commands', 'labels', 'no-self'], labels: [],
-  fixes: ['limit'], label: [...OUTPUT_FLAGS, 'assistant-only', 'model', 'max-steps'],
+  fixes: ['limit'], label: [...OUTPUT_FLAGS, 'assistant-only', 'model', 'max-steps', 'taxonomy', 'max-content-chars', 'delay', 'user-phase', 'user-action', 'max-tokens', 'temperature'],
   attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [], setup: ['extras', 'source'], doctor: [], help: [],
 }
 

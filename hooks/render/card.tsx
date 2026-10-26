@@ -4,7 +4,7 @@
 // register.tsx hands it the snapshot the row's provenance line names. The
 // Wide surfaces show the full charts; narrower surfaces lead with actions,
 // compact metrics and ranked issue titles, with details in the pane/dashboard.
-import type { EngineInterface, RenderElement, RenderInput, SessionUsage } from 'claude-code'
+import type { EngineInterface, PluginOptions, RenderElement, RenderInput, SessionUsage } from 'claude-code'
 import type { Snapshot } from '../../types'
 import { runSnapshotCommand } from '../lib/actions'
 import { fmtInt } from '../lib/format'
@@ -24,6 +24,8 @@ import {
 export type CardEvent = RenderInput<'CommandOutput'>
 
 export type CardOptions = {
+  /** The plugin configuration captured by the render hook for its actions. */
+  options: PluginOptions
   /** Whether the button row is drawn (where a press can land); else the dim line of `/obs` forms. */
   showButtons: boolean
   /** The viewport's columns, what the card is sized to. */
@@ -101,7 +103,7 @@ export function renderCard($: EngineInterface, e: CardEvent, snap: Snapshot, opt
       {showButtons ? (
         <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={0}>
           {BUTTONS.map(b => (
-            <Button key={b.key} label={b.label} {...(b.key === 'dashboard' ? { variant: 'primary' as const } : {})} onPress={() => runSnapshotCommand($, snap, b.key)} />
+            <Button key={b.key} label={b.label} {...(b.key === 'dashboard' ? { variant: 'primary' as const } : {})} onPress={() => runSnapshotCommand($, snap, b.key, { options: opts.options, presentation: { columns, isFullscreen: e.viewport?.isFullscreen === true } })} />
           ))}
         </Box>
       ) : (

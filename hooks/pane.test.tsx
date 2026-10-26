@@ -82,10 +82,15 @@ function host(on: On, snapshots: unknown[], placed: UiOpenResult = { isPlaced: t
     const a = json(snapshots[Math.min(h.snapshots++, snapshots.length - 1)])
     return { value: { exitCode: a.exitCode, stdout: a.stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  // A button's `$.command.run` lands here when nothing above answers it: the args are what the press sent.
+  // Match native re-entry: a plugin's queued command cannot reach its own
+  // command.run handler. Actions must dispatch directly and print the result.
   on('command.run', (_, e) => {
-    h.runs.push(e.args)
-    return { text: 'ran' }
+    if (e.origin.kind === 'plugin') throw new Error('native command.run re-entry')
+    return { text: 'unexpected command.run fallback' }
+  })
+  on('ui.log', (_, e) => {
+    if (e.to === 'transcript' && e.text.startsWith('/obs ')) h.runs.push(e.text.split('\n')[0]!.slice(5))
+    return { value: undefined }
   })
   return h
 }

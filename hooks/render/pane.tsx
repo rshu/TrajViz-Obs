@@ -335,7 +335,7 @@ export function renderPane(
         })}
       </Box>
       <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={0}>
-        <Button key="dashboard" label="Dashboard" hotkey="d" variant="primary" plain onPress={() => snap !== null ? runSnapshotCommand($, snap, 'dashboard') : runSelectedCommand($, 'dashboard')} />
+        <Button key="dashboard" label="Dashboard" hotkey="d" variant="primary" plain onPress={() => snap !== null ? runSnapshotCommand($, snap, 'dashboard', extras) : runSelectedCommand($, 'dashboard', extras)} />
         <Button key="refresh" label="Refresh" hotkey="r" plain onPress={refresh} />
         <Button key="watch" label={`Watch ${flags.watch ? 'on' : 'off'}`} hotkey="w" plain onPress={watch} />
       </Box>

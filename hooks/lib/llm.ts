@@ -8,7 +8,7 @@ import { fmtCompact, fmtInt } from './format'
 export type Feature = 'analyze' | 'fixes' | 'label'
 
 /** One prompt of a plan, as TrajViz would send it. */
-export type PlannedPrompt = { index: number; system: string; prompt: string; max_tokens: number; timeout_s: number }
+export type PlannedPrompt = { index: number; system: string; prompt: string; max_tokens: number; timeout_s: number; delay_s?: number }
 
 /**
  * The bridge's `llm-prompt` document: the calls the feature makes and what
@@ -110,6 +110,9 @@ export async function runPlan(
   const usage: Usage = { input: 0, cache_read: 0, cache_write: 0, output: 0 }
   const replies: Reply[] = []
   for (const p of prompts) {
+    if (replies.length > 0 && plan.feature === 'label' && (p.delay_s ?? 0) > 0) {
+      await $.clock.sleep(p.delay_s! * 1000)
+    }
     const r = await $.model.complete({
       model,
       ...(p.system ? { system: p.system } : {}),

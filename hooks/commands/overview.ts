@@ -3,6 +3,7 @@ import { BridgeError } from '../lib/bridge'
 import { artifactsDir } from '../lib/paths'
 import { isProcessWithheld } from '../lib/python'
 import { captureSnapshot, isEmpty, provenanceLine } from '../lib/snapshot'
+import { syncStatusLine } from '../lib/watch'
 import type { CommandContext } from './index'
 import { maybeOpenPane } from './pane'
 
@@ -59,11 +60,13 @@ export async function overview($: EngineInterface, ctx: CommandContext): Promise
   const spec = sessionSpec(ctx)
   let snap
   let id
+  let generation
   try {
-    ;({ snap, id } = await captureSnapshot($, ctx.options, spec))
+    ;({ snap, id, generation } = await captureSnapshot($, ctx.options, spec))
   } catch (e) {
     return { text: errorRow(e, spec) }
   }
+  void syncStatusLine($, snap, generation)
   if (isEmpty(snap)) return { text: EMPTY_TEXT }
   const at = new Date(snap.generated_at)
   const text = `${provenanceLine(id, snap, Number.isNaN(at.getTime()) ? new Date() : at)}\n${snap.text}`

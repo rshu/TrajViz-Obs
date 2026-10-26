@@ -1,7 +1,8 @@
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock, test, type MockClock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import { planLine, usageLine, type PromptPlan, type Usage } from './lib/llm'
 import { analyzeArgs, LIMIT_TEXT, MAX_STEPS_TEXT } from './commands/llm'
+import { SNAPSHOT } from './testdata/snapshot'
 
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
@@ -41,10 +42,12 @@ type World = {
   model?: string
   /** What the person answers an ask; `dismiss` closes the dialog. */
   answer?: string
+  onCompletion?: () => void
   apply?: (argv: readonly string[], files: Record<string, string>) => Promise<RunAnswer>
 }
 
 type Host = {
+  clock: MockClock
   ran: string[][]
   /** Every `process.spawn` argv (the env-mode `label`, which has no deadline). */
   spawned: string[][]
@@ -52,6 +55,7 @@ type Host = {
   completions: Completion[]
   asked: string[]
   timeline: string[]
+  rows: string[]
 }
 
 /** What every answered completion costs. */
@@ -65,6 +69,7 @@ function host(on: On, world: World = {}): Host {
   const completions: Completion[] = []
   const asked: string[] = []
   const timeline: string[] = []
+  const rows: string[] = []
   const files: Record<string, string> = { [STATE_PATH]: STATE_JSON }
   const answers = bridgeOf(world.bridge ?? {})
   const replies = [...(world.replies ?? ['ok'])]
@@ -76,7 +81,7 @@ function host(on: On, world: World = {}): Host {
   on('session.usage', () => ({ value: USAGE }))
   on('session.model', () => ({ value: world.model ?? 'claude-opus-4-1-20250805' }))
   mock.env(on, { HOME })
-  mock.clock(on, { now: NOW })
+  const clock = mock.clock(on, { now: NOW })
   on('fs.read', (_, e) => (e.path in files ? { value: files[e.path] as string } : { deny: `ENOENT: ${e.path}` }))
   on('fs.write', (_, e) => {
     files[e.path] = e.text
@@ -86,6 +91,7 @@ function host(on: On, world: World = {}): Host {
   on('ui.toast', () => ({ value: undefined }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', (_, e) => {
+    if (e.to === 'transcript') rows.push(e.text)
     timeline.push(`plan:${e.text}`)
     return { value: undefined }
   })
@@ -100,6 +106,7 @@ function host(on: On, world: World = {}): Host {
   on('model.complete', (_, e) => {
     timeline.push('completion')
     completions.push({ model: e.model, system: e.system, prompt: e.prompt, maxTokens: e.maxTokens, effort: e.effort, timeoutMs: e.timeoutMs })
+    world.onCompletion?.()
     const r = (replies.length > 1 ? replies.shift() : replies[0]) ?? 'ok'
     if (typeof r === 'string') return { value: { isAnswered: true as const, text: r, usage: CALL_USAGE } }
     if (r.reason === 'api-error') return { value: { isAnswered: false as const, reason: 'api-error' as const, status: r.status, error: 'overloaded' as const, usage: NO_USAGE } }
@@ -124,7 +131,7 @@ function host(on: On, world: World = {}): Host {
     yield { stream: 'stdout' as const, text: a.stdout.slice(cut) }
     return { value: { code: a.exitCode, signal: null } }
   })
-  return { ran, spawned, files, completions, asked, timeline }
+  return { clock, ran, spawned, files, completions, asked, timeline, rows }
 }
 
 const json = (doc: unknown): RunAnswer => ({ exitCode: 0, stdout: `${JSON.stringify(doc)}\n` })
@@ -150,6 +157,30 @@ const EMPTY_TEXT = 'Nothing to analyze yet: this session has no assistant steps.
 const ONE_CALL_USAGE = 'usage: 1,000 input · 200 cache read · 300 cache write · 50 output tokens'
 
 const replyFile = (files: Record<string, string>, feature: string): string => Object.keys(files).find(path => path.startsWith(`${ARTIFACTS}/replies-${feature}-`)) ?? ''
+
+test('native AI card buttons reach the configured provider without command re-entry and print multiline results', { options: { llm: 'env' } }, async ($, on) => {
+  const { ran, completions, rows } = host(on, { bridge: {
+    'llm-prompt': [json(planOf('fixes', 1)), json(planOf('analyze', 1))],
+    fixes: json({ issues: [], errors: [], text: 'First fix.\nSecond fix.' }),
+    ask: json({ reply: 'Analysis answer.', history_path: null }),
+  } })
+  on('command.run', (_, e) => {
+    if (e.origin.kind === 'plugin') throw new Error('native command.run re-entry')
+    return { text: 'unexpected command fallback' }
+  })
+  on('state.get', { plugin: 'trajviz-obs', key: 'snapshot', id: '1' }, () => ({ value: { value: SNAPSHOT, version: 1 } }))
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  const card = await $.ui.mount({ plugin: 'trajviz-obs', surface: 'terminal', component: 'CommandOutput', requestId: 'ai-card', props: { command: 'obs', args: '', text: 'trajviz-obs: obs snapshot 1 · now', isErrored: false }, viewport: { columns: 80, rows: 40, isFullscreen: true } })
+  await card.press({ key: 'fixes' })
+  await card.press({ key: 'analyze' })
+  expect(bridgeCalls(ran).map(call => call[0])).toEqual(['llm-prompt', 'fixes', 'llm-prompt', 'ask'])
+  expect(completions).toEqual([])
+  expect(rows).toContain('First fix.')
+  expect(rows).toContain('Second fix.')
+  expect(rows).toContain('Analysis answer.')
+  expect(rows.every(line => !line.includes('\n'))).toBe(true)
+  await card.unmount()
+})
 
 test('analyze asks the question as typed, runs one completion, writes the replies and applies them', async ($, on) => {
   const { ran, files, completions, asked } = host(on, {
@@ -334,6 +365,62 @@ test('a headless label is capped at labelMaxSteps, an interactive one asks', { o
   expect(bridgeCalls(ran)[2]).toEqual(['llm-prompt', ...SESSION_ARGV, '--feature', 'label'])
   expect(asked).toEqual(['Run 50 model calls?'])
   expect(completions).toHaveLength(52)
+})
+
+test('custom label options reach capture and replay and use the requested reply limit', async ($, on) => {
+  const plan = planOf('label', 1)
+  plan.prompts![0]!.max_tokens = 256
+  const { ran, files, completions } = host(on, { bridge: { 'llm-prompt': json(plan),
+    'llm-apply': json({ path: '/tmp/labels.json', summary: {}, text: 'Labels', errors: [] }) } })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
+  await obs($, 'label --max-steps 1 --taxonomy "/tmp/my taxonomy.md" --user-phase request --user-action question --max-content-chars 400 --max-tokens 256 --delay 0')
+  const flags = ['--max-steps', '1', '--taxonomy', '/tmp/my taxonomy.md', '--user-phase', 'request', '--user-action', 'question', '--max-content-chars', '400', '--max-tokens', '256', '--delay', '0']
+  expect(bridgeCalls(ran)[0]).toEqual(['llm-prompt', ...SESSION_ARGV, '--feature', 'label', ...flags])
+  expect(bridgeCalls(ran)[1]).toEqual(['llm-apply', ...SESSION_ARGV, '--feature', 'label', '--replies', replyFile(files, 'label'), ...flags, '--model', 'haiku'])
+  expect(completions[0]?.maxTokens).toBe(256)
+})
+
+test('env label options and sampling settings reach both planning and the actual provider command', { options: { llm: 'env' } }, async ($, on) => {
+  const { ran, spawned, completions } = host(on, { bridge: { 'llm-prompt': json(planOf('label', 1)),
+    label: json({ path: '/tmp/labels.json', summary: {}, text: 'Labels', errors: [] }) } })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
+  await obs($, 'label --max-steps 1 --taxonomy "/tmp/my taxonomy.md" --user-phase request --user-action question --max-content-chars 400 --max-tokens 256 --delay 0.25 --temperature 0.37')
+  const flags = ['--max-steps', '1', '--taxonomy', '/tmp/my taxonomy.md', '--user-phase', 'request', '--user-action', 'question', '--max-content-chars', '400', '--max-tokens', '256', '--delay', '0.25', '--temperature', '0.37']
+  expect(bridgeCalls(ran)[0]).toEqual(['llm-prompt', ...SESSION_ARGV, '--feature', 'label', ...flags])
+  expect(bridgeCalls(spawned)).toEqual([['label', ...SESSION_ARGV, ...flags]])
+  expect(completions).toEqual([])
+})
+
+test('invalid label options stop before setup, planning or model calls', async ($, on) => {
+  const { ran, completions } = host(on)
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
+  for (const flag of ['--taxonomy', '--user-phase=""', '--user-action', '--max-content-chars 0', '--max-tokens 64001', '--delay Infinity', '--temperature NaN']) {
+    expect((await obs($, `label ${flag}`)).text).toMatch(/needs|must be/)
+  }
+  expect((await obs($, 'label --temperature 0.3')).text).toContain('--temperature requires llm=env')
+  expect(bridgeCalls(ran)).toEqual([])
+  expect(completions).toEqual([])
+})
+
+test('session labeling paces only the actual capped calls with no first or last wait', { options: { labelMaxSteps: 2 } }, async ($, on) => {
+  const plan = planOf('label', 3)
+  for (const prompt of plan.prompts!) prompt.delay_s = 0.25
+  let first: () => void = () => {}
+  const started = new Promise<void>(resolve => { first = resolve })
+  const h = host(on, { onCompletion: first, bridge: { 'llm-prompt': json(plan),
+    'llm-apply': json({ path: '/tmp/labels.json', summary: {}, text: 'Labels', errors: [] }) } })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
+  const pending = obs($, 'label --max-steps 2 --delay 0.25')
+  await started
+  await h.clock.settle()
+  expect(h.completions).toHaveLength(1)
+  await h.clock.advance(249)
+  expect(h.completions).toHaveLength(1)
+  await h.clock.advance(1)
+  expect(h.completions).toHaveLength(2)
+  expect((await pending).text).toContain('usage: 2,000 input')
+  await h.clock.advance(1000)
+  expect(h.completions).toHaveLength(2)
 })
 
 test('a plan too large to inline is read from its file', async ($, on) => {

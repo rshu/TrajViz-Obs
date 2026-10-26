@@ -61,6 +61,7 @@ type Host = {
   toasts: string[]
   panes: UiPane[]
   stat: { size: number; mtimeMs: number }
+  statMissing: boolean
   snapshots: number
   /** How late `fs.stat` and the bridge's `snapshot` answer (0: at once). */
   delayMs: number
@@ -78,7 +79,7 @@ type Host = {
  */
 function host(on: On, snapshots: unknown[]): Host {
   const clock = mock.clock(on, { now: NOW })
-  const h: Host = { clock, ran: [], statuses: [], toasts: [], panes: [], stat: { size: 1_000, mtimeMs: NOW - 60_000 }, snapshots: 0, delayMs: 0, usageBlock: null }
+  const h: Host = { clock, ran: [], statuses: [], toasts: [], panes: [], stat: { size: 1_000, mtimeMs: NOW - 60_000 }, statMissing: false, snapshots: 0, delayMs: 0, usageBlock: null }
   on('command.register', () => ({ value: { command: 'obs' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -94,7 +95,7 @@ function host(on: On, snapshots: unknown[]): Host {
   on('fs.read', (_, e) => (e.path === STATE_PATH ? { value: STATE_JSON } : { deny: `ENOENT: ${e.path}` }))
   on('fs.exists', (_, e) => ({ value: e.path === VENV_PY || e.path === DERIVED }))
   on('fs.stat', async (_, e) => {
-    if (e.path !== DERIVED) return { deny: `ENOENT: ${e.path}` }
+    if (e.path !== DERIVED || h.statMissing) return { deny: `ENOENT: ${e.path}` }
     if (h.delayMs > 0) await clock.sleep(h.delayMs)
     return { value: { kind: 'file', ...h.stat, isLink: false } }
   })
@@ -219,6 +220,42 @@ test('a turn inside the debounce schedules one trailing refresh, which runs when
   expect(h.ran).toHaveLength(2)
 })
 
+test('one settling check catches the native final append after a nonempty or unchanged first snapshot', async ($, on) => {
+  const h = host(on, [SNAPSHOT, SECOND])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  h.panes = [OBS_PANE]
+  await turnEnds($, h)
+  expect(await paneSteps($, 311)).toBe(true)
+  // The final assistant row reaches disk after turn.complete's first read.
+  await h.clock.advance(500)
+  h.stat = { size: 2_000, mtimeMs: NOW + 500 }
+  await h.clock.advance(2_500)
+  expect(await paneSteps($, 350)).toBe(true)
+  expect(h.snapshots).toBe(2)
+  await h.clock.advance(60_000)
+  expect(h.snapshots).toBe(2)
+  // A later real turn whose initial stat is unchanged renews one check too.
+  await turnEnds($, h)
+  await h.clock.advance(500)
+  h.stat = { size: 3_000, mtimeMs: NOW + 63_500 }
+  await h.clock.advance(2_500)
+  expect(h.snapshots).toBe(3)
+})
+
+test('the settling check retries a missing first transcript and stops after one attempt', async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  h.panes = [OBS_PANE]
+  h.statMissing = true
+  await turnEnds($, h)
+  expect(h.snapshots).toBe(0)
+  h.statMissing = false
+  await h.clock.advance(3_000)
+  expect(h.snapshots).toBe(1)
+  await h.clock.advance(60_000)
+  expect(h.snapshots).toBe(1)
+})
+
 test('the trailing refresh is decided afresh when it fires: watch off by then runs nothing; statusline on draws the line', { options: { statusline: true } }, async ($, on) => {
   const h = host(on, [SNAPSHOT, SECOND])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
@@ -281,6 +318,30 @@ test('statusline on runs the snapshot after a turn and pins the summary line', {
   expect(h.ran).toHaveLength(1)
 })
 
+test('manual overview and pane refresh keep the enabled status line current, including an empty result', { options: { statusline: true } }, async ($, on) => {
+  const changed = { ...SNAPSHOT, tools: { ...SNAPSHOT.tools, calls: 42 } }
+  const refreshed = { ...SNAPSHOT, tools: { ...SNAPSHOT.tools, calls: 57 } }
+  const empty = { schema_version: 1, empty: true, reason: 'no_steps', transcript: { path: DERIVED } }
+  const h = host(on, [SNAPSHOT, changed, refreshed, empty])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, '')
+  await h.clock.settle()
+  expect(h.statuses.at(-1)).toBe(LINE)
+  await obs($, '')
+  await h.clock.settle()
+  expect(h.statuses.at(-1)).toContain('42 tools')
+  const ui = await $.ui.mount({ plugin: 'trajviz-obs', surface: 'terminal', component: 'Pane', requestId: 'obs', props: {
+    title: 'obs', isFocused: true, bodyColumns: 56, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {},
+  } })
+  await ui.press({ key: 'refresh' })
+  await h.clock.settle()
+  expect(h.statuses.at(-1)).toContain('57 tools')
+  await ui.press({ key: 'refresh' })
+  await h.clock.settle()
+  expect(h.statuses.at(-1)).toBeUndefined()
+  await ui.unmount()
+})
+
 test('a blocked status-line usage read does not hold up export session selection', { options: { statusline: true, openBrowser: false } }, async ($, on) => {
   const h = host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
@@ -305,6 +366,8 @@ test('a newer status-line draw wins when an older usage read finishes later', { 
   const h = host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await obs($, '')
+  await h.clock.settle()
+  h.statuses.length = 0
   const gate = blockUsage(h, { ...USAGE, context: { ...USAGE.context, percent: 99 } })
   const older = obs($, 'statusline on')
   await gate.started
@@ -325,6 +388,8 @@ test('turning the status line off while its usage read is blocked keeps it clear
   const h = host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await obs($, '')
+  await h.clock.settle()
+  h.statuses.length = 0
   const gate = blockUsage(h)
   const drawing = obs($, 'statusline on')
   await gate.started
@@ -344,6 +409,8 @@ test('/clear completes while a status-line usage read is blocked and prevents it
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await $.classic.SessionStart({ source: 'startup', transcript_path: DERIVED, session_id: 'abc' })
   await obs($, '')
+  await h.clock.settle()
+  h.statuses.length = 0
   const gate = blockUsage(h)
   const drawing = obs($, 'statusline on')
   await gate.started

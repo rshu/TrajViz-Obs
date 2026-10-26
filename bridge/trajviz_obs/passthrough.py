@@ -26,7 +26,7 @@ from agent_trajviz.collect import __main__ as collect_main
 from agent_trajviz.converge import cli as converge_cli
 
 from .cli import register
-from .compat import EmptySession
+from .compat import EmptySession, install_attribution_guard
 from .views_cmd import _load, _session_args
 
 #: Most bytes of a pass-through's stdout or stderr returned inline (UTF-8).
@@ -153,6 +153,7 @@ def run_collect(argv: list[str]) -> dict:
 
 def attribution(run: Trajectory, *, reference_root: str | None, agent: str | None, instance_id: str | None) -> dict:
     """``agent_trajviz.attribution.diagnose`` of *run*, as TrajViz returns it."""
+    install_attribution_guard()
     return tv_attribution.diagnose(run, agent=agent, instance_id=instance_id, reference_root=reference_root)
 
 

@@ -54,12 +54,30 @@ After the session's first assistant response:
 | Keep a terminal pane open | `/obs pane` |
 | Export data | `/obs json`, `/obs bundle` |
 | Find or compare sessions | `/obs sessions 20`, `/obs compare <session-id>` |
-| Ask for model analysis | `/obs analyze [question]`, `/obs fixes`, `/obs label` |
+| Ask for model analysis or fixes | `/obs analyze [question]`, `/obs fixes` |
+| Classify steps | `/obs label --max-steps 20` |
+| Collect another agent's session | `/obs collect <cursor\|opencode\|codearts> --help` |
 | See all commands and options | `/obs help` |
 
 In the dashboard, start with **Overview → Summary** for issues and health. Use its **Contents** menu for tools, agents, context, diagnostics, and labels. Click an issue's step number to inspect it in **Workflow**. **Patterns**, **Comparison**, and **Raw Data** provide the rest of TrajViz's single-session features. The session, context-window setting, and saved labels load automatically; expand **Session source and labels** to reload or choose another file.
 
 For larger comparisons, `/obs converge` opens pairwise, batch, and before/after analysis. All registered views are available through `/obs view`, JSON exports through `/obs json`, and schemas through `/obs schemas`. `/obs labels <file> [other-file]` exports all label views and optional label comparisons. DECAF attribution is available through `/obs attribution` and the dashboard when its external checkout and reference data are configured.
+
+<details>
+<summary>Step labeling and label comparisons</summary>
+
+```text
+/obs label --max-steps 20
+/obs dashboard
+```
+
+The labeler classifies assistant steps by phase and action, preserves their source indices, and assigns user steps deterministic labels. It saves a sidecar in the session cache; reopening the dashboard loads it into the phase charts automatically. Steps beyond the requested cap remain `unknown`.
+
+Use `--assistant-only` to keep only assistant records, `-o /path/to/labels.json` to choose the output, or `--model haiku` to override the model. Custom classification supports `--taxonomy /path/to/taxonomy.md`, `--user-phase`, and `--user-action`; `--max-content-chars` bounds each step's text, `--delay` controls pacing, and `--max-tokens` sets the response limit. Env mode also supports `--temperature`. An explicit output must be uploaded through the dashboard's **Labels (optional)** control.
+
+`/obs labels <labels.json> [reference-labels.json]` exports all six label views and, with a reference, both comparison views. In the dashboard's **Comparison** tab, load each run's sidecar to include its phases.
+
+</details>
 
 The `/obs` card leads with actions, compact metrics, and ranked findings. The terminal pane has seven tabs: Overview, Tools, Issues, Patterns, Agents, Context, and Timeline. Use `1`–`7` to switch, `r` to refresh, `w` to toggle watch, and `d` for the dashboard. Close it with `/obs pane close`.
 
@@ -108,6 +126,8 @@ Overview and exports run locally. `/obs analyze`, `/obs fixes`, and `/obs label`
 
 The browser's AI sidebar and fix button use TrajViz's `ANALYZE_*` / `LABEL_*` environment settings or the project's `.env`. They do not use the plugin's `llm=session` client; use `/obs analyze` or `/obs fixes` for that client. Browser model calls send excerpts to that configured provider when requested.
 
+For DECAF attribution, start Claude Code with `AWE_DECAF_PATH=/path/to/awe-checkout` and `TRAJVIZ_REFERENCE_ROOT=/path/to/reference-data` in its environment. Reference data must contain the task's requirements, patch, canonical trajectory, and evaluation outcome. An uploaded trajectory must match that canonical file byte for byte. Incompatible DECAF parsers show an explanation instead of issuing a capability verdict.
+
 Exports, bundles, cached prompts, and analysis history contain session data and stay on the host unless you share them. Dashboards bind to `127.0.0.1` and stop on request, plugin reload, or session end. TrajViz's own **Export HTML** button remains available inside the dashboard.
 
 ## Troubleshooting and limits
@@ -119,7 +139,7 @@ The cache defaults to `~/.cache/trajviz-obs/`, or `$XDG_CACHE_HOME/trajviz-obs/`
 - Timing and tool wait are transcript-based estimates. Workflow-spawned work is not fully recognized, and subagent finish times are often unavailable.
 - Each refresh reloads the full trajectory. Sessions above **32 MiB** need manual refreshes.
 - Dashboards render at most **2,000 steps**. Overview, views, and JSON analysis use the full trajectory, with bounded UI previews.
-- DECAF attribution requires a separate installation and reference data; merged subagent sessions are unsupported.
+- DECAF attribution requires a separate installation and reference data; merged subagent sessions are unsupported. DECAF versions that lose native Claude JSONL tool evidence cannot diagnose that format.
 - Real-session testing covers **macOS**. Linux and Windows still need platform-specific end-to-end validation.
 
 ## Development
@@ -135,7 +155,7 @@ claude --plugin-dir .
 
 Claude Code reloads the module after edits. Use `claude --debug --plugin-dir .` to investigate loading failures.
 
-`hooks/` contains the TypeScript plugin; `bridge/` calls TrajViz from Python. The full check script runs plugin validation, hook tests, type checking, bridge tests, the command/schema matrix, and lint:
+`hooks/` contains the TypeScript plugin; `bridge/` calls TrajViz from Python. The full check script runs plugin validation, hook tests, type checking, bridge tests, format and command/schema matrices, and lint:
 
 ```sh
 uv sync --project bridge --locked --extra dev
@@ -152,6 +172,8 @@ python3 scripts/e2e.py --output /tmp/trajviz-obs-e2e-new --model haiku --budget 
 ```
 
 Use an empty output directory outside this repository. The harness checks tool failure/recovery, commands, exports, dashboards and cleanup, a real subagent, the plugin tool, and model features. `--skip-llm` and `--skip-dashboard` narrow coverage.
+
+`scripts/dashboard_e2e.py` tests the live Insight and Converge HTTP callbacks with a local model stub. `scripts/provider_e2e.py --cache <runtime-cache> --output <empty-dir>` tests native `/obs` against local OpenAI and Anthropic stubs. Both avoid external model charges. `scripts/optional_matrix.py --decaf-root /path/to/awe-checkout` also checks real offline attribution against synthetic reference data; the native harness accepts the same flag. Each script's `--help` lists its inputs.
 
 </details>
 

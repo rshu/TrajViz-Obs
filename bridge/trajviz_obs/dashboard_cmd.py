@@ -25,7 +25,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 from .cli import register
-from .compat import dashboard_server_options, dashboard_window_callback, load_plugins
+from .compat import dashboard_server_options, dashboard_window_callback, install_attribution_guard, load_plugins
 from .dashboard_ui import decorate_dashboard, presentation
 from .errors import BridgeError
 from .sessions import _positive_int
@@ -47,6 +47,7 @@ PRELOAD_JS = (
 
 def _dashboard() -> ModuleType:
     """``agent_trajviz.dashboard``; its import raises ``MissingExtraError`` without the ``app`` extra."""
+    install_attribution_guard()
     from agent_trajviz import dashboard
 
     return dashboard

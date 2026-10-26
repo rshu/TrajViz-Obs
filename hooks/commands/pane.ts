@@ -1,6 +1,7 @@
 import type { CommandRunResult, EngineInterface, PluginOptions } from 'claude-code'
 import { captureSnapshot, isEmpty } from '../lib/snapshot'
 import { readLatest, readSession } from '../lib/state'
+import { syncStatusLine } from '../lib/watch'
 import { openPane, PANE_ID, placePane } from '../render/pane'
 import type { CommandContext } from './index'
 import { EMPTY_TEXT, errorRow, sessionSpec } from './overview'
@@ -33,11 +34,13 @@ export async function maybeOpenPane($: EngineInterface, ctx: CommandContext): Pr
 export async function refreshPane($: EngineInterface, options: PluginOptions, spec?: string): Promise<string | null> {
   const target = spec ?? (await readSession($)).selected?.path ?? undefined
   let snap
+  let generation
   try {
-    ;({ snap } = await captureSnapshot($, options, target))
+    ;({ snap, generation } = await captureSnapshot($, options, target))
   } catch (e) {
     return errorRow(e, target)
   }
+  void syncStatusLine($, snap, generation)
   if (isEmpty(snap)) return EMPTY_TEXT
   return null
 }

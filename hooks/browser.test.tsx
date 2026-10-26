@@ -3,6 +3,7 @@ import type { On, ProcessSpawnChunk } from 'claude-code'
 import type { Dashboards } from '../types'
 import { forgetPlatform } from './lib/open'
 import type { SessionState } from '../types'
+import { SNAPSHOT } from './testdata/snapshot'
 
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
@@ -174,6 +175,33 @@ const obs = ($: { command: { run: (args: never) => Promise<{ text?: string; cont
 const children = (spawned: Host['spawned']): string[][] => spawned.filter(s => s.argv[1] === '-I').map(s => s.argv.slice(3))
 
 const END = { reason: 'prompt_input_exit' as const, sessionId: 'abc', resume: { id: 'abc' } }
+
+test('native card and pane dashboard buttons dispatch directly and honor openBrowser', { options: { openBrowser: false } }, async ($, on) => {
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const { spawned, rows, ran } = host(on, { child: { dashboard: { chunks: [URL_CHUNK], code: 0, gate } } })
+  on('command.run', (_, e) => {
+    if (e.origin.kind === 'plugin') throw new Error('native command.run re-entry')
+    return { text: 'unexpected command fallback' }
+  })
+  on('state.get', { plugin: 'trajviz-obs', key: 'snapshot', id: '1' }, () => ({ value: { value: SNAPSHOT, version: 1 } }))
+  on('state.get', { plugin: 'trajviz-obs', key: 'latest' }, () => ({ value: { value: SNAPSHOT, version: 1 } }))
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  const card = await $.ui.mount({ plugin: 'trajviz-obs', surface: 'terminal', component: 'CommandOutput', requestId: 'button-card', props: { command: 'obs', args: '', text: 'trajviz-obs: obs snapshot 1 · now', isErrored: false }, viewport: { columns: 80, rows: 40, isFullscreen: true } })
+  await card.press({ key: 'dashboard' })
+  await card.unmount()
+  const pane = await $.ui.mount({ plugin: 'trajviz-obs', surface: 'terminal', component: 'Pane', requestId: 'obs', props: { title: 'obs', isFocused: true, bodyColumns: 56, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } })
+  await pane.press({ key: 'dashboard' })
+  await pane.unmount()
+  expect(children(spawned)).toEqual([['dashboard', '--transcript', DERIVED, '--window', '1000000']])
+  expect(rows).toEqual([
+    '/obs dashboard', `Insight dashboard at ${URL} with session abc loaded; not opened (openBrowser is off in /config). /obs dashboard stop ends it.`,
+    '/obs dashboard', `Insight dashboard already running at ${URL}; not opened (openBrowser is off in /config). /obs dashboard stop ends it.`,
+  ])
+  expect(ran.filter(argv => argv[0] === 'open')).toEqual([])
+  release()
+  await $.session.end(END)
+})
 
 test('dashboard asks, announces and installs the app extra, starts the bridge child with the transcript and port, and opens the URL', async ($, on) => {
   forgetPlatform()

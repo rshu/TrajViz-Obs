@@ -65,6 +65,31 @@ function labelMaxSteps(options: PluginOptions): number {
   return typeof v === 'number' && Number.isInteger(v) && v >= 1 ? v : DEFAULT_MAX_STEPS
 }
 
+/** Labeler options shared by prompt capture, session replay and environment execution. */
+function extraLabelArgs(ctx: CommandContext): string[] | string {
+  const argv: string[] = []
+  for (const name of ['taxonomy', 'user-phase', 'user-action']) {
+    const value = ctx.parsed.flags[name]
+    if (value === undefined) continue
+    if (typeof value !== 'string' || !value.trim()) return `--${name} needs ${name === 'taxonomy' ? 'a taxonomy path' : 'a label'}.`
+    argv.push(`--${name}`, value.trim())
+  }
+  for (const [name, max] of [['max-content-chars', Number.MAX_SAFE_INTEGER], ['max-tokens', 64000]] as const) {
+    const value = wholeFlag(ctx, name, 1, max)
+    if (value === undefined) return `--${name} must be a whole number from 1 to ${max}.`
+    if (value !== null) argv.push(`--${name}`, String(value))
+  }
+  for (const name of ['delay', 'temperature']) {
+    const value = ctx.parsed.flags[name]
+    if (value === undefined) continue
+    const number = typeof value === 'string' && value.trim() ? Number(value) : Number.NaN
+    if (!Number.isFinite(number) || number < 0) return `--${name} must be a finite number of zero or more.`
+    if (name === 'temperature' && ctx.options['llm'] !== 'env') return '--temperature requires llm=env; Claude Code’s session model API does not expose temperature.'
+    argv.push(`--${name}`, String(number))
+  }
+  return argv
+}
+
 /**
  * The request for `ctx`, or the usage row refusing it. A headless `label`
  * is planned no further than `labelMaxSteps`, so the bridge expects no
@@ -94,6 +119,9 @@ function parseRequest(ctx: CommandContext, interactive: boolean): Request | stri
       const argv: string[] = []
       if (steps !== null) argv.push('--max-steps', String(steps))
       if (ctx.parsed.flags['assistant-only'] !== undefined) argv.push('--assistant-only')
+      const extra = extraLabelArgs(ctx)
+      if (typeof extra === 'string') return extra
+      argv.push(...extra)
       return { feature: 'label', spec, argv, out: outFlag(ctx), model: typeof model === 'string' ? model.trim() : undefined }
     }
   }

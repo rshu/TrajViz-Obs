@@ -164,7 +164,7 @@ def test_label_capture_and_apply(fixture_run, fixture_session, tmp_artifacts):
 
 
 def test_label_max_steps_caps_the_prompts(fixture_run, fixture_session, tmp_artifacts):
-    p = plan_prompts(fixture_run, "label", **_opts(fixture_session, max_steps=2))
+    p = plan_prompts(fixture_run, "label", **_opts(fixture_session, max_steps=2, assistant_only=True))
     assert p["plan"]["calls"] == 2 and len(p["prompts"]) == 2
     sidecar = tmp_artifacts / "labels.json"
     out = apply_replies(fixture_run, "label", _replies(p, LABEL),

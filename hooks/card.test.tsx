@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { On, RenderSurface, RenderViewport } from 'claude-code'
+import type { On, PaneOpenArgs, RenderSurface, RenderViewport } from 'claude-code'
 import { parseArgs } from './lib/args'
 import { SNAPSHOT } from './testdata/snapshot'
 
@@ -24,9 +24,12 @@ const json = (doc: unknown): RunAnswer => ({ exitCode: 0, stdout: `${JSON.string
  * `snapshot` answers in order (the last one repeats); the engine's own
  * CommandOutput row is the Text `engine`.
  */
-function host(on: On, snapshots: unknown[]): { runs: string[] } {
+function host(on: On, snapshots: unknown[], bridge: Record<string, unknown> = {}): { runs: string[]; rows: string[]; calls: string[][]; opens: PaneOpenArgs[] } {
   let n = 0
   const runs: string[] = []
+  const rows: string[] = []
+  const calls: string[][] = []
+  const opens: PaneOpenArgs[] = []
   on('command.register', () => ({ value: { command: 'obs' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -39,7 +42,13 @@ function host(on: On, snapshots: unknown[]): { runs: string[] } {
   on('fs.exists', (_, e) => ({ value: e.path === VENV_PY || e.path === DERIVED }))
   on('ui.toast', () => ({ value: undefined }))
   on('ui.status', () => ({ value: undefined }))
+  on('ui.open', (_, e) => {
+    opens.push(e)
+    return { value: { isPlaced: true } }
+  })
   on('process.run', (_, e) => {
+    calls.push(e.argv.slice(3))
+    if (e.argv[3] && e.argv[3] in bridge) return { value: { exitCode: 0, stdout: JSON.stringify(bridge[e.argv[3]]), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[3] === 'resolve') return { value: { exitCode: 0, stdout: JSON.stringify({ path: '/outside/saved.jsonl', session_id: 'saved', kind: 'file' }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[3] !== 'snapshot') return { deny: `cannot start ${e.argv[0]}` }
     const a = json(snapshots[Math.min(n++, snapshots.length - 1)])
@@ -49,12 +58,20 @@ function host(on: On, snapshots: unknown[]): { runs: string[] } {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  // A button's `$.command.run` lands here when nothing above answers it: the args are what the press sent.
+  // Match native re-entry: a plugin's queued command cannot reach its own
+  // command.run handler. Actions must dispatch directly and print the result.
   on('command.run', (_, e) => {
-    runs.push(e.args)
-    return { text: 'ran' }
+    if (e.origin.kind === 'plugin') throw new Error('native command.run re-entry')
+    return { text: 'unexpected command.run fallback' }
   })
-  return { runs }
+  on('ui.log', (_, e) => {
+    if (e.to === 'transcript') {
+      rows.push(e.text)
+      if (e.text.startsWith('/obs ')) runs.push(e.text.slice(5))
+    }
+    return { value: undefined }
+  })
+  return { runs, rows, calls, opens }
 }
 
 const obs = ($: { command: { run: (args: never) => Promise<{ text?: string }> } }, args = ''): Promise<string> =>
@@ -165,6 +182,20 @@ test('buttons only in fullscreen terminal', async ($, on) => {
   await ui.unmount()
 })
 
+test('native card actions execute JSON and pane handlers without command re-entry and show their answers', async ($, on) => {
+  const { rows, calls, opens } = host(on, [SNAPSHOT], { json: { files: ['index.json'], bytes: 100, path: '/exports/views' } })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  const text = await obs($)
+  const ui = await $.ui.mount(row(text, 'terminal', { columns: 80, rows: 40, isFullscreen: true }))
+  await ui.press({ key: 'json' })
+  await ui.press({ key: 'pane' })
+  expect(calls.filter(call => call[0] === 'json')).toHaveLength(1)
+  expect(calls.find(call => call[0] === 'json')).toContain(DERIVED)
+  expect(opens).toEqual([{ id: 'obs', title: 'obs', focus: true, columns: 56 }])
+  expect(rows).toEqual(['/obs json', '1 file (100 B) written to /exports/views.', '/obs pane', 'obs pane opened.'])
+  await ui.unmount()
+})
+
 test('every action on an old card keeps its transcript after the native session changes', async ($, on) => {
   const { runs } = host(on, [SNAPSHOT])
   on('classic.SessionStart', () => ({}))
@@ -219,7 +250,7 @@ test('native transcript path keeps current-card actions plain even outside the d
 
 test('a current-card Pane action clears a newer saved-session selection before opening', async ($, on) => {
   const saved = { ...SECOND, transcript: { ...SECOND.transcript, path: '/outside/saved.jsonl', session_id: 'saved' } }
-  const { runs } = host(on, [SNAPSHOT, saved])
+  const { runs } = host(on, [SNAPSHOT, saved, SNAPSHOT])
   const selected: unknown[] = []
   const latest: unknown[] = []
   on('state.set', (_, e, next) => {
@@ -235,7 +266,8 @@ test('a current-card Pane action clears a newer saved-session selection before o
   await ui.press({ key: 'pane' })
   expect(runs).toEqual(['pane'])
   expect(selected.at(-1)).toBeNull()
-  expect(latest.at(-1)).toBeNull()
+  expect(latest).toContain(null)
+  expect(latest.at(-1)).toMatchObject({ transcript: { path: DERIVED } })
   await ui.unmount()
 })
 

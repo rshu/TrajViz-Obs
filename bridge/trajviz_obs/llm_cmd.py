@@ -17,12 +17,16 @@ first ``max_steps`` steps (:func:`compat.labeler_step_cap`), as session mode pla
 from __future__ import annotations
 
 import argparse
+import contextlib
+import functools
 import hashlib
 import itertools
 import json
+import math
 import os
 import re
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, get_args
@@ -43,6 +47,7 @@ from .compat import (
     window_info,
 )
 from .errors import BridgeError
+from .outputs import protect_inputs
 from .sessions import _positive_int
 from .text import LINE_CHARS, _clip
 from .views_cmd import INLINE_JSON_BYTES, _artifacts, _load, _session_args, _stdout_bytes, _write_json
@@ -89,7 +94,8 @@ def _question(question: str | None, language: str | None) -> str:
     return (question or "").strip() or llm.first_question(language)
 
 
-def _hash(run: Trajectory, feature: str, question: str | None, limit: int, prompts: list[dict]) -> str:
+def _hash(run: Trajectory, feature: str, question: str | None, limit: int, prompts: list[dict],
+          label_settings: dict | None = None) -> str:
     """Bind replies to the exact requests, including history, language, call limits and the real window.
 
     The transcript hash alone is insufficient: history can change without another transcript record, and
@@ -97,7 +103,7 @@ def _hash(run: Trajectory, feature: str, question: str | None, limit: int, promp
     """
     # Reloadable exports preserve the original transcript's sha256. Bind the normalized steps too: an
     # edited export's unplanned label tail must not inherit the original request's identity.
-    payload = json.dumps([run.sha256, run.steps, window_info(run)["window"], feature, question, limit, prompts],
+    payload = json.dumps([run.sha256, run.steps, window_info(run)["window"], feature, question, limit, prompts, label_settings],
                          ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -155,22 +161,81 @@ def _errors_lines(errors: list[str]) -> list[str]:
     return ["", "Errors:", *(_clip(f"- {error}", LINE_CHARS) for error in errors)] if errors else []
 
 
-def _label(transcript_path: str, out_path: Path, *, assistant_only: bool, model: str, **client: Any) -> dict:
-    """The labeler over *transcript_path*, its sidecar written to *out_path*."""
+def _label_settings(options: dict | None = None, *, env: bool = False) -> dict:
+    """Validate and snapshot every label input before planning, replay or provider execution."""
+    from agent_trajviz.labeling.taxonomy import DEFAULT_TAXONOMY, load_taxonomy
+
+    values = dict(options or {})
+    if "_taxonomy_text" in values:
+        return values
+    settings = {"max_content_chars": 8000, "delay": 0.0, "user_phase": "user", "user_action": "user_prompt",
+                "max_tokens": LABEL_MAX_TOKENS, "temperature": None, **values}
+    for key in ("max_content_chars", "max_tokens"):
+        if type(settings[key]) is not int or settings[key] < 1 or (key == "max_tokens" and settings[key] > 64000):
+            raise BridgeError("bad_label_option", f"{key.replace('_', '-')} must be a positive whole number"
+                              + (" up to 64000." if key == "max_tokens" else "."))
+    if not isinstance(settings["delay"], int | float) or not math.isfinite(settings["delay"]) or settings["delay"] < 0:
+        raise BridgeError("bad_label_option", "delay must be a finite number of zero or more seconds.")
+    for key in ("user_phase", "user_action"):
+        if not isinstance(settings[key], str) or not settings[key].strip():
+            raise BridgeError("bad_label_option", f"{key.replace('_', '-')} needs a non-empty label.")
+    if settings["temperature"] is not None and (not isinstance(settings["temperature"], int | float)
+            or not math.isfinite(settings["temperature"]) or settings["temperature"] < 0):
+        raise BridgeError("bad_label_option", "temperature must be a finite number of zero or more.")
+    if env:
+        for key, name, default, numeric in (("max_tokens", "LABEL_MAX_TOKENS", LABEL_MAX_TOKENS, int),
+                                             ("temperature", "LABEL_TEMPERATURE", 0.3, float)):
+            if key in values:
+                continue
+            try:
+                value = numeric(llm_env_value(name))
+                settings[key] = value if math.isfinite(value) and value >= (1 if key == "max_tokens" else 0) else default
+            except ValueError:
+                settings[key] = default
+    taxonomy = Path(settings.get("taxonomy_path") or DEFAULT_TAXONOMY).expanduser().absolute()
+    try:
+        text = taxonomy.read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory(prefix="trajviz-obs-taxonomy-check-") as folder:
+            captured = Path(folder) / "taxonomy.md"
+            captured.write_text(text, encoding="utf-8")
+            mapping, _ = load_taxonomy(captured)
+    except FileNotFoundError as exc:
+        raise BridgeError("not_found", f"No such taxonomy file: {taxonomy}", path=str(taxonomy)) from exc
+    except (OSError, UnicodeError) as exc:
+        raise BridgeError("bad_taxonomy", f"Cannot read taxonomy {taxonomy} ({type(exc).__name__}).",
+                          path=str(taxonomy)) from exc
+    actions = [action for group in mapping.values() for action in group]
+    if not mapping or not actions or any(not group for group in mapping.values()) or len(set(actions)) != len(actions):
+        raise BridgeError("bad_taxonomy", "Taxonomy needs ### phase headings and unique `action` bullets for each phase.",
+                          path=str(taxonomy))
+    return {**settings, "taxonomy_path": str(taxonomy), "_taxonomy_text": text,
+            "_taxonomy_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+
+
+def _label(transcript_path: str, out_path: Path, *, assistant_only: bool, model: str,
+           label_options: dict | None = None, **client: Any) -> dict:
+    """Label the captured run against the taxonomy bytes validated for this operation."""
     from agent_trajviz.labeling.labeler import OutputSafetyError, label_trajectory
 
+    options = _label_settings(label_options)
+    protect_inputs([out_path], [Path(options["taxonomy_path"])])
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    settings = {"base_url": "", "api_key": "", "max_tokens": LABEL_MAX_TOKENS, **client}
+    text = options.pop("_taxonomy_text")
+    options.pop("_taxonomy_sha256")
     try:
-        return label_trajectory(transcript_path, str(out_path), model=model, assistant_only=assistant_only,
-                                **settings)
+        with tempfile.TemporaryDirectory(prefix="trajviz-obs-taxonomy-") as folder:
+            taxonomy = Path(folder) / "taxonomy.md"
+            taxonomy.write_text(text, encoding="utf-8")
+            options["taxonomy_path"] = str(taxonomy)
+            return label_trajectory(transcript_path, str(out_path), model=model, assistant_only=assistant_only,
+                                    **{"base_url": "", "api_key": "", **options, **client})
     except OutputSafetyError as exc:
         raise BridgeError("bad_output", str(exc), path=str(out_path)) from exc
 
 
 def _run(run: Trajectory, feature: str, *, chat: Chat | None, config: Any, transcript_path: str, question: str,
          history: list[dict], limit: int, language: str | None, out_path: Path, assistant_only: bool, model: str,
-         label_client: dict | None = None) -> Any:
+         label_client: dict | None = None, label_options: dict | None = None) -> Any:
     """One pass of *feature*: through *chat* (a capture or replay), else TrajViz's client with *config*."""
     from agent_trajviz import llm
 
@@ -180,13 +245,14 @@ def _run(run: Trajectory, feature: str, *, chat: Chat | None, config: Any, trans
         return llm.suggest_fixes(run, config=config, chat=chat, language=language, limit=limit)
     with labeler_run(run):
         if chat is None:
-            return _label(transcript_path, out_path, assistant_only=assistant_only, model=model, **(label_client or {}))
+            return _label(transcript_path, out_path, assistant_only=assistant_only, model=model,
+                          label_options=label_options, **(label_client or {}))
         with labeler_chat(chat):
-            return _label(transcript_path, out_path, assistant_only=assistant_only, model=model)
+            return _label(transcript_path, out_path, assistant_only=assistant_only, model=model, label_options=label_options)
 
 
 def _capture(run: Trajectory, feature: str, *, transcript_path: str, question: str, history: list[dict],
-             limit: int, language: str | None) -> list[tuple[str, str]]:
+             limit: int, language: str | None, label_options: dict | None = None) -> list[tuple[str, str]]:
     """Every ``(system, prompt)`` *feature* would send, in call order."""
     calls: list[tuple[str, str]] = []
     placeholder = PLACEHOLDERS[feature]
@@ -198,7 +264,7 @@ def _capture(run: Trajectory, feature: str, *, transcript_path: str, question: s
     with tempfile.TemporaryDirectory(prefix="trajviz-obs-") as scratch:
         _run(run, feature, chat=chat, config=None, transcript_path=transcript_path, question=question,
              history=history, limit=limit, language=language, out_path=Path(scratch) / "labels.json",
-             assistant_only=False, model=SESSION_MODEL)
+             assistant_only=False, model=SESSION_MODEL, label_options=label_options)
     return calls
 
 
@@ -222,7 +288,7 @@ def _result(feature: str, out: Any, *, history_path: Path | None, limit: int, ou
 
 def plan_prompts(run: Trajectory, feature: Feature, *, transcript_path: str, question: str | None,
                  history_path: Path | None, limit: int, language: str | None, max_steps: int,
-                 assistant_only: bool) -> dict:
+                 assistant_only: bool, label_options: dict | None = None) -> dict:
     """The prompts *feature* would send: ``{"feature", "hash", "plan": {"calls", "approx_input_tokens"},
     "prompts": [{"index", "system", "prompt", "max_tokens", "timeout_s"}]}``.
 
@@ -231,17 +297,25 @@ def plan_prompts(run: Trajectory, feature: Feature, *, transcript_path: str, que
     the labeler sends (*assistant_only* changes only which records the sidecar keeps).
     """
     _feature(feature)
+    label_options = _label_settings(label_options) if feature == "label" else None
     question = _question(question, language) if feature == "analyze" else None
     calls = _capture(run, feature, transcript_path=transcript_path, question=question or "",
                      history=_read_history(history_path) if feature == "analyze" else [], limit=limit,
-                     language=language)
+                     language=language, label_options=label_options)
     if feature == "label":
         calls = calls[:max_steps]
     max_tokens, timeout_s = _limits(feature)
+    if label_options is not None:
+        max_tokens = label_options["max_tokens"]
     prompts = [{"index": i, "system": system, "prompt": prompt, "max_tokens": max_tokens, "timeout_s": timeout_s}
                for i, (system, prompt) in enumerate(calls)]
     chars = sum(len(system) + len(prompt) for system, prompt in calls)
-    return {"feature": feature, "hash": _hash(run, feature, question, limit, prompts),
+    settings_hash = ({**label_options, "assistant_only": assistant_only, "max_steps": max_steps}
+                     if label_options is not None else None)
+    if label_options is not None:
+        for prompt in prompts:
+            prompt["delay_s"] = label_options["delay"]
+    return {"feature": feature, "hash": _hash(run, feature, question, limit, prompts, settings_hash),
             "plan": {"calls": len(prompts), "approx_input_tokens": -(-chars // 4)}, "prompts": prompts}
 
 
@@ -263,7 +337,7 @@ def _replies_by_index(replies: dict) -> dict[int, dict]:
 
 def apply_replies(run: Trajectory, feature: Feature, replies: dict, *, transcript_path: str, question: str | None,
                   history_path: Path | None, limit: int, language: str | None, out_path: Path, max_steps: int,
-                  assistant_only: bool, model: str | None = None) -> dict:
+                  assistant_only: bool, model: str | None = None, label_options: dict | None = None) -> dict:
     """TrajViz's result of *feature* with the model's *replies* to :func:`plan_prompts`'s prompts.
 
     ``analyze`` → ``{"reply", "history_path"}`` (plus ``error`` when the reply failed), the exchange appended
@@ -278,10 +352,11 @@ def apply_replies(run: Trajectory, feature: Feature, replies: dict, *, transcrip
     _feature(feature)
     protect_run_outputs(run, [out_path] if feature == "label" else
                         [history_path] if feature == "analyze" and history_path is not None else [])
+    label_options = _label_settings(label_options) if feature == "label" else None
     question = _question(question, language) if feature == "analyze" else None
     plan = plan_prompts(run, feature, transcript_path=transcript_path, question=question,
                         history_path=history_path, limit=limit, language=language, max_steps=max_steps,
-                        assistant_only=assistant_only)
+                        assistant_only=assistant_only, label_options=label_options)
     if not isinstance(replies, dict) or replies.get("hash") != plan["hash"]:
         raise BridgeError("stale_prompts", "These replies were made for other prompts (the session changed since "
                                            "they were planned); plan the prompts again.")
@@ -302,7 +377,8 @@ def apply_replies(run: Trajectory, feature: Feature, replies: dict, *, transcrip
 
     out = _run(run, feature, chat=chat, config=None, transcript_path=transcript_path, question=question or "",
                history=_read_history(history_path) if feature == "analyze" else [], limit=limit,
-               language=language, out_path=out_path, assistant_only=assistant_only, model=model or SESSION_MODEL)
+               language=language, out_path=out_path, assistant_only=assistant_only, model=model or SESSION_MODEL,
+               label_options=label_options)
     result = _result(feature, out, history_path=history_path, limit=limit, out_path=out_path,
                      label_errors=label_errors)
     if feature == "analyze" and failed:
@@ -315,6 +391,29 @@ def apply_replies(run: Trajectory, feature: Feature, replies: dict, *, transcrip
 def _not_configured(missing: list[str]) -> BridgeError:
     return BridgeError("llm_not_configured", "The LLM endpoint is not configured; set " + ", ".join(missing)
                        + " (environment or .env), or use the session's model.", missing=missing)
+
+
+@contextlib.contextmanager
+def _label_pacing(delay: float):
+    """Wait only between real provider attempts, never for the sidecar's capped unknown tail."""
+    from agent_trajviz.labeling import llm
+
+    original = llm.call_llm
+    sent = False
+
+    @functools.wraps(original)
+    def call(*args, **kwargs):
+        nonlocal sent
+        if sent and delay > 0:
+            time.sleep(delay)
+        sent = True
+        return original(*args, **kwargs)
+
+    llm.call_llm = call
+    try:
+        yield
+    finally:
+        llm.call_llm = original
 
 
 def _label_client(config: Any, model: str | None) -> tuple[str, dict]:
@@ -333,7 +432,7 @@ def _label_client(config: Any, model: str | None) -> tuple[str, dict]:
 
 def direct(run: Trajectory, feature: Feature, *, transcript_path: str, question: str | None,
            history_path: Path | None, limit: int, language: str | None, out_path: Path, max_steps: int,
-           assistant_only: bool, model: str | None = None) -> dict:
+           assistant_only: bool, model: str | None = None, label_options: dict | None = None) -> dict:
     """:func:`apply_replies`'s result, the model called through TrajViz's own client (``ANALYZE_*``/``LABEL_*``).
 
     Missing settings raise ``BridgeError("llm_not_configured", missing=[names])``. ``label`` sends the first
@@ -346,6 +445,9 @@ def direct(run: Trajectory, feature: Feature, *, transcript_path: str, question:
     config = llm.config_from_env(load_dotenv=True)
     protect_run_outputs(run, [out_path] if feature == "label" else
                         [history_path] if feature == "analyze" and history_path is not None else [])
+    label_options = _label_settings(label_options, env=True) if feature == "label" else None
+    if label_options is not None:
+        protect_inputs([out_path], [Path(label_options["taxonomy_path"])])
     label_model, client = _label_client(config, model) if feature == "label" else (SESSION_MODEL, None)
     if feature != "label" and not config.ready:
         raise _not_configured(list(config.missing))
@@ -353,11 +455,12 @@ def direct(run: Trajectory, feature: Feature, *, transcript_path: str, question:
     history = _read_history(history_path) if feature == "analyze" else []
     options = {"chat": None, "config": config, "transcript_path": transcript_path, "question": question or "",
                "history": history, "limit": limit, "language": language, "out_path": out_path,
-               "assistant_only": assistant_only, "model": label_model, "label_client": client}
+               "assistant_only": assistant_only, "model": label_model, "label_client": client, "label_options": label_options}
     if feature != "label":
         return _result(feature, _run(run, feature, **options), history_path=history_path, limit=limit,
                        out_path=out_path)
-    with labeler_step_cap(max_steps, PLACEHOLDERS["label"]) as label_errors:
+    with _label_pacing(label_options["delay"]), labeler_step_cap(max_steps, PLACEHOLDERS["label"]) as label_errors:
+        options["label_options"] = {**label_options, "delay": 0.0}
         out = _run(run, feature, **options)
     return _result(feature, out, history_path=history_path, limit=limit, out_path=out_path,
                    label_errors=label_errors)
@@ -392,6 +495,13 @@ def _label_args(p: argparse.ArgumentParser, *, output: bool) -> None:
     p.add_argument("--max-steps", type=_positive_int, default=DEFAULT_MAX_STEPS,
                    help=f"label: steps labelled (default: {DEFAULT_MAX_STEPS}).")
     p.add_argument("--assistant-only", action="store_true", help="label: keep only assistant steps in the sidecar.")
+    p.add_argument("--taxonomy", dest="taxonomy_path", type=Path, default=None, help="Custom label taxonomy Markdown.")
+    p.add_argument("--max-content-chars", type=_positive_int, default=8000, help="Maximum step prompt characters.")
+    p.add_argument("--max-tokens", type=_positive_int, default=None, help="Reply token cap, up to 64000.")
+    p.add_argument("--temperature", type=float, default=None, help="Env-mode sampling temperature.")
+    p.add_argument("--delay", type=float, default=0.0, help="Seconds between label calls.")
+    p.add_argument("--user-phase", default="user", help="Deterministic user-step phase.")
+    p.add_argument("--user-action", default="user_prompt", help="Deterministic user-step action.")
     if output:
         p.add_argument("-o", "--out", type=Path, default=None, help="label: the sidecar (default: <artifacts>/labels.json).")
         p.add_argument("--model", default=None, help="label: the model named in the sidecar.")
@@ -430,7 +540,11 @@ def _options(args: argparse.Namespace, feature: str) -> dict[str, Any]:
             "history_path": artifacts / "analyze.json" if feature == "analyze" else None,
             "limit": getattr(args, "limit", FIXES_CAP), "language": args.language,
             "max_steps": getattr(args, "max_steps", DEFAULT_MAX_STEPS),
-            "assistant_only": getattr(args, "assistant_only", False)}
+            "assistant_only": getattr(args, "assistant_only", False),
+            "label_options": {**{key: getattr(args, key) for key in ("taxonomy_path", "max_content_chars", "delay",
+                                                                    "user_phase", "user_action") if hasattr(args, key)},
+                              **{key: getattr(args, key) for key in ("max_tokens", "temperature")
+                                 if getattr(args, key, None) is not None}}}
 
 
 def _out(args: argparse.Namespace) -> Path:
@@ -509,6 +623,8 @@ def _llm_prompt(args: argparse.Namespace) -> dict:
         plan["source"] = _freeze_current(args, run, plan)
     path = _artifacts(args) / f"prompts-{args.feature}.json"
     protect_run_outputs(run, [path])
+    if args.feature == "label":
+        protect_inputs([path], [Path(_label_settings(_options(args, "label")["label_options"])["taxonomy_path"])])
     path.parent.mkdir(parents=True, exist_ok=True)
     size = _write_json(path, plan)
     out = {**plan, "path": str(path), "bytes": size}

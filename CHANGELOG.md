@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.8 — 2026-10-26
+
+- Dispatch card and pane actions directly so Claude Code's command re-entry guard cannot swallow them.
+- Refresh an enabled status line after manual overview and pane refreshes, including empty sessions.
+- Keep slash commands available when the host disables model tool registration.
+- Expose custom label taxonomies, deterministic user tags, content limits, pacing, and model sampling options.
+- Refuse DECAF capability verdicts when its parser loses native Claude JSONL tool evidence, in both CLI and dashboard.
+- Expand reproducible coverage across all eight trajectory formats, collectors, comparisons, label views, dashboard callbacks, and real Claude Code sessions.
+
 ## 0.1.7 — 2026-10-26
 
 - Recognize Claude Code's plugin output prefix so `/obs` renders its custom card.

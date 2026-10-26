@@ -17,9 +17,14 @@ import sys
 import threading
 import time
 import uuid
+import zipfile
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
+
+from e2e_fixtures import prepare_comparison_inputs
+from optional_matrix import prepare_decaf_reference, source_hashes
+from optional_matrix import prepare_inputs as prepare_collectors
 
 ROOT = Path(__file__).resolve().parents[1]
 FAILURE = 'intentional observability smoke-test failure'
@@ -93,31 +98,32 @@ def validate_export(directory: Path, session_id: str) -> dict:
     return {'views': len(index['views']), 'steps': len(steps), 'source': trajectory['source']}
 
 
-def feature_replies(artifacts: Path, feature: str) -> dict:
-    paths = list(artifacts.glob(f'replies-{feature}-*.json'))
-    require(len(paths) == 1, f'Expected exactly one {feature} reply artifact, found {len(paths)}')
-    return json_object(paths[0])
+def feature_replies(artifacts: Path, feature: str, expected: int = 1) -> dict:
+    paths = sorted(artifacts.glob(f'replies-{feature}-*.json'), key=lambda p: (p.stat().st_mtime_ns, p.name))
+    require(len(paths) == expected, f'Expected {expected} {feature} reply artifacts, found {len(paths)}')
+    return json_object(paths[-1])
 
 
-def validate_analysis(artifacts: Path, text: str) -> dict:
+def validate_analysis(artifacts: Path, text: str, expected: int = 1) -> dict:
     require(re.search(r'(?mi)^usage: .* input .* output tokens', text), 'Analysis usage summary is missing')
-    replies = feature_replies(artifacts, 'analyze')
+    replies = feature_replies(artifacts, 'analyze', expected)
     require(isinstance(replies.get('hash'), str) and len(replies['hash']) == 64, 'Analysis has no prompt hash')
     rows = replies.get('replies', [])
     require(len(rows) == 1 and isinstance(rows[0].get('text'), str) and rows[0]['text'].strip()
             and 'error' not in rows[0], 'The session-model call did not answer successfully')
     history = json_object(artifacts / 'analyze.json').get('history', [])
+    require(len(history) == expected * 2, 'Analysis did not preserve every question and reply')
     require(history and history[-1].get('role') == 'assistant'
             and history[-1].get('content') == rows[0]['text'], 'Analysis history does not contain the reply')
     require('stale_prompts' not in text and 'Cancelled:' not in text, 'Analysis did not finish')
     return {'successful_calls': len(rows), 'reply_characters': len(rows[0]['text']), 'prompt_hash': replies['hash']}
 
 
-def validate_feature_reply(artifacts: Path, feature: str, text: str) -> dict:
+def validate_feature_reply(artifacts: Path, feature: str, text: str, expected: int = 1) -> dict:
     require(re.search(r'(?mi)^usage: .* input .* output tokens', text), f'{feature} usage summary missing')
     require(re.search(rf'(?m)^(?:trajviz-obs: )?{feature}: 1 call\b', text), f'{feature} planned more than one call')
     require(not re.search(r'(?mi)^Errors:|stale_prompts|Cancelled:', text), f'{feature} reported a failure: {text}')
-    replies = feature_replies(artifacts, feature)
+    replies = feature_replies(artifacts, feature, expected)
     require(isinstance(replies.get('hash'), str) and len(replies['hash']) == 64, f'{feature} prompt hash missing')
     rows = replies.get('replies', [])
     require(len(rows) == 1 and isinstance(rows[0].get('text'), str) and rows[0]['text'].strip()
@@ -138,6 +144,95 @@ def validate_labels(path: Path, session_id: str) -> dict:
                and row.get('phase') not in (None, '', 'unknown') and row.get('action') not in (None, '', 'unknown')]
     require(len(labeled) == 1, 'Exactly one assistant step should have a valid model label')
     return {'schema_version': sidecar['schema_version'], 'assistant_steps': len(steps), 'model_labeled': len(labeled)}
+
+
+def written_document(result: dict, prefix: str) -> dict:
+    match = re.search(rf'(?m)^(?:trajviz-obs: )?{re.escape(prefix)} written to (.+)\.$', result['result'])
+    require(match, f'No artifact path for {prefix}: {result["result"]}')
+    return json_object(Path(match[1]))
+
+
+def validate_bundle(path: Path, session_id: str, *, subagents: bool) -> dict:
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        require(archive.testzip() is None and f'{session_id}.jsonl' in names, 'Bundle lost the native parent')
+        children = [name for name in names if '/subagents/' in name and name.endswith('.jsonl')]
+        require(not subagents or children, 'Bundle lost the native subagent logs')
+        for name in names:
+            require(not name.startswith('/') and '..' not in Path(name).parts, 'Unsafe ZIP member')
+        return {'members': len(names), 'subagent_logs': len(children)}
+
+
+def exercise_comparisons(turn, output: Path) -> dict:
+    fixtures = prepare_comparison_inputs(output / 'comparison inputs')
+    before, after, reference, patch = [fixtures[name] for name in ('before', 'after', 'reference', 'anchor')]
+    for reverse in (False, True):
+        result = turn(f'/obs compare "{before}" --session "{after}" --anchor-patch "{patch}" '
+                      f'--fuzzy-commands{" --reverse" if reverse else ""}', 'anchored native comparison',
+                      expected=r'Comparison views written to ')
+        views = written_document(result, 'Comparison views')['views']
+        summary = views['comparison_summary']['data']
+        outcome = summary['outcome']
+        require((outcome['reference_steps'], outcome['compared_steps']) == ((5, 6) if reverse else (6, 5))
+                and summary['anchor_mode'] == 'external', 'Native comparison ignored orientation or patch flags')
+    group = turn(f'/obs scorecard "{before}" "{reference}" --session "{after}" '
+                 '--labels after,before,reference --fuzzy-commands', 'native three-run scorecard',
+                 expected=r'Scorecard views written to ')
+    rows = written_document(group, 'Scorecard views')['views']['run_scorecard']['data']
+    require([(r['label'], r['steps'], r['tool_calls']) for r in rows]
+            == [('after', 5, 3), ('before', 6, 4), ('reference', 5, 3)], 'Native scorecard lost labels or input order')
+    group = turn(f'/obs scorecard "{before}" "{after}" --no-self --labels before,after',
+                 'native scorecard excluding current run', expected=r'Scorecard views written to ')
+    rows = written_document(group, 'Scorecard views')['views']['run_scorecard']['data']
+    require([r['label'] for r in rows] == ['before', 'after'], 'Native --no-self retained the selected run')
+    cases = [
+        (f'"{reference}" "{after}" --anchor-patch "{patch}" --fuzzy-commands --task-id addition', 'pairwise'),
+        (f'--batch "{fixtures["before_manifest"]}" --fuzzy-commands', 'batch'),
+        (f'--before "{fixtures["before_manifest"]}" --after "{fixtures["after_manifest"]}" --fuzzy-commands', 'before-after'),
+    ]
+    for arguments, mode in cases:
+        result = turn('/obs converge-cli ' + arguments, f'native Converge {mode}',
+                      expected=r'Converge report written to ')
+        report = written_document(result, 'Converge report')
+        if mode == 'pairwise':
+            require(report['task_id'] == 'addition' and report['alignment']['alignment_f1'] == 1.0,
+                    'Native pairwise did not apply fuzzy/task flags')
+        elif mode == 'batch':
+            require(report['summary']['compared_count'] == 2 and report['summary']['error_count'] == 0,
+                    'Native batch did not compare both manifest entries')
+        else:
+            require(report['paired_tasks'] == 2 and report['intervention_effect']['harmful_ratio']['direction'] == 'improved',
+                    'Native intervention missed the known before/after improvement')
+        turn('/obs converge-cli ' + arguments + ' --output summary', f'native Converge {mode} text',
+             expected=r'Converge (?:Comparison Summary|Batch Comparison Summary|Intervention Report)')
+    turn('/obs', 'return to current session after comparisons', expected=r'obs snapshot \d+')
+    return {'anchored_comparisons': 2, 'scorecards': 2, 'converge_modes': 3}
+
+
+def exercise_collectors(turn, output: Path, fixtures: dict) -> dict:
+    before = source_hashes(output / 'collectors' / 'inputs')
+    for command in fixtures['commands']:
+        result = turn(command, 'native collector export', expected=r'\S')
+        require('exited with' not in result['result'], f'Collector failed: {result["result"]}')
+    for name in ('cursor', 'opencode', 'codearts'):
+        source = output / 'collectors' / 'exports' / f'{name}.json'
+        require(source.is_file(), f'Native collector did not write {name}')
+        dest = output / 'collected views' / name
+        turn(f'/obs json --session "{source}" --with-trajectory -o "{dest}"',
+             f'native reload of {name} collector export', expected=r'files .* written to ')
+        trajectory = json_object(dest / 'trajectory.json')
+        require(any(step.get('role') == 'assistant' for step in trajectory['steps']), f'{name} lost assistant messages')
+        if name in ('opencode', 'codearts'):
+            summary = json_object(dest / 'summary.json')['data']
+            require(summary['tokens']['total'] == 240, f'{name} lost exact provider token accounting')
+    legacy = output / 'collectors' / 'exports' / 'codearts-legacy.json'
+    require(legacy.is_file(), 'CodeArts legacy archival export was not written')
+    turn(f'/obs --session "{legacy}"', 'native legacy CodeArts archive unsupported notice',
+         expected=r'legacy message schema is not yet supported.*Re-export.*SQLite')
+    require(source_hashes(output / 'collectors' / 'inputs') == before, 'A collector modified its source store')
+    turn('/obs', 'return to current session after collectors', expected=r'obs snapshot \d+')
+    return {'collectors': 3, 'formats_reloaded': 3, 'legacy_archive_refused_as_trajectory': True,
+            'source_stores_unchanged': True}
 
 
 def validate_subagents(directory: Path, events: list[dict], overview: str) -> dict:
@@ -242,6 +337,7 @@ def exercise_command_matrix(turn, output: Path, session_id: str) -> dict:
              expected=rf'^obs view {re.escape(vid)} · ')
     commands = [
         ('/obs help', r'^/obs \[subcommand\]'),
+        ('/obs overview', r'obs snapshot \d+'),
         ('/obs view', r'\d+ TrajViz views'),
         ('/obs issues --limit 1', r'^obs view issues'),
         ('/obs patterns', r'^obs view '), ('/obs agents', r'^obs view agents'),
@@ -262,7 +358,7 @@ def exercise_command_matrix(turn, output: Path, session_id: str) -> dict:
         (f'/obs scorecard "{output / "export/trajectory.json"}" --labels live,export', r'Scorecard views written'),
         ('/obs collect --version', r'agent-trajviz-collect \d'),
         ('/obs collect cursor --help', r'usage:'),
-        ('/obs attribution', r'DECAF|not available|unavailable'),
+        ('/obs attribution', r'DECAF|not available|unavailable|agent override|no gold reference'),
         ('/obs health --limit 0', r'limit.*(?:1|500)'),
         ('/obs view missing_view', r'No view'),
         ('/obs view health nonsense=x', r'No option'),
@@ -270,12 +366,19 @@ def exercise_command_matrix(turn, output: Path, session_id: str) -> dict:
         ('/obs doctor unexpected', r'Unexpected arguments|Usage:'),
         ('/obs health --unexpected', r'Unknown option'),
         ('/obs --session', r'--session needs'),
+        ('/obs report', r'removed.*?/obs dashboard'),
     ]
     for command, expected in commands:
         turn(command, 'native command ' + command, expected=expected)
     require((output / 'session.zip').is_file(), 'Native bundle export missing')
     require((output / 'schemas/health.schema.json').is_file(), 'Native schemas export missing')
-    return {'views': len(index['views']), 'additional_commands': len(commands)}
+    selected = output / 'selected views'
+    turn(f'/obs json --view health --view issues -o "{selected}"', 'native filtered JSON export',
+         expected=r'3 files .* written to ')
+    require({path.name for path in selected.iterdir()} == {'index.json', 'health.json', 'issues.json'},
+            'Native JSON --view selection wrote unintended files')
+    comparisons = exercise_comparisons(turn, output)
+    return {'views': len(index['views']), 'additional_commands': len(commands), **comparisons}
 
 
 def main() -> None:
@@ -290,10 +393,13 @@ def main() -> None:
     parser.add_argument('--test-subagent', action='store_true', help='Spawn one real native subagent and verify merging')
     parser.add_argument('--test-command-matrix', action='store_true', help='Exercise all views, commands and invalid inputs')
     parser.add_argument('--budget', default='5')
+    parser.add_argument('--decaf-root', type=Path, help='A real awe checkout for offline native attribution checks.')
     args = parser.parse_args()
     if args.test_llm_all and args.skip_llm:
         parser.error('--test-llm-all cannot be combined with --skip-llm')
     output = args.output.resolve()
+    if output == ROOT or ROOT in output.parents:
+        parser.error('--output must be outside the repository; real session logs are private test artifacts')
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         parser.error('--output must be empty so stale artifacts cannot pass validation')
@@ -304,6 +410,13 @@ def main() -> None:
     env['XDG_CACHE_HOME'] = str(cache)
     # No browser windows during an automated test; paths remain in command output.
     env['SSH_TTY'] = 'trajviz-obs-e2e'
+    collectors = prepare_collectors(output / 'collectors') if args.test_command_matrix else None
+    if collectors:
+        env.update(collectors['environment'])
+    if args.decaf_root:
+        require((args.decaf_root / 'awe/__init__.py').is_file(), '--decaf-root must contain awe/__init__.py')
+        env.update({'AWE_DECAF_PATH': str(args.decaf_root.resolve()), 'AWE_PROJECT_DATA': str(output / 'awe-cache'),
+                    'AWE_OUTPUT_DATA': str(output / 'awe-output'), 'OPENROUTER_API_KEY': ''})
     tools = 'Bash,Read,Write,Edit' + (',Agent' if args.test_subagent else '')
     if args.test_obs_tool:
         tools += ',ToolSearch'
@@ -433,6 +546,21 @@ Use the tools to do this work; do not merely describe commands.'''
             if args.test_command_matrix:
                 check('native command and view matrix',
                       lambda: exercise_command_matrix(turn, output, ledger['session_id']))
+                check('native collector exports, reloads and source preservation',
+                      lambda: exercise_collectors(turn, output, collectors))
+                if args.decaf_root:
+                    reference = prepare_decaf_reference(output / 'collectors')
+                    attribution = turn(f'/obs attribution --session "{reference["transcript"]}" '
+                                       f'--reference-root "{reference["reference_root"]}" '
+                                       f'--agent {reference["agent"]} --instance {reference["instance"]}',
+                                       'native real AWE objective attribution', expected=r'DECAF attribution \(reference\)')
+                    require('code_localization' in attribution['result'] and 'missed_relevant_file' in attribution['result'],
+                            'Native attribution lost the known objective diagnosis')
+                    ledger['checks'].append({'label': 'real AWE native diagnosis', 'status': 'passed',
+                                             'mode': 'offline objective detectors, no model judging'})
+                    turn('/obs', 'current session after attribution', expected=r'obs snapshot \d+')
+                check('native bundle contains the parent and real subagent',
+                      lambda: validate_bundle(output / 'session.zip', ledger['session_id'], subagents=bool(subagent)))
             extras = ['app'] if not args.skip_dashboard else []
             if extras:
                 turn('/obs setup --extras ' + ','.join(extras), 'optional extras setup', timeout=600,
@@ -444,6 +572,10 @@ Use the tools to do this work; do not merely describe commands.'''
                                 'session-model analysis', timeout=360, expected=r'analyze: 1 call')
                 check('successful analysis reply and replay artifacts', lambda: validate_analysis(
                     cache / 'trajviz-obs' / 'sessions' / ledger['session_id'], analysis['result']))
+                followup = turn('/obs analyze', 'default analysis question with saved history',
+                                timeout=360, expected=r'analyze: 1 call')
+                check('analysis follow-up history and replay', lambda: validate_analysis(
+                    cache / 'trajviz-obs' / 'sessions' / ledger['session_id'], followup['result'], expected=2))
             if args.test_llm_all:
                 artifacts = cache / 'trajviz-obs' / 'sessions' / ledger['session_id']
                 fixes = turn('/obs fixes --limit 1', 'session-model fix judgment', timeout=360,
@@ -458,16 +590,47 @@ Use the tools to do this work; do not merely describe commands.'''
                 check('valid assistant-only label sidecar', lambda: validate_labels(label_path, ledger['session_id']))
                 turn(f'/obs labels "{label_path}"', 'label sidecar views',
                      expected=r'Labels: \d+ steps · 1 classified')
+                taxonomy = output / 'custom taxonomy.md'
+                taxonomy.write_text('# Test taxonomy (v9)\n### inspect\n'
+                                    '- `inspect_code`: Inspect code, tool behavior, or its test results.\n',
+                                    encoding='utf-8')
+                default_labels = turn(f'/obs label --max-steps 1 --model haiku --taxonomy "{taxonomy}" '
+                                      '--max-content-chars 400 --delay 0 --max-tokens 256 '
+                                      '--user-phase human --user-action request',
+                                      'default label output with custom taxonomy, all roles and explicit model',
+                                      timeout=360, expected=r'label: 1 call')
+                check('second labeling reply and model override', lambda: validate_feature_reply(
+                    artifacts, 'label', default_labels['result'], expected=2))
+                sidecar = json_object(artifacts / 'labels.json')
+                require({row.get('role') for row in sidecar['steps']} >= {'assistant', 'user'},
+                        'Default labeling unexpectedly removed user steps')
+                require(sum(row.get('label_source') == 'llm' for row in sidecar['steps']) == 1
+                        and sidecar.get('model') == 'haiku', 'Default label output lost its cap or model override')
+                require(sidecar['taxonomy_version'] == 'v9'
+                        and any(row.get('phase') == 'inspect' and row.get('action') == 'inspect_code'
+                                for row in sidecar['steps'])
+                        and all(row.get('phase') == 'human' and row.get('action') == 'request'
+                                for row in sidecar['steps'] if row.get('role') == 'user'),
+                        'Native labeling ignored the custom taxonomy or deterministic user tags')
+                turn(f'/obs labels "{artifacts / "labels.json"}" "{label_path}"', 'native label comparison',
+                     expected=r'Phases compared \(reference: the other sidecar; compared: this one\)')
             if args.test_obs_tool:
-                tool = turn('Use ToolSearch to discover mcp__trajviz-obs__obs if needed, '
-                            'then call it with {"what":"health","limit":4}. '
-                            'Use the tool, then report the Tool Success metric. Do not use Bash or read files.',
-                            'model invokes obs tool')
+                tool = turn('Use ToolSearch to discover mcp__trajviz-obs__obs if needed. '
+                            'Call it exactly once for each of these five inputs: '
+                            '{"what":"health","limit":4}, {"what":"issues","limit":2}, '
+                            '{"what":"brief"}, {"what":"view"}, '
+                            '{"what":"view","view":"context_usage","options":{"agent":"main","window_limit":100000},"limit":2}. '
+                            'Then briefly report Tool Success. Do not use Bash or read files.',
+                            'model invokes every obs tool mode')
                 uses = [row for row in blocks(tool['events'], 'tool_use') if row.get('name') == 'mcp__trajviz-obs__obs']
                 require(uses, 'The model did not call the obs tool')
+                require({'health', 'issues', 'brief', 'view'} <= {use.get('input', {}).get('what') for use in uses}
+                        and any(use.get('input', {}).get('view') == 'context_usage' for use in uses)
+                        and any(use.get('input', {}).get('what') == 'view' and 'view' not in use.get('input', {})
+                                for use in uses), 'The model did not exercise every registered obs tool mode')
                 ids = {row['id'] for row in uses}
                 returned = [row for row in blocks(tool['events'], 'tool_result') if row.get('tool_use_id') in ids]
-                require(returned and all(not row.get('is_error') for row in returned)
+                require(len(returned) >= len(uses) and all(not row.get('is_error') for row in returned)
                         and 'Tool Success' in str(returned), 'Obs tool did not return health data')
                 ledger['checks'].append({'label': 'real model obs tool call', 'status': 'passed', 'calls': len(uses)})
             doctor = turn('/obs doctor', 'doctor', expected=r'obs doctor\n[\s\S]*\bpython\s+[\s\S]*\btrajviz\s+')
@@ -483,6 +646,28 @@ Use the tools to do this work; do not merely describe commands.'''
                         require(f'with session {ledger["session_id"]} loaded' in start['result'],
                                 'Insight preload was not wired for the current session')
                     check(f'{name} live HTTP', lambda url=url: validate_http(url))
+                    turn(f'/obs {command} --port {port}', f'{name} reuses unchanged server',
+                         expected=rf'{name} dashboard already running at http://127\.0\.0\.1:{port}')
+                    if command == 'dashboard':
+                        saved = output / 'saved-native.jsonl'
+                        if not saved.is_file():
+                            saved.write_bytes((ROOT / 'bridge/tests/fixtures/native_claude_code/django__django-11477.jsonl')
+                                              .read_bytes())
+                        selected = turn(f'/obs dashboard --session "{saved}" --port {port}',
+                                        'Insight restarts for another session', timeout=180,
+                                        expected=rf'Insight dashboard at http://127\.0\.0\.1:{port}')
+                        require('with session saved-native loaded' in selected['result'],
+                                'Changing Insight source kept the previous preload')
+                        turn(f'/obs dashboard --port {port}', 'Insight returns to current session', timeout=180,
+                             expected=rf'Insight dashboard at http://127\.0\.0\.1:{port}/? '
+                                      rf'with session {ledger["session_id"]} loaded')
+                    else:
+                        turn(f'/obs converge --data-root "{output}" --port {port}',
+                             'Converge restarts for another data root', timeout=180,
+                             expected=rf'Converge dashboard at http://127\.0\.0\.1:{port}/? over {re.escape(str(output))}')
+                        turn(f'/obs converge --port {port}', 'Converge returns to default data root', timeout=180,
+                             expected=rf'Converge dashboard at http://127\.0\.0\.1:{port}/? over ')
+                    check(f'{name} source replacement HTTP', lambda url=url: validate_http(url))
                     turn('/obs doctor', f'doctor while {name} is live', expected=r'obs doctor\n[\s\S]*\bpython\s+')
                     check(f'{name} survives another command', lambda url=url: validate_http(url))
                     turn(f'/obs {command} stop', f'{name} stop', expected=rf'{name} dashboard stopped\.')

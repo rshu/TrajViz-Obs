@@ -18,7 +18,14 @@ export const register: Register = (on, options) => {
       argumentHint: '[overview|dashboard|pane|issues|health|analyze|fixes|json|help] [--session id]',
       immediate: true,
     })
-    await $.tool.register(OBS_TOOL)
+    // --tools '' and some hosts deliberately disable model tools. The slash
+    // command and live UI still work, so optional registration cannot abort
+    // their flags and dashboard initialization.
+    try {
+      await $.tool.register(OBS_TOOL)
+    } catch (error) {
+      $.ui.log(`obs model tool unavailable: ${error instanceof Error ? error.message : String(error)}`, { to: 'debug' })
+    }
     await seedFlags($, options, e.isInteractive)
     // A reload (a config change, /reload-plugins) starts the session hooks
     // again with the old environment's children killed: the state follows.
@@ -45,7 +52,7 @@ export const register: Register = (on, options) => {
     if (id === null) return next(e)
     const snap = await readSnapshotMember($, id)
     if (snap === null || isEmpty(snap)) return next(e)
-    return renderCard($, e, snap, { showButtons: showsButtons(e), columns: cardColumns(e), usage: snap.engine_usage ?? null })
+    return renderCard($, e, snap, { options, showButtons: showsButtons(e), columns: cardColumns(e), usage: snap.engine_usage ?? null })
   })
 
   // The live pane (`$.ui.open({ id: 'obs' })`): the latest snapshot on the

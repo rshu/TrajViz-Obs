@@ -1,6 +1,6 @@
 """The one place TrajViz internals are touched, each shim behind :func:`check_supported`.
 
-The plugin ships against the published ``agent-trajviz>=0.2.0,<0.3``. Two things have no public path there:
+The plugin ships against the published ``agent-trajviz>=0.2.0,<0.3``. These integrations need internal seams:
 
 1. **The real context window everywhere.** ``context_pressure(window_limit=)`` and the ``context_*`` views take
    an override, but the issues, the brief and the export do not. :func:`load_run` writes the window
@@ -10,6 +10,8 @@ The plugin ships against the published ``agent-trajviz>=0.2.0,<0.3``. Two things
    labeler's ``call_llm`` (and its retry sleep) for the duration of a capture or replay.
 3. **A step cap on env-mode labeling.** ``label_trajectory()`` labels every step; :func:`labeler_step_cap`
    wraps its real ``call_llm`` so only the first steps reach the endpoint, as session mode labels them.
+4. **Native Claude attribution evidence.** :func:`install_attribution_guard` refuses capability blame when
+   the optional DECAF parser cannot preserve native JSONL Read/Bash calls in an isolated capability probe.
 
 It also runs TrajViz's plugins (public API): ``load()`` reads only the formats already registered, so
 :func:`load_plugins` runs ``agent_trajviz.load_plugins()`` once per process before the first load or view lookup,
@@ -22,8 +24,10 @@ import contextlib
 import copy
 import functools
 import inspect
+import json
 import re
 import sys
+import tempfile
 import types
 import weakref
 from collections.abc import Callable, Iterable, Iterator
@@ -219,6 +223,88 @@ def dashboard_server_options(port: int | None) -> dict[str, Any]:
                                 max_file_size=_serve.DEFAULT_MAX_FILE_SIZE, auth=_serve.auth_from_env())
 
 
+@functools.lru_cache(maxsize=16)
+def _attribution_reads_native_claude(parser: Callable) -> bool:
+    """Probe DECAF's uncached parser without changing its reference root or reading a real trajectory.
+
+    Some DECAF versions send every non-Pi JSONL file through their Codex adapter. They silently lose
+    Claude's native ``tool_use`` blocks, then attribute missing test execution to the agent. A tiny native
+    Read/Bash transcript must retain both tool identities and their canonical actions before that parser
+    may diagnose this format. Cache by the actual function object so a replaced parser is checked again.
+    """
+    if not isinstance(parser, types.FunctionType):
+        return False
+    try:
+        config = parser.__globals__["config"]
+        with tempfile.TemporaryDirectory(prefix="trajviz-obs-attribution-probe-") as folder:
+            root = Path(folder)
+            path = root / "claude_code" / "native-probe.jsonl"
+            path.parent.mkdir()
+            records = [
+                {"type": "user", "sessionId": "native-probe", "uuid": "user", "parentUuid": None,
+                 "message": {"role": "user", "content": "Read the source and run its tests."}},
+                {"type": "assistant", "sessionId": "native-probe", "uuid": "read", "parentUuid": "user",
+                 "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "read-call",
+                    "name": "Read", "input": {"file_path": "src/probe.py"}}]}},
+                {"type": "user", "sessionId": "native-probe", "uuid": "read-result", "parentUuid": "read",
+                 "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "read-call",
+                    "content": "def probe(): pass", "is_error": False}]}},
+                {"type": "assistant", "sessionId": "native-probe", "uuid": "test", "parentUuid": "read-result",
+                 "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "test-call",
+                    "name": "Bash", "input": {"command": "pytest -q tests/test_probe.py"}}]}},
+                {"type": "user", "sessionId": "native-probe", "uuid": "test-result", "parentUuid": "test",
+                 "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "test-call",
+                    "content": "1 passed\nExit code 0", "is_error": False}]}},
+            ]
+            path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+            isolated_config = types.SimpleNamespace(**{**vars(config), "TRAJECTORY_DIR": root})
+            isolated = types.FunctionType(parser.__code__, {**parser.__globals__, "config": isolated_config},
+                                          parser.__name__, parser.__defaults__, parser.__closure__)
+            isolated.__kwdefaults__ = parser.__kwdefaults__
+            parsed = isolated("claude_code", "native-probe")
+            calls = {(step.native_tool, step.canonical_action) for step in parsed.steps if step.type == "tool_call"}
+            return {("Read", "read"), ("Bash", "run_test")} <= calls
+    except Exception:  # noqa: BLE001 - an unverifiable parser must never support a capability verdict
+        return False
+
+
+def install_attribution_guard() -> None:
+    """Protect CLI and native dashboard attribution from an incompatible optional DECAF parser.
+
+    The original diagnosis retains all reference, byte identity and cache provenance gates. Only modern
+    native Claude JSONL is refused when the actual DECAF parser cannot preserve its diagnostic evidence.
+    """
+    check_supported()
+    from agent_trajviz.insight import attribution
+
+    native = attribution.diagnose
+    if getattr(native, "_trajviz_obs_native_guard", False):
+        return
+
+    @functools.wraps(native)
+    def guarded(*, agent, instance_id, source_path=None, fmt=None, expected_sha=None, merged_sources=0,
+                reference_root=None):
+        if (attribution.DECAF_AVAILABLE and fmt == "claude_code" and source_path is not None
+                and Path(source_path).suffix.lower() == ".jsonl"):
+            try:
+                from awe.adapters import _parse_normalized
+
+                supported = _attribution_reads_native_claude(_parse_normalized)
+            except Exception:  # noqa: BLE001 - optional module/API failure is unavailable, never blame
+                supported = False
+            if not supported:
+                return attribution.AttributionResult(
+                    False, mode="reference", agent=agent, instance_id=instance_id,
+                    reason="This DECAF parser does not preserve native Claude Code JSONL Read/Bash tool evidence. "
+                           "No capability verdict was issued. Update DECAF to a parser that supports native "
+                           "Claude Code session transcripts.")
+        return native(agent=agent, instance_id=instance_id, source_path=source_path, fmt=fmt,
+                      expected_sha=expected_sha, merged_sources=merged_sources, reference_root=reference_root)
+
+    guarded._trajviz_obs_native_guard = True
+    attribution.diagnose = guarded
+
+
 def llm_config_from_env(*, load_dotenv: bool = False) -> Any:
     """The LLM settings without importing the LLM's chart presenters.
 
@@ -321,24 +407,26 @@ def labeler_chat(chat: Callable[[str, str], str]) -> Iterator[None]:
 def labeler_step_cap(max_steps: int, fallback: str) -> Iterator[list[str]]:
     """Let the labeler's real ``call_llm`` classify only its first *max_steps* steps; later steps get *fallback*.
 
-    A step is one step message: the labeler's retry resends the same message (each starts ``Step #<index>``),
-    so it counts as the same step, and step *i* is session mode's prompt *i*. Yields a list that, on exit,
+    Count entry into the labeler's per-step classifier, so retries stay in one step even when a small
+    content limit gives different steps identical prompt text. Step *i* is session mode's prompt *i*.
+    Yields a list that, on exit,
     holds ``"prompt <i>: <error class>"`` for each step whose last call raised (the class only, as the labeler
     logs it: a provider error can echo credentials or prompt text).
     """
     check_supported()
-    from agent_trajviz.labeling import llm
+    from agent_trajviz.labeling import labeler, llm
 
-    original_call = llm.call_llm
-    signature = inspect.signature(original_call)
-    state: dict[str, Any] = {"step": -1, "message": None}
+    original_call, original_classify = llm.call_llm, labeler._classify
+    state = {"step": -1}
     failures: dict[int, str] = {}
     errors: list[str] = []
 
+    @functools.wraps(original_classify)
+    def classify(*args: Any, **kwargs: Any) -> Any:
+        state["step"] += 1
+        return original_classify(*args, **kwargs)
+
     def call_llm(*args: Any, **kwargs: Any) -> str:
-        message = signature.bind(*args, **kwargs).arguments["user_message"]
-        if message != state["message"]:
-            state["step"], state["message"] = state["step"] + 1, message
         step = state["step"]
         if step >= max_steps:
             return fallback
@@ -350,9 +438,9 @@ def labeler_step_cap(max_steps: int, fallback: str) -> Iterator[list[str]]:
         failures.pop(step, None)
         return reply
 
-    llm.call_llm = call_llm
+    llm.call_llm, labeler._classify = call_llm, classify
     try:
         yield errors
     finally:
-        llm.call_llm = original_call
+        llm.call_llm, labeler._classify = original_call, original_classify
         errors.extend(f"prompt {step}: {name}" for step, name in sorted(failures.items()))

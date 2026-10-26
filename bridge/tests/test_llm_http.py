@@ -119,3 +119,22 @@ def test_ask_http_error_is_safe_and_preserved_in_history(endpoint, fixture_sessi
     assert "sk-sensitive" not in json.dumps(result)
     history = json.loads(Path(result["history_path"]).read_text())["history"]
     assert history[-1]["content"] == result["reply"]
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+def test_label_generation_settings_reach_real_provider_requests(provider, endpoint, monkeypatch, fixture_session,
+                                                               tmp_path, run_cli):
+    monkeypatch.setenv("LABEL_PROVIDER", provider)
+    monkeypatch.setenv("LABEL_MAX_TOKENS", "321")
+    monkeypatch.setenv("LABEL_TEMPERATURE", "0.17")
+    common = ["label", "--transcript", str(fixture_session), "--artifacts", str(tmp_path / "artifacts"),
+              "--max-steps", "1", "--assistant-only"]
+    endpoint.responses.extend([(200, LABEL), (200, LABEL)])
+    code, first = run_cli(common)
+    assert code == 0 and first["summary"]["classified"] == 1
+    assert endpoint.calls[-1]["body"]["max_tokens"] == 321
+    assert endpoint.calls[-1]["body"]["temperature"] == 0.17
+    code, second = run_cli([*common, "--max-tokens", "222", "--temperature", "0.37"])
+    assert code == 0 and second["summary"]["classified"] == 1
+    assert endpoint.calls[-1]["body"]["max_tokens"] == 222
+    assert endpoint.calls[-1]["body"]["temperature"] == 0.37

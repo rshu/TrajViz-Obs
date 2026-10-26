@@ -25,12 +25,13 @@ const json = (doc: unknown): RunAnswer => ({ exitCode: 0, stdout: `${JSON.string
 type Host = { ran: string[][]; registered: ToolSpec[] }
 
 /** The host beneath the mod: env, `state.json`, the session, the bridge answered by subcommand; every run recorded. */
-function host(on: On, bridge: Record<string, RunAnswer>): Host {
+function host(on: On, bridge: Record<string, RunAnswer>, toolError?: string): Host {
   const ran: string[][] = []
   const registered: ToolSpec[] = []
   on('command.register', () => ({ value: { command: 'obs' } }))
   on('tool.register', (_, e) => {
     registered.push(e as ToolSpec)
+    if (toolError) throw new Error(toolError)
     return { value: { tool: TOOL } }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -87,6 +88,25 @@ test('the obs tool is registered at session start, deferred, with its input sche
   const schema = spec.inputSchema as { properties: { what: { enum: string[] } }; required: string[] }
   expect(schema.properties.what.enum).toEqual(['brief', 'issues', 'health', 'view'])
   expect(schema.required).toEqual(['what'])
+})
+
+test('disabled model tools preserve slash commands and initialize configured UI state', { options: { watch: false, statusline: true } }, async ($, on) => {
+  host(on, {}, 'this session has no built-in tools (--tools "")')
+  const flags: unknown[] = []
+  const dashboards: unknown[] = []
+  on('state.set', { plugin: 'trajviz-obs', key: 'flags' }, (_, e, next) => {
+    flags.push(e.value)
+    return next(e)
+  })
+  on('state.set', { plugin: 'trajviz-obs', key: 'dashboards' }, (_, e, next) => {
+    dashboards.push(e.value)
+    return next(e)
+  })
+  await start($)
+  expect(flags).toContainEqual({ watch: false, statusline: true, isInteractive: true, envReady: false })
+  expect(dashboards).toContainEqual({ insight: null, converge: null })
+  const result = await $.command.run({ command: 'obs', args: 'help', origin: { kind: 'composer' }, presentation: { columns: 80, isFullscreen: false } })
+  expect(result.text).toContain('Start here: /obs')
 })
 
 test('registered MCP output uses native strings for data, brief, view and validation errors', async ($, on) => {

@@ -21,6 +21,8 @@ export const HELP_TEXT = [
   '  converge-cli ...   pass-through to agent-trajviz-converge      labels <sidecar> [<other>]   label views',
   'LLM  (only on request; the plan, calls, tokens and model, is printed first)',
   '  analyze [question]   fixes [--limit N]   label [-o PATH] [--assistant-only] [--model M] [--max-steps N]',
+  '    label options: --taxonomy PATH --user-phase TAG --user-action TAG --max-content-chars N --max-tokens N --delay SEC',
+  '    llm=env also accepts --temperature N (or LABEL_TEMPERATURE in the environment).',
   'Setup',
   '  setup [--extras ...] [--source ...]   doctor   sessions [N]   watch [on|off]   statusline [on|off]',
   '  attribution [--reference-root DIR] [--agent A] [--instance I]   collect <cursor|opencode|codearts> ...',
