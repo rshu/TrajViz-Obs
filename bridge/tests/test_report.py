@@ -23,6 +23,7 @@ def test_report_written_and_overwritten(fixture_run, tmp_artifacts):
     b = write_report_file(fixture_run, tmp_artifacts / "report.html", dark=True, offline=False)
     text = (tmp_artifacts / "report.html").read_text()
     assert a["path"] == b["path"] and text.count("<!DOCTYPE html>") == 1 and "tv-theme-dark" in text
+    assert 'id="trajviz-obs-report-style"' in text and 'class="tv-chart-scroll"' in text
 
 
 def test_bundle_layout(tmp_session_with_child, tmp_artifacts):

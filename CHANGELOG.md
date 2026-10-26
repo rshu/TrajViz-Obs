@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5 — 2026-10-26
+
+- Fix standalone report fonts, responsive cards, and tooltip overflow.
+- Keep large charts and tables in keyboard-accessible scroll panels, preserving chart detail.
+- Remove report controls and hints that require the live dashboard's Workflow tab.
+
 ## 0.1.4 — 2026-10-26
 
 - Prevent status-line usage lookups from blocking reports, dashboards, and session changes.

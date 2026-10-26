@@ -18,6 +18,7 @@ from .cli import register
 from .compat import EmptySession, protect_run_outputs
 from .errors import BridgeError
 from .outputs import protect_inputs, session_files, staged_path
+from .report_html import adapt_report_html
 from .views_cmd import _artifacts, _load, _session_args
 
 #: Most member names ``bundle`` lists on stdout.
@@ -43,6 +44,7 @@ def write_report_file(run: Trajectory, dest: Path, *, dark: bool, offline: bool)
     try:
         with staged_path(dest) as tmp:
             tv.write_report(run, tmp, dark=dark, inline_plotly=offline)
+            tmp.write_text(adapt_report_html(tmp.read_text(encoding="utf-8")), encoding="utf-8")
     except ReportError as exc:
         raise BridgeError("report_failed", str(exc), path=run.source) from exc
     return {"path": str(dest), "bytes": dest.stat().st_size}
