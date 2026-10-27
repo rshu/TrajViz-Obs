@@ -285,6 +285,12 @@ test('attributionText with nothing blamed and no verdict', () => {
   expect(attributionText(quiet)).toBe('Attribution (gold_free): no verdict\nBlamed capabilities: none')
   expect(attributionText({ ...quiet, available: false, reason: null })).toBe('Attribution is not available here.')
   expect(attributionText({ ...quiet, available: false, reason: 'No gold reference was found.' })).toBe('No gold reference was found.')
+  expect(attributionText({ ...quiet, available: false, reason: 'Try pip install decaf-attribution.' }))
+    .toBe('Attribution is not available here.')
+  const reason = 'No gold reference under /tmp/DECAF/data; check the reference root.'
+  expect(attributionText({ ...quiet, available: false, reason })).toBe(reason)
+  expect(attributionText({ ...quiet, notes: ['DECAF cache /tmp/DECAF/data; DECAF.json; DECAF_AVAILABLE'] }))
+    .toBe('Attribution (gold_free): no verdict\nBlamed capabilities: none\nNotes:\n- attribution cache /tmp/DECAF/data; DECAF.json; DECAF_AVAILABLE')
 })
 
 test('collect passes its arguments through and prints what the tool wrote', async ($, on) => {
@@ -431,6 +437,10 @@ test('doctorText: every extra, plugins, a ready llm env, env mode and a referenc
   expect(broken[4]).toBe('  plugins       error: my_plugin: ImportError: no')
   expect(broken[7]).toBe('  llm env       no llm extra')
   expect(broken[9]).toBe('  llm mode      session (analysisModel sonnet, labelModel haiku)')
+  const trimmed = doctorText(doc, state, { analysisModel: '  opus  ', labelModel: ' \t ' }).split('\n')
+  expect(trimmed[9]).toBe('  llm mode      session (analysisModel opus, labelModel haiku)')
+  const spaced = doctorText(doc, state, { analysisModel: '  ', labelModel: '  haiku  ' }).split('\n')
+  expect(spaced[9]).toBe('  llm mode      session (analysisModel sonnet, labelModel haiku)')
 })
 
 test('doctor without an environment is the setup line, and a broken one its error under the environment', async ($, on) => {

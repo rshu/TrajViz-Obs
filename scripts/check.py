@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bridge-only", action="store_true", help="Run pytest and Ruff without Claude Code or Node")
+    parser.add_argument("--bridge-only", action="store_true", help="Run bridge tests, offline matrices, and Ruff without Claude Code or Node")
     parser.add_argument("--python", help="Bridge interpreter (default: bridge/.venv, otherwise this interpreter)")
     parser.add_argument("--claude", default="claude", help="Claude Code executable")
     parser.add_argument("--api-types", help="Claude Code declarations for scripts/typecheck.py")
@@ -28,16 +29,20 @@ def main() -> int:
     args = parser.parse_args()
     managed = ROOT / "bridge" / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     python = args.python or (str(managed) if managed.is_file() else sys.executable)
+    python = os.path.abspath(shutil.which(python) or os.path.expanduser(python))
+    claude = os.path.abspath(shutil.which(args.claude) or os.path.expanduser(args.claude))
     checks: list[tuple[str, list[str]]] = []
     if not args.bridge_only:
         typecheck = [sys.executable, str(ROOT / "scripts" / "typecheck.py")]
         for name in ("api_types", "tsc"):
             value = getattr(args, name)
             if value:
+                value = (str(Path(value).expanduser().resolve()) if name == "api_types" else
+                         os.path.abspath(shutil.which(value) or os.path.expanduser(value)))
                 typecheck += ["--" + name.replace("_", "-"), value]
         checks += [
-            ("plugin validation", [args.claude, "plugin", "validate", "--strict", str(ROOT)]),
-            ("hook tests", [args.claude, "plugin", "test", str(ROOT)]),
+            ("plugin validation", [claude, "plugin", "validate", "--strict", str(ROOT)]),
+            ("hook tests", [claude, "plugin", "test", str(ROOT)]),
             ("TypeScript", typecheck),
         ]
     checks += [

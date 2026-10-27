@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.11 — 2026-10-27
+
+- Align option descriptions and command help with model routing, labeling caps, and view pagination.
+- Keep doctor model names consistent with execution and preserve useful attribution diagnostics containing file paths.
+- Resolve relative test inputs before subprocesses change directories.
+
 ## 0.1.10 — 2026-10-27
 
 - Use attribution consistently in commands, dashboards, diagnostics, configuration, and documentation.

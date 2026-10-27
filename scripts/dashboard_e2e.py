@@ -21,6 +21,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -515,15 +516,18 @@ def main() -> int:
     parser.add_argument("--attribution-root", type=Path, help="An existing attribution engine checkout for offline diagnosis.")
     parser.add_argument("--decaf-root", dest="attribution_root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.attribution_root is not None:
+        args.attribution_root = args.attribution_root.expanduser().resolve()
     if args.attribution_root and not (args.attribution_root / "awe/__init__.py").is_file():
         parser.error("--attribution-root must contain the attribution engine package")
-    output = args.output or Path(tempfile.mkdtemp(prefix="trajviz-obs-dashboard-e2e-"))
-    if output.resolve().is_relative_to(ROOT):
+    output = (args.output or Path(tempfile.mkdtemp(prefix="trajviz-obs-dashboard-e2e-"))).expanduser().resolve()
+    if output.is_relative_to(ROOT):
         parser.error("--output must be outside the repository")
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         parser.error("--output must be an empty directory")
     output.mkdir(parents=True, exist_ok=True)
-    result = run(args.python, output, attribution_root=args.attribution_root)
+    python = os.path.abspath(shutil.which(args.python) or args.python)
+    result = run(python, output, attribution_root=args.attribution_root)
     print(json.dumps({"output": str(output), "status": result["status"],
                       "callbacks": len(result["callbacks"]), "http_model_requests": result["http_model_requests"],
                       "attribution": result["attribution"], "passed_checks": len(result["checks"]),

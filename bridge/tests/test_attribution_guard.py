@@ -140,6 +140,8 @@ def test_missing_parser_uses_public_setup_guidance_without_attempting_a_probe(se
     ("Set AWE_DECAF_PATH to a DECAF checkout", "Set TRAJVIZ_ATTRIBUTION_PATH to an attribution checkout"),
     ("Reference path /tmp/DECAF/data; DECAF.json; DECAF_AVAILABLE",
      "Reference path /tmp/DECAF/data; DECAF.json; DECAF_AVAILABLE"),
+    ("Check AWE_DECAF_PATH; /tmp/AWE_DECAF_PATH/parser; AWE_DECAF_PATH.json",
+     "Check TRAJVIZ_ATTRIBUTION_PATH; /tmp/AWE_DECAF_PATH/parser; AWE_DECAF_PATH.json"),
 ])
 def test_attribution_messages_normalize_prose_and_public_configuration_only(message, expected):
     assert compat.attribution_message(message) == expected

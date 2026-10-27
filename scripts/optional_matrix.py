@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -341,15 +342,18 @@ def main() -> int:
     parser.add_argument("--prepare-only", action="store_true", help="Write fixtures and native /obs commands only.")
     parser.add_argument("--decaf-root", dest="attribution_root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.attribution_root is not None:
+        args.attribution_root = args.attribution_root.expanduser().resolve()
     if args.attribution_root is not None and not (args.attribution_root / "awe/__init__.py").is_file():
         parser.error("--attribution-root must contain the attribution engine package")
-    output = args.output or Path(tempfile.mkdtemp(prefix="trajviz-obs-optional-"))
-    if output.resolve().is_relative_to(ROOT):
+    output = (args.output or Path(tempfile.mkdtemp(prefix="trajviz-obs-optional-"))).expanduser().resolve()
+    if output.is_relative_to(ROOT):
         parser.error("--output must be outside the repository")
-    if output.exists() and any(output.iterdir()):
-        parser.error("--output must be empty")
+    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+        parser.error("--output must be an empty directory")
     output.mkdir(parents=True, exist_ok=True)
-    result = prepare_inputs(output) if args.prepare_only else run_matrix(args.python, output, attribution_root=args.attribution_root)
+    python = os.path.abspath(shutil.which(args.python) or args.python)
+    result = prepare_inputs(output) if args.prepare_only else run_matrix(python, output, attribution_root=args.attribution_root)
     print(json.dumps({"output": str(output), "result": result}, indent=2))
     return 0
 

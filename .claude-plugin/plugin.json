@@ -1,6 +1,6 @@
 {
   "name": "trajviz-obs",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "TrajViz observability for the current Claude Code session: /obs visualizes and diagnoses the session's trajectory",
   "author": { "name": "Rui Shu" },
   "homepage": "https://github.com/rshu/TrajViz-Obs#readme",
@@ -18,32 +18,32 @@
     "python": {
       "type": "string",
       "title": "Python",
-      "description": "Interpreter to build the environment with (empty: uv, else an available Python 3.11+ on PATH)",
+      "description": "Override the environment's interpreter; otherwise use uv or an available Python 3.11+ on PATH",
       "default": ""
     },
     "llm": {
       "type": "string",
       "title": "LLM",
-      "description": "How LLM features run: session (this session's model) or env (TrajViz's own HTTP client from ANALYZE_*/LABEL_*)",
+      "description": "How LLM features run: session (Claude Code's model client with analysisModel/labelModel) or env (TrajViz's HTTP client from ANALYZE_*/LABEL_*)",
       "default": "session",
       "options": ["session", "env"]
     },
     "analysisModel": {
       "type": "string",
       "title": "Analysis model",
-      "description": "Model for analyze and fixes (session = the session's model)",
+      "description": "Model for analyze and fixes when llm=session; session follows the main model",
       "default": "sonnet"
     },
     "labelModel": {
       "type": "string",
       "title": "Label model",
-      "description": "Model for label",
+      "description": "Model for label when llm=session; session follows the main model",
       "default": "haiku"
     },
     "labelMaxSteps": {
       "type": "number",
       "title": "Label max steps",
-      "description": "Labeling cap without a confirmation",
+      "description": "Maximum assistant steps to classify in a headless session",
       "default": 50
     },
     "watch": {

@@ -47,9 +47,9 @@ def api_types(selected: str | None) -> Path:
 
 
 def compiler(selected: str | None) -> list[str]:
-    command = selected or shutil.which("tsc")
+    command = (shutil.which(selected) or selected) if selected else shutil.which("tsc")
     if command:
-        path = Path(command).expanduser()
+        path = Path(command).expanduser().absolute()
         if path.is_file():
             return [str(path)] if os.access(path, os.X_OK) else ["node", str(path)]
         raise ValueError(f"TypeScript CLI does not exist: {path}")

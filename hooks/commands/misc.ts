@@ -53,7 +53,7 @@ const str = (v: unknown): string => (typeof v === 'string' && v ? v : String(v ?
 
 /** Keep upstream dependency names and installation commands out of attribution availability rows. */
 function attributionReason(reason: string | null, fallback: string): string {
-  return reason && !/decaf/i.test(reason) ? reason : fallback
+  return reason && !/(?<![\w/\\.-])decaf(?:[-_]attribution)?(?![\w/\\-]|\.[\w])/i.test(reason) ? reason : fallback
 }
 
 /**
@@ -69,7 +69,7 @@ export function attributionText(doc: AttributionDoc): string {
   const blamed = doc.scorecard.filter(s => s.blamed).map(s => `${s.capability} (weight ${s.weight}${s.tier ? `, ${s.tier}` : ''})`)
   lines.push(`Blamed capabilities: ${blamed.length ? blamed.join(', ') : 'none'}`)
   if (doc.faults.length) lines.push('Faults:', ...doc.faults.map(f => `- ${str(f.capability)} · ${str(f.error_type)} (confidence ${str(f.confidence)})`))
-  if (doc.notes.length) lines.push('Notes:', ...doc.notes.map(n => `- ${n.replace(/\bdecaf(?:[-_]attribution| attribution)?\b/gi, 'attribution')}`))
+  if (doc.notes.length) lines.push('Notes:', ...doc.notes.map(n => `- ${n.replace(/(?<![\w/\\.-])decaf(?![\w/\\-]|\.[\w])/gi, 'attribution')}`))
   return lines.join('\n')
 }
 
@@ -176,7 +176,7 @@ function llmModeRow(options: PluginOptions): string {
   if (options['llm'] === 'env') return row('llm mode', "env (TrajViz's own client from ANALYZE_*/LABEL_*)")
   const name = (key: string, fallback: string): string => {
     const v = options[key]
-    return typeof v === 'string' && v ? v : fallback
+    return typeof v === 'string' && v.trim() ? v.trim() : fallback
   }
   return row('llm mode', `session (analysisModel ${name('analysisModel', 'sonnet')}, labelModel ${name('labelModel', 'haiku')})`)
 }

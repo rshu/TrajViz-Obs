@@ -280,7 +280,8 @@ def attribution_message(text: str | None) -> str | None:
     """Use public attribution terminology without rewriting paths or upstream API identifiers."""
     if text is None:
         return None
-    text = text.replace("AWE_DECAF_PATH", "TRAJVIZ_ATTRIBUTION_PATH")
+    text = re.sub(r"(?<![\w/\\.-])AWE_DECAF_PATH(?![\w/\\-]|\.[\w])",
+                  "TRAJVIZ_ATTRIBUTION_PATH", text)
     unavailable = re.fullmatch(
         r"(?:DECAF unavailable \()?DECAF (import|configuration) failed \((\w+)\)\)?", text,
         flags=re.IGNORECASE,
