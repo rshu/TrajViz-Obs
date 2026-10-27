@@ -12,7 +12,7 @@ import { fmtInt, fmtPct } from './format'
 import { lockPublication, publicationGeneration } from './publication'
 import { resolveTranscript } from './session'
 import { BUSY_STALE_MS, captureSnapshot, isEmpty } from './snapshot'
-import { readFlags, readRefresh, readSession, stampRefresh } from './state'
+import { readFlags, readLatest, readRefresh, readSession, stampRefresh } from './state'
 import { sessionUsage } from '../render/card'
 import { PANE_ID } from '../render/pane'
 
@@ -74,6 +74,18 @@ let statuslineOverride: boolean | undefined
 export function setStatusLineEnabled(enabled: boolean): void {
   statuslineOverride = enabled
   statusDrawSequence++
+}
+
+/** A reload reapplies config, including clearing a manually pinned old line. */
+export async function resetStatusLine($: EngineInterface, previouslyEnabled: boolean): Promise<void> {
+  const enabled = (await readFlags($)).statusline
+  setStatusLineEnabled(enabled)
+  if (!enabled) {
+    if (previouslyEnabled) $.ui.status(undefined)
+    return
+  }
+  const snap = await readLatest($)
+  if (snap !== null) await syncStatusLine($, snap, publicationGeneration())
 }
 
 /** Draws the status line without holding publication while live usage is read. */

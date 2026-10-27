@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.9 — 2026-10-27
+
+- Validate label destinations before model calls and publish sidecars atomically.
+- Preserve analysis history when requests overlap, and protect model reply files from output overwrites.
+- Bound label settings and require env mode for pacing that would consume Claude Code's hook time budget.
+- Clear a disabled status line on plugin reload.
+- Accept session directories in dashboards and bundles, preserving subagent logs for renamed transcripts.
+
 ## 0.1.8 — 2026-10-26
 
 - Dispatch card and pane actions directly so Claude Code's command re-entry guard cannot swallow them.

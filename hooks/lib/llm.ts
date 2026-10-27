@@ -35,6 +35,9 @@ export type RunResult = { replies: Reply[]; usage: Usage }
 /** The most calls run without asking in an interactive session. */
 export const ASK_ABOVE = 4
 
+/** Pacing waits count against Claude Code's 10-second hook budget. */
+export const SESSION_DELAY_TEXT = '--delay above zero requires llm=env; Claude Code limits hook wait time to 10 seconds.'
+
 /** The ask's option that runs the plan; the other, a dismissal or free text is no. */
 const RUN = 'Run'
 
@@ -106,13 +109,11 @@ export async function runPlan(
   opts: { effort?: ModelEffort; confirm: boolean; cap: number },
 ): Promise<RunResult | null> {
   const prompts = (await loadPrompts($, plan)).slice(0, Math.max(0, opts.cap))
+  if (plan.feature === 'label' && prompts.some(p => (p.delay_s ?? 0) > 0)) throw new Error(SESSION_DELAY_TEXT)
   if (opts.confirm && prompts.length > ASK_ABOVE && !(await confirmCalls($, prompts.length))) return null
   const usage: Usage = { input: 0, cache_read: 0, cache_write: 0, output: 0 }
   const replies: Reply[] = []
   for (const p of prompts) {
-    if (replies.length > 0 && plan.feature === 'label' && (p.delay_s ?? 0) > 0) {
-      await $.clock.sleep(p.delay_s! * 1000)
-    }
     const r = await $.model.complete({
       model,
       ...(p.system ? { system: p.system } : {}),

@@ -342,6 +342,36 @@ test('manual overview and pane refresh keep the enabled status line current, inc
   await ui.unmount()
 })
 
+test('session reload restores the configured status line after a manual override', { options: { statusline: false } }, async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, '')
+  await obs($, 'statusline on')
+  expect(h.statuses.at(-1)).toBe(LINE)
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await h.clock.settle()
+  expect(h.statuses.at(-1)).toBeUndefined()
+  const cleared = h.statuses.length
+  await obs($, '')
+  await h.clock.settle()
+  expect(h.statuses).toHaveLength(cleared)
+})
+
+test('session reload redraws a configured status line without waiting for live usage', { options: { statusline: true } }, async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, '')
+  await obs($, 'statusline off')
+  const blocked = blockUsage(h)
+  const reload = $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await blocked.started
+  await reload
+  expect(h.statuses.at(-1)).toBeUndefined()
+  blocked.release()
+  await h.clock.settle()
+  expect(h.statuses.at(-1)).toBe(LINE)
+})
+
 test('a blocked status-line usage read does not hold up export session selection', { options: { statusline: true, openBrowser: false } }, async ($, on) => {
   const h = host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })

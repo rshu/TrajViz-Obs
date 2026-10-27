@@ -83,7 +83,7 @@ The labeler classifies assistant steps by phase and action, preserves their sour
 
 Use `--assistant-only` to keep only assistant records, `-o /path/to/labels.json` to choose the output, or `--model haiku` to override the model. Only the default session-cache `labels.json` loads automatically; upload sidecars saved elsewhere through **Labels (optional)**.
 
-Custom labeling accepts `--taxonomy /path/to/taxonomy.md`, `--user-phase <tag>`, and `--user-action <tag>`. Use `--max-content-chars` to bound each step's prompt, `--delay` for pacing, and `--max-tokens` for the response limit. In `env` mode, `--temperature` controls sampling, and failed classifications may retry once.
+Custom labeling accepts `--taxonomy /path/to/taxonomy.md`, `--user-phase <tag>`, and `--user-action <tag>`. Use `--max-content-chars` to bound each step's prompt and `--max-tokens` for the response limit. In `env` mode, `--delay` sets pacing (0–3600 seconds), `--temperature` controls sampling, and failed classifications may retry once. Session mode requires zero delay because waits count against Claude Code's hook time limit.
 
 `/obs labels <labels.json> [reference-labels.json]` exports all six label views and, with a reference, both comparison views. In the dashboard's **Comparison** tab, load each run's sidecar to include its phases.
 

@@ -7,10 +7,12 @@ layout. Output is replaced atomically and must not overwrite any session input.
 from __future__ import annotations
 
 import argparse
+import json
 import zipfile
 from pathlib import Path
 
 from .cli import register
+from .compat import resolve_input_path
 from .errors import BridgeError
 from .outputs import protect_inputs, session_files, staged_path
 from .views_cmd import _artifacts
@@ -27,6 +29,19 @@ def _file_dest(dest: Path) -> Path:
     return dest
 
 
+def _session_id(transcript: Path) -> str | None:
+    """A native record's session id; session_files validates it as one safe path component."""
+    with transcript.open("rb") as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except (ValueError, UnicodeError, RecursionError):
+                continue
+            if isinstance(record, dict) and isinstance(record.get("sessionId"), str) and record["sessionId"]:
+                return record["sessionId"]
+    return None
+
+
 def bundle_session(transcript_path: str, dest: Path) -> dict:
     """The transcript and every file under ``<id>/subagents/`` as a ZIP at *dest*: ``{"path", "bytes", "members",
     "members_total"}``.
@@ -35,10 +50,10 @@ def bundle_session(transcript_path: str, dest: Path) -> dict:
     ``members`` names the first :data:`MEMBERS_LISTED` of them (the ZIP holds them all, ``members_total`` counts
     them), so the answer does not grow with the session.
     """
-    transcript = Path(transcript_path)
+    transcript = resolve_input_path(transcript_path).resolve()
     if not transcript.is_file():
         raise BridgeError("not_found", f"No such transcript: {transcript}", path=str(transcript))
-    files = session_files(transcript)
+    files = session_files(transcript, session_id=_session_id(transcript))
     members = [path.relative_to(transcript.parent).as_posix() for path in files]
     protect_inputs([dest], files)
     dest = _file_dest(dest)

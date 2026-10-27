@@ -4,7 +4,7 @@ import { resetServers, stopAll } from './lib/servers'
 import { rememberTranscript } from './lib/session'
 import { isEmpty, parseSnapshotId } from './lib/snapshot'
 import { OBS_TOOL, serveTool } from './lib/tool'
-import { onTurnComplete } from './lib/watch'
+import { onTurnComplete, resetStatusLine } from './lib/watch'
 import { readDashboards, readFlags, readLatest, readPaneTab, readSession, readSnapshotMember, seedFlags } from './lib/state'
 import { commandFailure, dispatch } from './commands/index'
 import { cardColumns, renderCard, showsButtons } from './render/card'
@@ -26,7 +26,12 @@ export const register: Register = (on, options) => {
     } catch (error) {
       $.ui.log(`obs model tool unavailable: ${error instanceof Error ? error.message : String(error)}`, { to: 'debug' })
     }
+    const previouslyEnabled = (await readFlags($)).statusline
     await seedFlags($, options, e.isInteractive)
+    // Usage may be delayed; a status draw must not hold up plugin startup.
+    void resetStatusLine($, previouslyEnabled).catch(error => {
+      $.ui.log(`obs statusline: ${error instanceof Error ? error.message : String(error)}`, { to: 'debug' })
+    })
     // A reload (a config change, /reload-plugins) starts the session hooks
     // again with the old environment's children killed: the state follows.
     await resetServers($)

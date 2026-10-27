@@ -27,6 +27,40 @@ def test_bundle_members_and_trajviz_reads_it(tmp_session_with_child, tmp_artifac
     assert len(tv.load(out["path"]).view("agent_tokens").data["agents"]) == 2
 
 
+@pytest.mark.parametrize("selector", ["directory", "renamed", "symlink"])
+def test_bundle_roundtrip_keeps_children_for_every_native_selector(selector, tmp_session, tmp_artifacts,
+                                                                 tmp_path, run_cli):
+    original = Path(tmp_session.transcript)
+    if selector == "directory":
+        source = original.with_suffix("")
+    elif selector == "renamed":
+        source = original.with_name("renamed.jsonl")
+        original.rename(source)
+    else:
+        source = tmp_path / "aliases" / "alias.jsonl"
+        source.parent.mkdir()
+        source.symlink_to(original)
+    expected = tv.load(str(source))
+    code, result = run_cli(["bundle", "--transcript", str(source), "--artifacts", str(tmp_artifacts)])
+    assert code == 0 and result["members_total"] == 3
+    assert f"{tmp_session.id}/subagents/workflows/wf_1/agent-abc.jsonl" in result["members"]
+    restored = tv.load(result["path"])
+    assert len(restored.steps) == len(expected.steps)
+    assert {step.get("agent") for step in restored.steps} == {step.get("agent") for step in expected.steps}
+    assert {step.get("agent") for step in restored.steps} >= {"", "abc"}
+
+
+def test_renamed_bundle_protects_metadata_session_children(tmp_session, tmp_artifacts):
+    original = Path(tmp_session.transcript)
+    renamed = original.with_name("renamed.jsonl")
+    original.rename(renamed)
+    child = next((tmp_session.dir / tmp_session.id).rglob("*.jsonl"))
+    previous = child.read_bytes()
+    with pytest.raises(BridgeError) as caught:
+        bundle_session(str(renamed), child)
+    assert caught.value.code == "bad_output" and child.read_bytes() == previous
+
+
 def test_bundle_skips_symlinks(tmp_session_with_child, tmp_artifacts, tmp_path):
     secret = tmp_path / "secret.txt"
     secret.write_text("not part of the session")

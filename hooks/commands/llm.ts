@@ -1,7 +1,7 @@
 import type { CommandRunResult, EngineInterface, PluginOptions } from 'claude-code'
 import { tokenize } from '../lib/args'
 import { runBridge, spawnBridge } from '../lib/bridge'
-import { ASK_ABOVE, confirmCalls, planLine, resolveModel, runPlan, usageLine, type Feature, type PromptPlan } from '../lib/llm'
+import { ASK_ABOVE, SESSION_DELAY_TEXT, confirmCalls, planLine, resolveModel, runPlan, usageLine, type Feature, type PromptPlan } from '../lib/llm'
 import { artifactsDir } from '../lib/paths'
 import { ensureReady, sessionArgv } from '../lib/snapshot'
 import { readFlags } from '../lib/state'
@@ -84,6 +84,8 @@ function extraLabelArgs(ctx: CommandContext): string[] | string {
     if (value === undefined) continue
     const number = typeof value === 'string' && value.trim() ? Number(value) : Number.NaN
     if (!Number.isFinite(number) || number < 0) return `--${name} must be a finite number of zero or more.`
+    if (name === 'delay' && number > 3600) return '--delay must be from 0 to 3600 seconds.'
+    if (name === 'delay' && number > 0 && ctx.options['llm'] !== 'env') return SESSION_DELAY_TEXT
     if (name === 'temperature' && ctx.options['llm'] !== 'env') return '--temperature requires llm=env; Claude Code’s session model API does not expose temperature.'
     argv.push(`--${name}`, String(number))
   }
@@ -197,7 +199,8 @@ export async function llm($: EngineInterface, ctx: CommandContext): Promise<Comm
   try {
     await ensureReady($, ctx.options)
     const { transcript, argv } = await sessionArgv($, req.spec)
-    const plan = await runBridge<PromptPlan | Empty>($, ['llm-prompt', ...argv, '--feature', req.feature, ...req.argv], { timeoutMs: PROMPT_TIMEOUT_MS })
+    const plan = await runBridge<PromptPlan | Empty>($, ['llm-prompt', ...argv, '--feature', req.feature, ...req.argv,
+      ...(req.out ? ['--out', req.out] : [])], { timeoutMs: PROMPT_TIMEOUT_MS })
     if ('empty' in plan) return { text: EMPTY_TEXT }
     if (ctx.options['llm'] === 'env') return { text: await direct($, req, plan, argv, interactive) }
     return { text: await viaSession($, ctx, req, plan, argv, transcript.sessionId, interactive) }

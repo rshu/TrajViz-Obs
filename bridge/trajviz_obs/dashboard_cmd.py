@@ -25,7 +25,13 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 from .cli import register
-from .compat import dashboard_server_options, dashboard_window_callback, install_attribution_guard, load_plugins
+from .compat import (
+    dashboard_server_options,
+    dashboard_window_callback,
+    install_attribution_guard,
+    load_plugins,
+    resolve_input_path,
+)
 from .dashboard_ui import decorate_dashboard, presentation
 from .errors import BridgeError
 from .sessions import _positive_int
@@ -252,7 +258,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
 @register("dashboard")
 def _serve_dashboard(args: argparse.Namespace) -> None:
     _dashboard()
-    path = Path(args.transcript).resolve()
+    # The same directory selector accepted by /obs and /obs view must preload
+    # its real parent file, so Gradio keeps its sibling subagent discovery.
+    path = resolve_input_path(args.transcript).resolve()
     if not path.is_file():
         raise BridgeError("not_found", f"No such transcript: {path}", path=str(path))
     load_plugins()  # as TrajViz's own dashboard command does on start, so the app reads plugins' formats

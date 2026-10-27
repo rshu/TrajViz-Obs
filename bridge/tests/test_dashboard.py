@@ -258,6 +258,35 @@ def test_missing_transcript_is_not_found(tmp_path, run_cli):
     assert code == 1 and out["error"]["code"] == "not_found"
 
 
+@pytest.mark.parametrize("layout", ["native", "session-jsonl", "single-parent"])
+def test_dashboard_directory_selector_preloads_the_actual_parent(layout, tmp_session, tmp_path, run_cli,
+                                                                monkeypatch):
+    from trajviz_obs import dashboard_cmd
+
+    if layout == "native":
+        directory = tmp_session.dir / tmp_session.id
+        selected = Path(tmp_session.transcript)
+    else:
+        directory = tmp_path / "saved-run"
+        directory.mkdir()
+        selected = directory / ("session.jsonl" if layout == "session-jsonl" else "parent.jsonl")
+        selected.write_bytes(Path(tmp_session.transcript).read_bytes())
+    launched = []
+
+    def launch(path, *_args, **_kwargs):
+        launched.append(path)
+        dashboard_cmd._announce("http://127.0.0.1:1234/")
+
+    monkeypatch.setattr(dashboard_cmd, "serve_insight", launch)
+    code, result = run_cli(["dashboard", "--transcript", str(directory), "--window", "1000000"])
+    assert code == 0 and result["url"] == "http://127.0.0.1:1234/" and launched == [str(selected.resolve())]
+    app = build_preloaded_insight(launched[0], window=1_000_000)
+    run = _loaded_run(_loader(app), selected)
+    assert run.context_pressure()["stats"]["window_limit"] == 1_000_000
+    if layout == "native":
+        assert any(step.get("agent") == "abc" for step in run.steps)
+
+
 def test_missing_data_root_is_not_found(tmp_path, run_cli):
     code, out = run_cli(["converge", "--data-root", str(tmp_path / "gone")])
     assert code == 1 and out["error"]["code"] == "not_found"

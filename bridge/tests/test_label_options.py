@@ -148,7 +148,8 @@ def test_env_label_honors_upstream_generation_settings_and_paces_only_actual_cal
     assert all(p["max_tokens"] == 1024 for p in plan["prompts"])  # host session calls keep their stated cap
 
 
-@pytest.mark.parametrize("tokens,temperature", [("invalid", "nan"), ("-5", "-0.1"), ("0", "inf")])
+@pytest.mark.parametrize("tokens,temperature", [("invalid", "nan"), ("-5", "-0.1"), ("0", "inf"),
+                                              ("64001", "-1"), ("9" * 400, "1e999")])
 def test_invalid_env_generation_settings_use_upstream_defaults(tokens, temperature, provider, monkeypatch, taxonomy,
                                                               fixture_run, fixture_session, tmp_path):
     monkeypatch.setenv("LABEL_MAX_TOKENS", tokens)
@@ -165,9 +166,112 @@ def test_explicit_reply_cap_overrides_environment(provider, monkeypatch, taxonom
     assert provider.calls[0]["max_tokens"] == 256
 
 
+def test_largest_env_reply_cap_is_preserved(provider, monkeypatch, fixture_run, fixture_session, tmp_path):
+    monkeypatch.setenv("LABEL_MAX_TOKENS", "64000")
+    llm_cmd.direct(fixture_run, "label", **options(fixture_session, max_steps=1), out_path=tmp_path / "labels.json")
+    assert provider.calls[0]["max_tokens"] == 64000
+
+
 def test_identical_truncated_prompts_cannot_bypass_the_real_provider_step_cap(provider, taxonomy, fixture_run,
                                                                           fixture_session, tmp_path):
     result = llm_cmd.direct(fixture_run, "label", **options(fixture_session, max_steps=2,
         label_options={"taxonomy_path": str(taxonomy), "max_content_chars": 1}), out_path=tmp_path / "labels.json")
     assert len(provider.calls) == 2 and provider.calls[0]["prompt"] == provider.calls[1]["prompt"] == "S"
     assert result["summary"]["classified"] == 2 and result["errors"] == []
+
+
+@pytest.mark.parametrize("layout", ["directory", "parent-file"])
+def test_bad_label_destination_is_rejected_before_any_provider_call(layout, provider, taxonomy, fixture_run,
+                                                                   fixture_session, tmp_path):
+    destination = tmp_path / "output"
+    if layout == "directory":
+        destination.mkdir()
+    else:
+        destination.write_text("Keep this parent file")
+        destination = destination / "labels.json"
+    with pytest.raises(BridgeError) as caught:
+        llm_cmd.direct(fixture_run, "label", **options(fixture_session,
+            label_options={"taxonomy_path": str(taxonomy)}), out_path=destination)
+    assert caught.value.code == "bad_path" and provider.calls == []
+    assert not list(tmp_path.rglob(".trajviz-obs-*"))
+    if layout == "parent-file":
+        assert destination.parent.read_text() == "Keep this parent file"
+
+
+@pytest.mark.parametrize("name", ["delay", "temperature"])
+def test_unrepresentable_label_numeric_options_return_structured_errors(name, provider, fixture_run,
+                                                                       fixture_session, tmp_path):
+    with pytest.raises(BridgeError) as caught:
+        llm_cmd.direct(fixture_run, "label", **options(fixture_session, label_options={name: 10 ** 400}),
+                       out_path=tmp_path / "labels.json")
+    assert caught.value.code == "bad_label_option" and provider.calls == []
+
+
+@pytest.mark.parametrize("delay", [-0.001, 3600.001, 1e308])
+def test_delay_bound_is_checked_before_capture_or_provider_work(delay, provider, fixture_run, fixture_session, tmp_path):
+    args = options(fixture_session, label_options={"delay": delay})
+    for operation in (llm_cmd.plan_prompts, llm_cmd.direct):
+        with pytest.raises(BridgeError) as caught:
+            operation(fixture_run, "label", **args, out_path=tmp_path / "labels.json")
+        assert caught.value.code == "bad_label_option" and "0 to 3600" in caught.value.message
+    assert provider.calls == []
+
+
+def test_delay_largest_supported_value_is_preserved_in_plan(fixture_run, fixture_session):
+    plan = llm_cmd.plan_prompts(fixture_run, "label", **options(fixture_session, label_options={"delay": 3600}))
+    assert all(prompt["delay_s"] == 3600 for prompt in plan["prompts"])
+
+
+@pytest.mark.parametrize("layout", ["directory", "parent-file", "root", "default-directory", "default-parent-file"])
+def test_native_label_plan_rejects_bad_output_before_capturing_prompts(layout, fixture_session, tmp_path,
+                                                                     monkeypatch, run_cli):
+    artifacts, destination = tmp_path / "artifacts", tmp_path / "output"
+    if layout == "root":
+        destination = Path(destination.anchor)
+    elif layout == "directory":
+        destination.mkdir()
+    elif layout == "parent-file":
+        destination.write_text("Keep the parent file")
+        destination /= "labels.json"
+    elif layout == "default-directory":
+        artifacts.mkdir()
+        (artifacts / "labels.json").mkdir()
+    else:
+        artifacts.write_text("Keep the artifacts parent file")
+    def no_capture(*_args, **_kwargs):
+        pytest.fail("An invalid output must be refused before capturing or sending model prompts")
+    monkeypatch.setattr(llm_cmd, "_capture", no_capture)
+    argv = ["llm-prompt", "--feature", "label", "--transcript", str(fixture_session), "--artifacts", str(artifacts)]
+    if not layout.startswith("default"):
+        argv += ["--out", str(destination)]
+    code, result = run_cli(argv)
+    assert code == 1 and result["error"]["code"] == "bad_path"
+    assert not (artifacts / "prompts-label.json").exists()
+    assert not list(tmp_path.rglob(".trajviz-obs-*"))
+
+
+@pytest.mark.parametrize("source", ["transcript", "taxonomy", "child"])
+def test_native_label_plan_protects_every_input_before_capturing(source, tmp_session, taxonomy, tmp_path,
+                                                              monkeypatch, run_cli):
+    destination = {"transcript": Path(tmp_session.transcript), "taxonomy": taxonomy,
+                   "child": next(Path(tmp_session.transcript).with_suffix("").rglob("*.jsonl"))}[source]
+    original = destination.read_bytes()
+    def no_capture(*_args, **_kwargs):
+        pytest.fail("An input collision must be refused before capturing prompts")
+    monkeypatch.setattr(llm_cmd, "_capture", no_capture)
+    code, result = run_cli(["llm-prompt", "--feature", "label", "--transcript", tmp_session.transcript,
+                           "--taxonomy", str(taxonomy), "--artifacts", str(tmp_path / "artifacts"),
+                           "--out", str(destination)])
+    assert code == 1 and result["error"]["code"] == "bad_output" and destination.read_bytes() == original
+
+
+def test_label_output_preflight_preserves_destination_and_does_not_bind_its_path_to_hash(fixture_run,
+                                                                                     fixture_session, tmp_path):
+    destination = tmp_path / "labels.json"
+    destination.write_text("Keep the previous labels until applying replies")
+    args = options(fixture_session)
+    original = llm_cmd.plan_prompts(fixture_run, "label", **args)
+    checked = llm_cmd.plan_prompts(fixture_run, "label", **args, out_path=destination)
+    assert checked["hash"] == original["hash"]
+    assert destination.read_text() == "Keep the previous labels until applying replies"
+    assert not list(tmp_path.glob(".trajviz-obs-*"))

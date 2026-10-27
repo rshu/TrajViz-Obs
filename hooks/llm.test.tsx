@@ -1,6 +1,6 @@
 import { expect, mock, test, type MockClock } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { planLine, usageLine, type PromptPlan, type Usage } from './lib/llm'
+import { SESSION_DELAY_TEXT, planLine, usageLine, type PromptPlan, type Usage } from './lib/llm'
 import { analyzeArgs, LIMIT_TEXT, MAX_STEPS_TEXT } from './commands/llm'
 import { SNAPSHOT } from './testdata/snapshot'
 
@@ -333,7 +333,7 @@ test('label takes its flags, labels with labelModel (or --model), and names the 
   const { ran, completions, asked, files } = host(on, { bridge: { 'llm-prompt': json(planOf('label', 3)), 'llm-apply': json(labelled) } })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const out = await obs($, 'label -o /tmp/l.json --assistant-only --max-steps 3')
-  expect(bridgeCalls(ran)[0]).toEqual(['llm-prompt', ...SESSION_ARGV, '--feature', 'label', '--max-steps', '3', '--assistant-only'])
+  expect(bridgeCalls(ran)[0]).toEqual(['llm-prompt', ...SESSION_ARGV, '--feature', 'label', '--max-steps', '3', '--assistant-only', '--out', '/tmp/l.json'])
   expect(completions.map(c => c.model)).toEqual(['haiku', 'haiku', 'haiku'])
   expect(completions[0]).toEqual({ model: 'haiku', system: 'SYS', prompt: 'P0', maxTokens: 1024, effort: undefined, timeoutMs: 120_000 })
   expect(asked).toEqual([])
@@ -398,29 +398,22 @@ test('invalid label options stop before setup, planning or model calls', async (
     expect((await obs($, `label ${flag}`)).text).toMatch(/needs|must be/)
   }
   expect((await obs($, 'label --temperature 0.3')).text).toContain('--temperature requires llm=env')
+  for (const delay of ['0.25', '3', '3600']) expect((await obs($, `label --delay ${delay}`)).text).toBe(SESSION_DELAY_TEXT)
+  expect((await obs($, 'label --delay 3601')).text).toBe('--delay must be from 0 to 3600 seconds.')
   expect(bridgeCalls(ran)).toEqual([])
   expect(completions).toEqual([])
 })
 
-test('session labeling paces only the actual capped calls with no first or last wait', { options: { labelMaxSteps: 2 } }, async ($, on) => {
+test('a paced session plan is refused before confirmation or model calls', { options: { labelMaxSteps: 2 } }, async ($, on) => {
   const plan = planOf('label', 3)
   for (const prompt of plan.prompts!) prompt.delay_s = 0.25
-  let first: () => void = () => {}
-  const started = new Promise<void>(resolve => { first = resolve })
-  const h = host(on, { onCompletion: first, bridge: { 'llm-prompt': json(plan),
+  const h = host(on, { bridge: { 'llm-prompt': json(plan),
     'llm-apply': json({ path: '/tmp/labels.json', summary: {}, text: 'Labels', errors: [] }) } })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
-  const pending = obs($, 'label --max-steps 2 --delay 0.25')
-  await started
-  await h.clock.settle()
-  expect(h.completions).toHaveLength(1)
-  await h.clock.advance(249)
-  expect(h.completions).toHaveLength(1)
-  await h.clock.advance(1)
-  expect(h.completions).toHaveLength(2)
-  expect((await pending).text).toContain('usage: 2,000 input')
-  await h.clock.advance(1000)
-  expect(h.completions).toHaveLength(2)
+  expect((await obs($, 'label --max-steps 2')).text).toContain(SESSION_DELAY_TEXT)
+  expect(h.completions).toEqual([])
+  expect(h.asked).toEqual([])
+  expect(bridgeCalls(h.ran).map(call => call[0])).toEqual(['llm-prompt'])
 })
 
 test('a plan too large to inline is read from its file', async ($, on) => {
