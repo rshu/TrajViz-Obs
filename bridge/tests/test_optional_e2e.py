@@ -1,4 +1,4 @@
-"""Real optional collectors, synthetic native stores, and honest missing-DECAF behavior."""
+"""Real optional collectors, synthetic native stores, and honest behavior when attribution setup is missing."""
 
 from __future__ import annotations
 

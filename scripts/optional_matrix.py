@@ -3,7 +3,7 @@
 
 The real bridge dispatches the upstream CLIs; exported trajectories are reloaded and all views validated.
 Artifacts and a native-command manifest stay in an explicitly empty output folder outside the repository.
-DECAF verdict execution additionally requires its real external checkout/reference set; an unavailable
+Attribution verdict execution additionally requires its real external checkout/reference set; an unavailable
 notice is recorded only as fallback coverage, never as a successful attribution diagnosis.
 """
 
@@ -170,9 +170,9 @@ def prepare_inputs(output: Path) -> dict:
     return manifest
 
 
-def prepare_decaf_reference(output: Path) -> dict[str, str]:
+def prepare_attribution_reference(output: Path) -> dict[str, str]:
     """A tiny gold-grounded failure, using the collector's actual OpenCode export as canonical input."""
-    root = output / "decaf-reference"
+    root = output / "attribution-reference"
     instance = "optional-case"
     source = root / "data/trajectory/opencode_glm" / f"{instance}.json"
     source.parent.mkdir(parents=True, exist_ok=True)
@@ -192,12 +192,12 @@ def prepare_decaf_reference(output: Path) -> dict[str, str]:
             "agent": "opencode_glm", "instance": instance}
 
 
-def run_matrix(python: str, output: Path, *, decaf_root: Path | None = None) -> dict:
+def run_matrix(python: str, output: Path, *, attribution_root: Path | None = None) -> dict:
     from jsonschema import Draft202012Validator
 
     fixtures = prepare_inputs(output)
     ledger: dict = {"status": "running", "commands": [], "schema_validations": 0,
-                    "attribution_verdict": "not_tested: external DECAF checkout/reference required"}
+                    "attribution_verdict": "not_tested: external attribution engine checkout/reference required"}
     env = {**os.environ, **fixtures["environment"], "XDG_CACHE_HOME": str(output / "cache"),
            "CLAUDE_CONFIG_DIR": str(output / "config")}
     before = source_hashes(output / "inputs")
@@ -283,24 +283,24 @@ def run_matrix(python: str, output: Path, *, decaf_root: Path | None = None) -> 
         assert source_hashes(output / "inputs") == before, "A collector changed its source files"
         # Exercise missing-dependency behavior separately from the optional real-checkout diagnosis.
         # A fallback message cannot stand in for a tested attribution verdict.
-        env["AWE_DECAF_PATH"] = str(output / "missing-decaf")
-        if call("doctor")["decaf"]["available"] is False:
+        env["TRAJVIZ_ATTRIBUTION_PATH"] = str(output / "missing-attribution")
+        if call("doctor")["attribution"]["available"] is False:
             fallback = call("attribution", "--transcript", str(exports / "codearts.json"),
                             "--reference-root", str(output / "missing-reference"),
                             "--agent", "codearts", "--instance", "synthetic")
-            assert fallback["available"] is False and "DECAF unavailable" in fallback["reason"]
+            assert fallback["available"] is False and "Attribution parser unavailable" in fallback["reason"]
             assert not fallback["faults"] and not fallback["scorecard"] and fallback["primary"] is None
             ledger["attribution_fallback"] = "passed: missing dependency, no fabricated verdict"
         else:
-            ledger["attribution_fallback"] = "not_tested: a real default DECAF checkout was discovered"
-        if decaf_root is not None:
-            reference_data = prepare_decaf_reference(output)
+            ledger["attribution_fallback"] = "not_tested: a real default attribution engine checkout was discovered"
+        if attribution_root is not None:
+            reference_data = prepare_attribution_reference(output)
             reference, canonical = Path(reference_data["reference_root"]), Path(reference_data["transcript"])
             original_reference = source_hashes(reference)
-            env.update({"AWE_DECAF_PATH": str(decaf_root), "AWE_ARGUS_ROOT": str(reference),
+            env.update({"TRAJVIZ_ATTRIBUTION_PATH": str(attribution_root), "AWE_ARGUS_ROOT": str(reference),
                         "TRAJVIZ_REFERENCE_ROOT": str(reference), "AWE_PROJECT_DATA": str(output / "awe-cache"),
                         "AWE_OUTPUT_DATA": str(output / "awe-output"), "OPENROUTER_API_KEY": ""})
-            assert call("doctor")["decaf"]["available"] is True
+            assert call("doctor")["attribution"]["available"] is True
             common = ["--reference-root", str(reference), "--agent", "opencode_glm", "--instance", "optional-case"]
             verdict = call("attribution", "--transcript", str(canonical), *common)
             assert verdict["available"] is True, verdict.get("reason")
@@ -308,7 +308,7 @@ def run_matrix(python: str, output: Path, *, decaf_root: Path | None = None) -> 
             assert verdict["primary"] == {"capability": "code_localization", "error_type": "missed_relevant_file"}
             assert verdict["faults"] and all(fault["evidence_chain"]["links"] for fault in verdict["faults"])
             assert verdict["used_judge"] is False and verdict["arbiter"] is None
-            write_json(output / "decaf-attribution.json", verdict)
+            write_json(output / "attribution.json", verdict)
             different = output / "mismatched-trajectory.json"
             different.write_bytes(canonical.read_bytes() + b"\n ")
             rejected = call("attribution", "--transcript", str(different), *common)
@@ -321,9 +321,9 @@ def run_matrix(python: str, output: Path, *, decaf_root: Path | None = None) -> 
             write_json(outcome, {"optional-case": False})
             assert call("attribution", "--transcript", str(canonical), *common)["available"] is True
             assert source_hashes(reference) == original_reference
-            ledger["attribution_verdict"] = "passed: real DECAF objective diagnosis, identity refusal, resolved-case refusal, recovery"
+            ledger["attribution_verdict"] = "passed: real attribution objective diagnosis, identity refusal, resolved-case refusal, recovery"
             fixtures["environment"].update({name: env[name] for name in (
-                "AWE_DECAF_PATH", "AWE_ARGUS_ROOT", "TRAJVIZ_REFERENCE_ROOT", "AWE_PROJECT_DATA", "AWE_OUTPUT_DATA",
+                "TRAJVIZ_ATTRIBUTION_PATH", "AWE_ARGUS_ROOT", "TRAJVIZ_REFERENCE_ROOT", "AWE_PROJECT_DATA", "AWE_OUTPUT_DATA",
                 "OPENROUTER_API_KEY")})
             fixtures["commands"].append(f'/obs attribution --session "{canonical}" {shlex.join(common)}')
             write_json(output / "native-commands.json", fixtures)
@@ -337,18 +337,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--decaf-root", type=Path, help="An existing real awe checkout; enables offline objective verdict checks.")
+    parser.add_argument("--attribution-root", type=Path, help="An existing attribution engine checkout; enables offline objective verdict checks.")
     parser.add_argument("--prepare-only", action="store_true", help="Write fixtures and native /obs commands only.")
+    parser.add_argument("--decaf-root", dest="attribution_root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.decaf_root is not None and not (args.decaf_root / "awe/__init__.py").is_file():
-        parser.error("--decaf-root must contain awe/__init__.py")
+    if args.attribution_root is not None and not (args.attribution_root / "awe/__init__.py").is_file():
+        parser.error("--attribution-root must contain the attribution engine package")
     output = args.output or Path(tempfile.mkdtemp(prefix="trajviz-obs-optional-"))
     if output.resolve().is_relative_to(ROOT):
         parser.error("--output must be outside the repository")
     if output.exists() and any(output.iterdir()):
         parser.error("--output must be empty")
     output.mkdir(parents=True, exist_ok=True)
-    result = prepare_inputs(output) if args.prepare_only else run_matrix(args.python, output, decaf_root=args.decaf_root)
+    result = prepare_inputs(output) if args.prepare_only else run_matrix(args.python, output, attribution_root=args.attribution_root)
     print(json.dumps({"output": str(output), "result": result}, indent=2))
     return 0
 

@@ -27,6 +27,14 @@ def test_preloaded_app_has_load_event(fixture_session):
     assert any("tv-load-btn" in (getattr(d, "js", "") or "") for d in app.fns.values()) or any("tv-load-btn" in str(c) for c in app.config["dependencies"])
 
 
+def test_preloaded_attribution_heading_and_instructions_use_public_terminology(fixture_session):
+    app = build_preloaded_insight(str(fixture_session))
+    components = json.dumps(app.get_config_file()["components"], default=str)
+    assert "Capability failure attribution" in components
+    assert "decaf" not in components.lower()
+    assert any(isinstance(block, gradio.Tab) and block.label == "Attribution" for block in app.blocks.values())
+
+
 def test_preload_sets_the_trajectory_file_to_the_transcript(fixture_session):
     app = build_preloaded_insight(str(fixture_session))
     files = [b for b in app.blocks.values() if isinstance(b, gradio.File) and str(b.label).startswith("Trajectory")]

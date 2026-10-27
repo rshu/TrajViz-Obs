@@ -23,7 +23,7 @@ from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
 
 from e2e_fixtures import prepare_comparison_inputs
-from optional_matrix import prepare_decaf_reference, source_hashes
+from optional_matrix import prepare_attribution_reference, source_hashes
 from optional_matrix import prepare_inputs as prepare_collectors
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -358,7 +358,7 @@ def exercise_command_matrix(turn, output: Path, session_id: str) -> dict:
         (f'/obs scorecard "{output / "export/trajectory.json"}" --labels live,export', r'Scorecard views written'),
         ('/obs collect --version', r'agent-trajviz-collect \d'),
         ('/obs collect cursor --help', r'usage:'),
-        ('/obs attribution', r'DECAF|not available|unavailable|agent override|no gold reference'),
+        ('/obs attribution', r'Attribution|not available|unavailable|agent override|no gold reference'),
         ('/obs health --limit 0', r'limit.*(?:1|500)'),
         ('/obs view missing_view', r'No view'),
         ('/obs view health nonsense=x', r'No option'),
@@ -393,7 +393,8 @@ def main() -> None:
     parser.add_argument('--test-subagent', action='store_true', help='Spawn one real native subagent and verify merging')
     parser.add_argument('--test-command-matrix', action='store_true', help='Exercise all views, commands and invalid inputs')
     parser.add_argument('--budget', default='5')
-    parser.add_argument('--decaf-root', type=Path, help='A real awe checkout for offline native attribution checks.')
+    parser.add_argument('--attribution-root', type=Path, help='An existing attribution engine checkout for offline native attribution checks.')
+    parser.add_argument('--decaf-root', dest='attribution_root', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.test_llm_all and args.skip_llm:
         parser.error('--test-llm-all cannot be combined with --skip-llm')
@@ -413,9 +414,9 @@ def main() -> None:
     collectors = prepare_collectors(output / 'collectors') if args.test_command_matrix else None
     if collectors:
         env.update(collectors['environment'])
-    if args.decaf_root:
-        require((args.decaf_root / 'awe/__init__.py').is_file(), '--decaf-root must contain awe/__init__.py')
-        env.update({'AWE_DECAF_PATH': str(args.decaf_root.resolve()), 'AWE_PROJECT_DATA': str(output / 'awe-cache'),
+    if args.attribution_root:
+        require((args.attribution_root / 'awe/__init__.py').is_file(), '--attribution-root must contain the attribution engine package')
+        env.update({'TRAJVIZ_ATTRIBUTION_PATH': str(args.attribution_root.resolve()), 'AWE_PROJECT_DATA': str(output / 'awe-cache'),
                     'AWE_OUTPUT_DATA': str(output / 'awe-output'), 'OPENROUTER_API_KEY': ''})
     tools = 'Bash,Read,Write,Edit' + (',Agent' if args.test_subagent else '')
     if args.test_obs_tool:
@@ -548,15 +549,15 @@ Use the tools to do this work; do not merely describe commands.'''
                       lambda: exercise_command_matrix(turn, output, ledger['session_id']))
                 check('native collector exports, reloads and source preservation',
                       lambda: exercise_collectors(turn, output, collectors))
-                if args.decaf_root:
-                    reference = prepare_decaf_reference(output / 'collectors')
+                if args.attribution_root:
+                    reference = prepare_attribution_reference(output / 'collectors')
                     attribution = turn(f'/obs attribution --session "{reference["transcript"]}" '
                                        f'--reference-root "{reference["reference_root"]}" '
                                        f'--agent {reference["agent"]} --instance {reference["instance"]}',
-                                       'native real AWE objective attribution', expected=r'DECAF attribution \(reference\)')
+                                       'native real objective attribution', expected=r'Attribution \(reference\)')
                     require('code_localization' in attribution['result'] and 'missed_relevant_file' in attribution['result'],
                             'Native attribution lost the known objective diagnosis')
-                    ledger['checks'].append({'label': 'real AWE native diagnosis', 'status': 'passed',
+                    ledger['checks'].append({'label': 'real attribution native diagnosis', 'status': 'passed',
                                              'mode': 'offline objective detectors, no model judging'})
                     turn('/obs', 'current session after attribution', expected=r'obs snapshot \d+')
                 check('native bundle contains the parent and real subagent',

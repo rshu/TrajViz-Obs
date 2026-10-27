@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from .compat import attribution_message
+
 if TYPE_CHECKING:
     import gradio as gr
 
@@ -232,6 +234,12 @@ def decorate_dashboard(app: gr.Blocks, kind: str) -> gr.Blocks:
     import gradio as gr
 
     for block in app.blocks.values():
+        for attribute in ("value", "label", "info", "placeholder"):
+            value = getattr(block, attribute, None)
+            if isinstance(value, str):
+                if isinstance(block, gr.HTML) and attribute == "value":
+                    value = value.replace("DECAF capability failure attribution", "Capability failure attribution")
+                setattr(block, attribute, attribution_message(value))
         if kind == "converge" and isinstance(block, gr.File):
             block.height = 140
         extra = "obs-chart" if isinstance(block, gr.Plot) else "obs-markdown" if isinstance(block, gr.Markdown) else None

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.10 — 2026-10-27
+
+- Use attribution consistently in commands, dashboards, diagnostics, configuration, and documentation.
+
 ## 0.1.9 — 2026-10-27
 
 - Validate label destinations before model calls and publish sidecars atomically.
@@ -14,7 +18,7 @@
 - Refresh an enabled status line after manual overview and pane refreshes, including empty sessions.
 - Keep slash commands available when the host disables model tool registration.
 - Expose custom label taxonomies, deterministic user tags, content limits, pacing, and model sampling options.
-- Refuse DECAF capability verdicts when its parser loses native Claude JSONL tool evidence, in both CLI and dashboard.
+- Refuse capability attribution when its parser loses native Claude JSONL tool evidence, in both CLI and dashboard.
 - Expand reproducible coverage across all eight trajectory formats, collectors, comparisons, label views, dashboard callbacks, and real Claude Code sessions.
 
 ## 0.1.7 — 2026-10-26

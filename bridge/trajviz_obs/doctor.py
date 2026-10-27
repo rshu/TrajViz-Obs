@@ -1,4 +1,4 @@
-"""``doctor``: what this environment can do (Python, TrajViz, its plugins, extras, DECAF, LLM settings)."""
+"""``doctor``: what this environment can do (Python, TrajViz, plugins, extras, attribution, LLM settings)."""
 
 from __future__ import annotations
 
@@ -54,6 +54,7 @@ def doctor_info(cwd: str | None) -> dict[str, Any]:
     """Describe the environment; LLM settings are read with *cwd*'s ``.env`` (names only, never values)."""
     if cwd and not os.path.isdir(cwd):
         raise BridgeError("not_found", f"No such directory: {cwd}", path=cwd)
+    compat.configure_attribution_environment()
     ok, reason = attribution.available()
     extras = {extra: all(_importable(name) for name in names) for extra, names in EXTRAS.items()}
     return {
@@ -61,14 +62,14 @@ def doctor_info(cwd: str | None) -> dict[str, Any]:
         "trajviz": {"version": agent_trajviz.__version__, "path": os.path.dirname(agent_trajviz.__file__)},
         "plugins": _plugins(),
         "extras": extras,
-        "decaf": {"available": ok, "reason": reason},
+        "attribution": {"available": ok, "reason": compat.attribution_message(reason)},
         "llm_env": _llm_env(cwd, extras["llm"]),
         "reference_root": os.environ.get("TRAJVIZ_REFERENCE_ROOT") or None,
     }
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
-    p = sub.add_parser("doctor", help="Report Python, TrajViz, extras, DECAF and LLM configuration.")
+    p = sub.add_parser("doctor", help="Report Python, TrajViz, extras, attribution and LLM configuration.")
     p.add_argument("--cwd", default=None, help="Directory whose .env is read for LLM settings (default: CWD).")
 
 

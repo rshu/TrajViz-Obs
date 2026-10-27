@@ -15,7 +15,7 @@ def test_doctor_envelope(run_cli):
     assert code == 0
     assert out["trajviz"]["version"].startswith("0.2")
     assert set(out["extras"]) == {"charts", "llm", "app"}
-    assert "available" in out["decaf"] and "ready" in out["llm_env"]
+    assert "available" in out["attribution"] and "ready" in out["llm_env"]
 
 
 def test_doctor_details(run_cli, monkeypatch, tmp_path, no_llm_env):
@@ -25,8 +25,9 @@ def test_doctor_details(run_cli, monkeypatch, tmp_path, no_llm_env):
     assert out["python"] == ".".join(map(str, sys.version_info[:3]))
     assert out["trajviz"]["path"] == str(Path(agent_trajviz.__file__).parent)
     assert all(isinstance(v, bool) for v in out["extras"].values())
-    assert isinstance(out["decaf"]["available"], bool)
-    assert out["decaf"]["reason"] is None or isinstance(out["decaf"]["reason"], str)
+    assert isinstance(out["attribution"]["available"], bool)
+    assert out["attribution"]["reason"] is None or isinstance(out["attribution"]["reason"], str)
+    assert "decaf" not in out and "decaf" not in (out["attribution"]["reason"] or "").lower()
     assert out["llm_env"]["ready"] is False
     assert any("ANALYZE_MODEL" in name for name in out["llm_env"]["missing"])
     assert out["reference_root"] == "/refs"

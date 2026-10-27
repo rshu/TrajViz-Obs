@@ -69,7 +69,7 @@ After the session's first assistant response:
 
 In the dashboard, start with **Overview → Summary** for issues and health. Use **Contents** for tools, agents, context, diagnostics, and labels. Click an issue's step number to inspect it in **Workflow**. Use the other tabs for patterns, attribution, comparisons, and raw data. The selected session and its cached labels load automatically, along with Claude Code's context window for the current session. Expand **Session source and labels** to reload or choose another file.
 
-`/obs converge` supports pairwise, batch, and before/after analysis. `/obs view` lists registered views; `/obs json` exports their data, and `/obs schemas` exports their schemas. `/obs attribution` and the dashboard's **Attribution** tab use the optional DECAF setup described below.
+`/obs converge` supports pairwise, batch, and before/after analysis. `/obs view` lists registered views; `/obs json` exports their data, and `/obs schemas` exports their schemas. `/obs attribution` and the dashboard's **Attribution** tab use the optional attribution setup described below.
 
 <details>
 <summary>Step labeling and label comparisons</summary>
@@ -146,11 +146,11 @@ Labeling reads `LABEL_BASE_URL`, `LABEL_API_KEY`, and `LABEL_MODEL` first, falli
 </details>
 
 <details>
-<summary>Optional DECAF attribution</summary>
+<summary>Optional attribution setup</summary>
 
-Start Claude Code with `AWE_DECAF_PATH=/path/to/awe-checkout` and `TRAJVIZ_REFERENCE_ROOT=/path/to/reference-data` in its environment. Reference data must contain the task's requirements, patch, canonical trajectory, and a failed evaluation outcome. Passing cases are refused. An uploaded trajectory must match its canonical reference file byte for byte.
+Start Claude Code with `TRAJVIZ_ATTRIBUTION_PATH=/path/to/attribution-checkout` and `TRAJVIZ_REFERENCE_ROOT=/path/to/reference-data` in its environment. Reference data must contain the task's requirements, patch, canonical trajectory, and a failed evaluation outcome. Passing cases are refused. An uploaded trajectory must match its canonical reference file byte for byte.
 
-Use `/obs attribution` or the dashboard's **Attribution** tab. Incompatible DECAF parsers show an explanation instead of issuing a capability verdict.
+Use `/obs attribution` or the dashboard's **Attribution** tab. Incompatible attribution parsers show an explanation instead of issuing a capability verdict.
 
 </details>
 
@@ -171,7 +171,7 @@ The cache defaults to `~/.cache/trajviz-obs/`, or `$XDG_CACHE_HOME/trajviz-obs/`
 - Timing and tool wait are transcript-based estimates. Workflow-spawned work is not fully recognized, and subagent finish times are often unavailable.
 - Each refresh reloads the full trajectory. Transcript files above **32 MiB** need manual refreshes.
 - Insight's trajectory analysis uses at most the first **2,000 steps**. `/obs json --with-trajectory` retains the full parsed trajectory; individual diagnostics and previews also have limits.
-- DECAF attribution requires a separate installation and reference data; merged subagent sessions are unsupported. DECAF versions that lose native Claude JSONL tool evidence cannot diagnose that format.
+- Attribution requires a separate installation and reference data; merged subagent sessions are unsupported. Parsers that lose native Claude JSONL tool evidence cannot diagnose that format.
 - Real-session testing covers **macOS**. Linux and Windows still need platform-specific end-to-end validation.
 
 ## Development
@@ -205,7 +205,7 @@ python3 scripts/e2e.py --output /tmp/trajviz-obs-e2e-new --model haiku --budget 
 
 Use an empty output directory outside this repository. The harness checks tool failure/recovery, commands, exports, dashboards and cleanup, a real subagent, the plugin tool, and model features. `--skip-dashboard` skips servers. `--skip-llm` skips plugin model features and requires omitting `--test-llm-all`; coding and subagent turns still use Claude.
 
-`scripts/dashboard_e2e.py` tests live Insight and Converge callbacks with a local model stub. `scripts/provider_e2e.py --cache <cache-root> --output <empty-dir>` tests native `/obs` against local OpenAI and Anthropic stubs; the main harness's default cache root is `<output>/cache`. Both avoid external model charges. `scripts/optional_matrix.py --decaf-root /path/to/awe-checkout` also checks offline attribution against synthetic reference data; the native harness accepts the same flag. Each script's `--help` lists its inputs.
+`scripts/dashboard_e2e.py` tests live Insight and Converge callbacks with a local model stub. `scripts/provider_e2e.py --cache <cache-root> --output <empty-dir>` tests native `/obs` against local OpenAI and Anthropic stubs; the main harness's default cache root is `<output>/cache`. Both avoid external model charges. `scripts/optional_matrix.py --attribution-root /path/to/attribution-checkout` also checks offline attribution against synthetic reference data; the native harness accepts the same flag. Each script's `--help` lists its inputs.
 
 </details>
 

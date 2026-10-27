@@ -225,7 +225,7 @@ test('labels passes the sidecars and prints the label views', async ($, on) => {
   expect(bridgeCalls(ran)).toHaveLength(2)
 })
 
-test("attribution passes its flags and prints DECAF's reason or its verdict", async ($, on) => {
+test('attribution passes its flags and prints its availability or verdict', async ($, on) => {
   const verdict = {
     available: true,
     reason: null,
@@ -246,7 +246,7 @@ test("attribution passes its flags and prints DECAF's reason or its verdict", as
     arbiter: null,
     used_judge: false,
     task: null,
-    notes: ['judge verdict ignored: its recorded provenance differs'],
+    notes: ['DECAF judge verdict ignored: its recorded provenance differs'],
   }
   const { ran } = host(on, {
     bridge: {
@@ -260,19 +260,19 @@ test("attribution passes its flags and prints DECAF's reason or its verdict", as
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const a = await obs($, 'attribution --reference-root /refs --agent a --instance i')
   expect(bridgeCalls(ran)[0]).toEqual(['attribution', ...SESSION_ARGV, '--reference-root', '/refs', '--agent', 'a', '--instance', 'i'])
-  expect(a.text).toBe('DECAF is not installed: pip install decaf-attribution')
+  expect(a.text).toBe('Attribution is not available here.')
   const b = await obs($, 'attribution')
   expect(bridgeCalls(ran)[1]).toEqual(['attribution', ...SESSION_ARGV])
   expect(b.text).toBe(
     [
-      'DECAF attribution (reference) of claude-code/django__django-11477: blamed',
+      'Attribution (reference) of claude-code/django__django-11477: blamed',
       'Primary failure: localization · wrong_file',
       'Blamed capabilities: localization (weight 0.7, deductive)',
       'Faults:',
       '- localization · wrong_file (confidence 0.9)',
       '- planning · skipped_repro (confidence low)',
       'Notes:',
-      '- judge verdict ignored: its recorded provenance differs',
+      '- attribution judge verdict ignored: its recorded provenance differs',
     ].join('\n'),
   )
   expect((await obs($, 'attribution')).text).toBe('Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.')
@@ -282,8 +282,9 @@ test("attribution passes its flags and prints DECAF's reason or its verdict", as
 
 test('attributionText with nothing blamed and no verdict', () => {
   const quiet = { available: true, reason: null, mode: 'gold_free', agent: null, instance_id: null, blame_status: null, primary: null, scorecard: [], faults: [], notes: [] }
-  expect(attributionText(quiet)).toBe('DECAF attribution (gold_free): no verdict\nBlamed capabilities: none')
-  expect(attributionText({ ...quiet, available: false, reason: null })).toBe('DECAF attribution is not available here.')
+  expect(attributionText(quiet)).toBe('Attribution (gold_free): no verdict\nBlamed capabilities: none')
+  expect(attributionText({ ...quiet, available: false, reason: null })).toBe('Attribution is not available here.')
+  expect(attributionText({ ...quiet, available: false, reason: 'No gold reference was found.' })).toBe('No gold reference was found.')
 })
 
 test('collect passes its arguments through and prints what the tool wrote', async ($, on) => {
@@ -384,7 +385,7 @@ const DOCTOR: DoctorDoc = {
   trajviz: { version: '0.2.1', path: `${CACHE}/venv/lib/python3.12/site-packages/agent_trajviz` },
   plugins: { loaded: [], error: null },
   extras: { charts: true, llm: true, app: false },
-  decaf: { available: false, reason: "No module named 'decaf'" },
+  attribution: { available: false, reason: "No module named 'decaf'" },
   llm_env: { available: true, ready: false, missing: ['ANALYZE_MODEL', 'ANALYZE_API_KEY'], reason: null },
   reference_root: null,
 }
@@ -402,7 +403,7 @@ test('doctor is a table of the bridge\'s doctor and the environment', async ($, 
   expect(lines[3]).toMatch(/^ {2}trajviz {7}0\.2\.1 at \//)
   expect(lines[4]).toBe('  plugins       none')
   expect(lines[5]).toBe('  extras        llm, charts installed; app not installed (/obs setup --extras app)')
-  expect(lines[6]).toBe("  decaf         not available: No module named 'decaf'")
+  expect(lines[6]).toBe('  attribution   not available: Attribution is not available here.')
   expect(lines[7]).toBe('  llm env       not ready: ANALYZE_MODEL, ANALYZE_API_KEY unset (names only)')
   expect(lines[8]).toBe('  reference     TRAJVIZ_REFERENCE_ROOT unset')
   expect(lines[9]).toBe('  llm mode      session (analysisModel sonnet, labelModel haiku)')
@@ -414,7 +415,7 @@ test('doctorText: every extra, plugins, a ready llm env, env mode and a referenc
     ...DOCTOR,
     plugins: { loaded: ['my_plugin', 'other'], error: null },
     extras: { charts: true, llm: true, app: true },
-    decaf: { available: true, reason: null },
+    attribution: { available: true, reason: null },
     llm_env: { available: true, ready: true, missing: [], reason: null },
     reference_root: '/refs',
   }
@@ -422,7 +423,7 @@ test('doctorText: every extra, plugins, a ready llm env, env mode and a referenc
   const lines = doctorText(doc, state, { llm: 'env', analysisModel: 'session', labelModel: 'haiku' }).split('\n')
   expect(lines[4]).toBe('  plugins       my_plugin, other')
   expect(lines[5]).toBe('  extras        llm, charts, app installed')
-  expect(lines[6]).toBe('  decaf         available')
+  expect(lines[6]).toBe('  attribution   available')
   expect(lines[7]).toBe('  llm env       ready')
   expect(lines[8]).toBe('  reference     /refs')
   expect(lines[9]).toBe("  llm mode      env (TrajViz's own client from ANALYZE_*/LABEL_*)")

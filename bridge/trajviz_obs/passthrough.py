@@ -4,8 +4,8 @@
 its output captured: a JSON report goes to ``<artifacts>/converge/<n>.json`` (the next free number), any other
 output (``--output summary``, a usage or input error) comes back as text. ``collect -- ARGS…`` runs
 ``agent-trajviz-collect`` the same way and returns what it printed. Both answer the tool's own exit status in
-``exit``; the bridge itself exits 0. ``attribution`` is DECAF's result as TrajViz gives it (``available`` false
-with TrajViz's reason when DECAF or its reference data is missing); ``brief`` is the statistics brief TrajViz's
+``exit``; the bridge itself exits 0. ``attribution`` is TrajViz's attribution result (``available`` false
+with a reason when the attribution setup or reference data is missing); ``brief`` is the statistics brief TrajViz's
 LLM features reason over.
 """
 
@@ -177,10 +177,10 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("collect", help="agent-trajviz-collect, its output returned.")
     p.add_argument("args", nargs=argparse.REMAINDER, metavar="-- ARGS", help="The collect CLI's arguments.")
 
-    p = sub.add_parser("attribution", help="DECAF failure attribution (TrajViz's reason when it cannot run).")
+    p = sub.add_parser("attribution", help="Failure attribution (with an explanation when it cannot run).")
     _session_args(p)
     p.add_argument("--reference-root", default=None, metavar="DIR",
-                   help="The DECAF reference set (default: TRAJVIZ_REFERENCE_ROOT).")
+                   help="The attribution reference set (default: TRAJVIZ_REFERENCE_ROOT).")
     p.add_argument("--agent", default=None, help="The agent (default: the transcript's folder name).")
     p.add_argument("--instance", default=None, help="The task instance (default: the transcript's file name).")
 

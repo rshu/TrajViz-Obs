@@ -1,6 +1,6 @@
 [project]
 name = "trajviz-obs-bridge"
-version = "0.1.9"
+version = "0.1.10"
 description = "TrajViz bridge for the /obs Claude Code plugin (JSON on stdout)."
 license = "MIT"
 requires-python = ">=3.11"

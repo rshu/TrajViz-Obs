@@ -6,7 +6,7 @@ uploads files and invokes native callbacks; the public REST API additionally pre
 and the exact server-side preload path. Gradio's browser executes event chains, so this harness calls
 their native endpoints explicitly. Browser rendering, clicks and responsive layout remain CUA checks.
 
-Run with the bridge's app/llm environment; optional --decaf-root enables real, offline AWE diagnosis.
+Run with the bridge's app/llm environment; optional --attribution-root enables real, offline attribution diagnosis.
 Artifacts and server caches must stay outside the repository. No external model requests are needed.
 """
 
@@ -30,7 +30,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from e2e_fixtures import native_run, prepare_comparison_inputs
-from optional_matrix import prepare_decaf_reference, prepare_inputs, source_hashes
+from optional_matrix import prepare_attribution_reference, prepare_inputs, source_hashes
 
 ROOT = Path(__file__).resolve().parents[1]
 BRIDGE = ROOT / "bridge/trajviz_obs_cli.py"
@@ -244,7 +244,7 @@ def bridge_call(python: str, output: Path, env: dict, *args: str) -> dict:
     return json.loads(result.stdout)
 
 
-def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Provider, ledger: dict, decaf: dict | None) -> None:
+def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Provider, ledger: dict, attribution: dict | None) -> None:
     from gradio_client import handle_file
 
     empty_compare = app.call("on_run_comparison", None, None, "", None, None)
@@ -340,10 +340,10 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     initial_calls = len(provider.calls)
     history, status = app.call("on_trajectory_loaded")
     require(history == [] and "ANALYZE" in status and len(provider.calls) == initial_calls, "Closed AI sidebar triggered a model request")
-    autoload = app.call("on_diagnose_autoload", decaf["reference_root"] if decaf else str(app.output / "missing-reference"))
+    autoload = app.call("on_diagnose_autoload", attribution["reference_root"] if attribution else str(app.output / "missing-reference"))
     require("No gold-grounded attribution" in autoload[1] and autoload[2:] == ("", ""),
             "Native attribution autoload did not clear overrides or explain its unavailable verdict")
-    if decaf:
+    if attribution:
         ledger["native_claude_attribution"] = text_of(autoload[0])
     with provider.answering("analysis"):
         history, status = app.call("on_sidebar_expand", [])
@@ -401,16 +401,16 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     (app.output / "before-export.html").write_bytes(response.content)
     ledger["checks"].append("downloadable populated HTML export")
 
-    if decaf:
-        app.call("_do_load", handle_file(decaf["transcript"]), "")
-        result, status = app.call("on_diagnose", decaf["agent"], decaf["instance"], decaf["reference_root"])
+    if attribution:
+        app.call("_do_load", handle_file(attribution["transcript"]), "")
+        result, status = app.call("on_diagnose", attribution["agent"], attribution["instance"], attribution["reference_root"])
         require("Diagnosis complete" in status and "missed_relevant_file" in result and "deductive" in result,
-                "Dashboard did not render real objective DECAF attribution")
-        ledger["checks"].append("real objective DECAF dashboard diagnosis (canonical OpenCode)")
+                "Dashboard did not render real objective attribution")
+        ledger["checks"].append("real objective attribution dashboard diagnosis (canonical OpenCode)")
     else:
         result, status = app.call("on_diagnose", "claude_code", "synthetic", str(app.output / "missing-reference"))
         require("No gold-grounded attribution" in status and "unavailable" in text_of(result).lower(), "Attribution did not visibly explain missing optional setup")
-        ledger["checks"].append("honest missing optional DECAF setup")
+        ledger["checks"].append("honest missing optional attribution setup")
 
     # Failed loads must disarm the previous report and not leave a stale comparison/Workflow behind.
     failed = app.mapped("_do_load", None, "")
@@ -447,7 +447,7 @@ def exercise_converge(app: Dashboard, fixtures: dict, ledger: dict) -> None:
     ledger["checks"].extend(["Converge all three modes", "Converge missing inputs", "Converge exact pairwise outcome metrics", "Converge milestone/cost/divergence/anchor plots", "Converge batch aggregation", "Converge fuzzy before/after improvement", "Converge data-root traversal refusal"])
 
 
-def run(python: str, output: Path, *, decaf_root: Path | None = None) -> dict:
+def run(python: str, output: Path, *, attribution_root: Path | None = None) -> dict:
     fixtures = prepare_comparison_inputs(output / "fixtures")
     sid = "ddd44444-0000-4000-8000-000000000004"
     fixtures.update(session_id=sid, agent_run=native_run(output / "fixtures" / f"{sid}.jsonl", sid, regression=True))
@@ -455,26 +455,26 @@ def run(python: str, output: Path, *, decaf_root: Path | None = None) -> dict:
     add_context_drop(fixtures["agent_run"])
     add_context_drop(child)
     hashes = source_hashes(output / "fixtures")
-    ledger: dict = {"status": "running", "callbacks": [], "checks": [], "attribution": "real objective AWE" if decaf_root else "missing setup only"}
+    ledger: dict = {"status": "running", "callbacks": [], "checks": [], "attribution": "real objective attribution" if attribution_root else "missing setup only"}
     provider = Provider()
-    env = {key: val for key, val in os.environ.items() if not key.startswith(("ANALYZE_", "LABEL_", "AWE_", "TRAJVIZ_REFERENCE_ROOT"))}
+    env = {key: val for key, val in os.environ.items() if not key.startswith(("ANALYZE_", "LABEL_", "AWE_", "TRAJVIZ_ATTRIBUTION_PATH", "TRAJVIZ_REFERENCE_ROOT"))}
     env.update(GRADIO_ANALYTICS_ENABLED="False", HF_HUB_DISABLE_TELEMETRY="1", GRADIO_TEMP_DIR=str(output / "gradio-cache"),
                XDG_CACHE_HOME=str(output / "cache"), CLAUDE_CONFIG_DIR=str(output / "config"),
                NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost", OPENROUTER_API_KEY="")
     for prefix in ("ANALYZE", "LABEL"):
         env.update({f"{prefix}_BASE_URL": provider.base, f"{prefix}_API_KEY": "synthetic-key",
                     f"{prefix}_MODEL": "local-" + prefix.lower(), f"{prefix}_PROVIDER": "openai"})
-    decaf = None
+    attribution = None
     labels = {}
     try:
-        if decaf_root:
+        if attribution_root:
             optional = output / "optional"
             inputs = prepare_inputs(optional)
             collected = bridge_call(python, output, {**env, **inputs["environment"]}, "collect", "--", "opencode", "ses_root", str(optional / "exports/opencode.json"))
             require(collected["exit"] == 0, "Could not prepare actual canonical OpenCode attribution input")
-            decaf = prepare_decaf_reference(optional)
-            env.update(AWE_DECAF_PATH=str(decaf_root), TRAJVIZ_REFERENCE_ROOT=decaf["reference_root"],
-                       AWE_ARGUS_ROOT=decaf["reference_root"], AWE_PROJECT_DATA=str(output / "awe-cache"), AWE_OUTPUT_DATA=str(output / "awe-output"))
+            attribution = prepare_attribution_reference(optional)
+            env.update(TRAJVIZ_ATTRIBUTION_PATH=str(attribution_root), TRAJVIZ_REFERENCE_ROOT=attribution["reference_root"],
+                       AWE_ARGUS_ROOT=attribution["reference_root"], AWE_PROJECT_DATA=str(output / "awe-cache"), AWE_OUTPUT_DATA=str(output / "awe-output"))
         for name, source in (("before", fixtures["before"]), ("reference", fixtures["reference"]), ("agent", fixtures["agent_run"])):
             labels[name] = output / "labels" / f"{name}-labels.json"
             labels[name].parent.mkdir(exist_ok=True)
@@ -485,7 +485,7 @@ def run(python: str, output: Path, *, decaf_root: Path | None = None) -> dict:
             require(sum(step.get("label_source") == "llm" for step in sidecar["steps"]) == expected, "Fixture labeling did not classify every assistant step")
         insight = Dashboard(python, "dashboard", ["--transcript", str(fixtures["agent_run"]), "--labels", str(labels["agent"]), "--window", "1000000"], output, env, ledger)
         try:
-            exercise_insight(insight, fixtures, labels, provider, ledger, decaf)
+            exercise_insight(insight, fixtures, labels, provider, ledger, attribution)
         finally:
             insight.close()
         converge = Dashboard(python, "converge", ["--data-root", str(output / "fixtures")], output, env, ledger)
@@ -512,17 +512,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--decaf-root", type=Path)
+    parser.add_argument("--attribution-root", type=Path, help="An existing attribution engine checkout for offline diagnosis.")
+    parser.add_argument("--decaf-root", dest="attribution_root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.decaf_root and not (args.decaf_root / "awe/__init__.py").is_file():
-        parser.error("--decaf-root must contain the real awe package")
+    if args.attribution_root and not (args.attribution_root / "awe/__init__.py").is_file():
+        parser.error("--attribution-root must contain the attribution engine package")
     output = args.output or Path(tempfile.mkdtemp(prefix="trajviz-obs-dashboard-e2e-"))
     if output.resolve().is_relative_to(ROOT):
         parser.error("--output must be outside the repository")
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         parser.error("--output must be an empty directory")
     output.mkdir(parents=True, exist_ok=True)
-    result = run(args.python, output, decaf_root=args.decaf_root)
+    result = run(args.python, output, attribution_root=args.attribution_root)
     print(json.dumps({"output": str(output), "status": result["status"],
                       "callbacks": len(result["callbacks"]), "http_model_requests": result["http_model_requests"],
                       "attribution": result["attribution"], "passed_checks": len(result["checks"]),

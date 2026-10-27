@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -74,7 +75,8 @@ def test_parser_that_loses_native_tools_is_unavailable_without_blame_and_probed_
     result = native_attribution.diagnose(**request())
     again = native_attribution.diagnose(**request())
     assert not result.available and not again.available and result.mode == "reference"
-    assert "does not preserve native Claude Code JSONL" in result.reason
+    assert "This attribution parser does not preserve native Claude Code JSONL" in result.reason
+    assert "decaf" not in result.reason.lower()
     assert result.faults == result.scorecard == [] and result.primary is None and not result.used_judge
     assert len(seam.calls) == 1 and seam.native_calls == []
     assert seam.config.TRAJECTORY_DIR == seam.real_root and list(seam.real_root.iterdir()) == []
@@ -113,14 +115,44 @@ def test_other_formats_and_non_native_exports_keep_native_diagnosis(seam, overri
     assert seam.calls == [] and seam.native_calls == [args]
 
 
-def test_no_decaf_keeps_its_existing_unavailable_reason_without_attempting_a_probe(seam, monkeypatch):
+def test_missing_parser_uses_public_setup_guidance_without_attempting_a_probe(seam, monkeypatch):
     seam.parser("raises")
     monkeypatch.setattr(native_attribution, "DECAF_AVAILABLE", False)
-    expected = native_attribution.AttributionResult(False, reason="DECAF is not installed")
+    expected = native_attribution.AttributionResult(
+        False, reason="DECAF unavailable (DECAF import failed (ImportError))",
+        notes=["DECAF's dossier API lacks per-call judge/arbiter controls"],
+    )
     monkeypatch.setattr(native_attribution, "diagnose", lambda **_kwargs: expected)
     compat.install_attribution_guard()
-    assert native_attribution.diagnose(**request()) is expected
+    result = native_attribution.diagnose(**request())
+    assert not result.available and result.reason.startswith("Attribution parser unavailable (ImportError)")
+    assert "TRAJVIZ_ATTRIBUTION_PATH" in result.reason and "TRAJVIZ_REFERENCE_ROOT" in result.reason
+    assert result.notes == ["Attribution's dossier API lacks per-call judge/arbiter controls"]
+    assert expected.reason.startswith("DECAF unavailable")  # the upstream result itself is not mutated
     assert seam.calls == []
+
+
+@pytest.mark.parametrize("message, expected", [
+    (None, None),
+    ("DECAF diagnosis unavailable (ValueError)", "Attribution diagnosis unavailable (ValueError)"),
+    ("This DeCaF parser failed. DECAF is unavailable.", "This attribution parser failed. Attribution is unavailable."),
+    ("Failed while loading DECAF.", "Failed while loading attribution."),
+    ("Set AWE_DECAF_PATH to a DECAF checkout", "Set TRAJVIZ_ATTRIBUTION_PATH to an attribution checkout"),
+    ("Reference path /tmp/DECAF/data; DECAF.json; DECAF_AVAILABLE",
+     "Reference path /tmp/DECAF/data; DECAF.json; DECAF_AVAILABLE"),
+])
+def test_attribution_messages_normalize_prose_and_public_configuration_only(message, expected):
+    assert compat.attribution_message(message) == expected
+
+
+def test_public_parser_path_reaches_upstream_discovery(monkeypatch):
+    monkeypatch.setenv("TRAJVIZ_ATTRIBUTION_PATH", " /synthetic/attribution-parser ")
+    monkeypatch.setenv("AWE_DECAF_PATH", "/synthetic/old-parser")
+    compat.configure_attribution_environment()
+    assert os.environ["AWE_DECAF_PATH"] == "/synthetic/attribution-parser"
+    monkeypatch.setenv("TRAJVIZ_ATTRIBUTION_PATH", " ")
+    compat.configure_attribution_environment()
+    assert os.environ["AWE_DECAF_PATH"] == "/synthetic/attribution-parser"
 
 
 def test_parser_probe_errors_are_unavailable_rather_than_a_verdict(seam):
@@ -147,4 +179,16 @@ def test_native_browser_attribution_callback_uses_the_guard(seam, fixture_sessio
     raw = {**run.raw, "_source_path": str(fixture_session), "_source_sha256": run.sha256}
     html, status = callback(raw, "claude_code", "case", "/synthetic/reference")
     assert "does not preserve" in html and "No gold-grounded attribution" in status
+    assert "decaf" not in html.lower()
     assert seam.native_calls == [] and len(seam.calls) == 1
+
+
+def test_native_browser_missing_parser_diagnostic_uses_public_terminology(seam, fixture_session, monkeypatch):
+    monkeypatch.setattr(native_attribution, "DECAF_AVAILABLE", False)
+    monkeypatch.setattr(native_attribution, "diagnose", lambda **_kwargs: native_attribution.AttributionResult(
+        False, reason="DECAF unavailable (DECAF import failed (ImportError))"))
+    app = dashboard_cmd.build_preloaded_insight(str(fixture_session))
+    callback = next(block.fn for block in app.fns.values() if getattr(block.fn, "__name__", "") == "on_diagnose")
+    html, status = callback({"_source_path": str(fixture_session)}, "claude_code", "case", "")
+    assert "Attribution parser unavailable" in html and "TRAJVIZ_ATTRIBUTION_PATH" in html
+    assert "decaf" not in (html + status).lower() and seam.calls == []

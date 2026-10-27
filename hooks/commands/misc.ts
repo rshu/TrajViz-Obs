@@ -19,7 +19,7 @@ export const SETUP_USAGE = 'Usage: /obs setup [--extras all|none|charts,app] [--
 
 type Empty = { empty: true; reason: string }
 
-/** DECAF's capability row, as `agent_trajviz.attribution.diagnose` gives it. */
+/** A capability row, as `agent_trajviz.attribution.diagnose` gives it. */
 type CapabilityScore = { capability: string; assessed: boolean; blamed: boolean; weight: number; tier: string | null; top_error: string | null }
 
 /** `agent_trajviz.attribution.diagnose`'s result: the fields the row draws. */
@@ -42,7 +42,7 @@ export type DoctorDoc = {
   trajviz: { version: string; path: string }
   plugins: { loaded: string[]; error: string | null }
   extras: Record<string, boolean>
-  decaf: { available: boolean; reason: string | null }
+  attribution: { available: boolean; reason: string | null }
   llm_env: { available: boolean; ready: boolean; missing: string[]; reason: string | null }
   reference_root: string | null
 }
@@ -51,24 +51,29 @@ type CollectDoc = { exit: number; stdout: string; stderr: string }
 
 const str = (v: unknown): string => (typeof v === 'string' && v ? v : String(v ?? '?'))
 
+/** Keep upstream dependency names and installation commands out of attribution availability rows. */
+function attributionReason(reason: string | null, fallback: string): string {
+  return reason && !/decaf/i.test(reason) ? reason : fallback
+}
+
 /**
- * DECAF's result as the row: its reason verbatim when it could not run (the
+ * The attribution result as the row: its reason when it could not run (the
  * usual case for a live session), else the verdict, the primary failure, the
  * blamed capabilities, the faults and TrajViz's notes.
  */
 export function attributionText(doc: AttributionDoc): string {
-  if (!doc.available) return doc.reason ?? 'DECAF attribution is not available here.'
+  if (!doc.available) return attributionReason(doc.reason, 'Attribution is not available here.')
   const who = doc.agent || doc.instance_id ? ` of ${str(doc.agent)}/${str(doc.instance_id)}` : ''
-  const lines = [`DECAF attribution (${doc.mode})${who}: ${doc.blame_status ?? 'no verdict'}`]
+  const lines = [`Attribution (${doc.mode})${who}: ${doc.blame_status ?? 'no verdict'}`]
   if (doc.primary) lines.push(`Primary failure: ${str(doc.primary.capability)} · ${str(doc.primary.error_type)}`)
   const blamed = doc.scorecard.filter(s => s.blamed).map(s => `${s.capability} (weight ${s.weight}${s.tier ? `, ${s.tier}` : ''})`)
   lines.push(`Blamed capabilities: ${blamed.length ? blamed.join(', ') : 'none'}`)
   if (doc.faults.length) lines.push('Faults:', ...doc.faults.map(f => `- ${str(f.capability)} · ${str(f.error_type)} (confidence ${str(f.confidence)})`))
-  if (doc.notes.length) lines.push('Notes:', ...doc.notes.map(n => `- ${n}`))
+  if (doc.notes.length) lines.push('Notes:', ...doc.notes.map(n => `- ${n.replace(/\bdecaf(?:[-_]attribution| attribution)?\b/gi, 'attribution')}`))
   return lines.join('\n')
 }
 
-/** `attribution [--reference-root DIR] [--agent A] [--instance I]`: the bridge's `attribution` over the session, DECAF's result as text. */
+/** `attribution [--reference-root DIR] [--agent A] [--instance I]`: the bridge's `attribution` over the session as text. */
 async function attribution($: EngineInterface, ctx: CommandContext, spec: string | undefined): Promise<string> {
   const values: string[] = []
   for (const name of ['reference-root', 'agent', 'instance']) {
@@ -179,7 +184,7 @@ function llmModeRow(options: PluginOptions): string {
 /**
  * `obs doctor` as a table: the environment (`state.json`), then the bridge's
  * doctor: Python, TrajViz and where it is, its plugins, which extras import,
- * DECAF, the LLM environment (the names of unset variables, never values),
+ * attribution, the LLM environment (the names of unset variables, never values),
  * the reference root, and how LLM features run per the options.
  */
 export function doctorText(doc: DoctorDoc, state: EnvState, options: PluginOptions): string {
@@ -188,7 +193,7 @@ export function doctorText(doc: DoctorDoc, state: EnvState, options: PluginOptio
   const missing = names.filter(e => !doc.extras[e])
   const extras = `${installed.join(', ') || 'none'} installed${missing.length ? `; ${missing.join(', ')} not installed (/obs setup --extras ${missing.join(',')})` : ''}`
   const plugins = doc.plugins.error !== null ? `error: ${doc.plugins.error}` : doc.plugins.loaded.join(', ') || 'none'
-  const decaf = doc.decaf.available ? 'available' : `not available: ${doc.decaf.reason ?? '?'}`
+  const attribution = doc.attribution.available ? 'available' : `not available: ${attributionReason(doc.attribution.reason, 'Attribution is not available here.')}`
   const llm = doc.llm_env.ready ? 'ready' : doc.llm_env.available ? `not ready: ${doc.llm_env.missing.join(', ')} unset (names only)` : (doc.llm_env.reason ?? 'not available')
   return [
     'obs doctor',
@@ -197,7 +202,7 @@ export function doctorText(doc: DoctorDoc, state: EnvState, options: PluginOptio
     row('trajviz', `${doc.trajviz.version} at ${doc.trajviz.path}`),
     row('plugins', plugins),
     row('extras', extras),
-    row('decaf', decaf),
+    row('attribution', attribution),
     row('llm env', llm),
     row('reference', doc.reference_root ?? 'TRAJVIZ_REFERENCE_ROOT unset'),
     llmModeRow(options),
@@ -220,7 +225,7 @@ async function doctor($: EngineInterface, ctx: CommandContext): Promise<string> 
   }
 }
 
-/** `/obs attribution | collect | setup | doctor`: DECAF, the collect CLI and the environment. */
+/** `/obs attribution | collect | setup | doctor`: attribution, the collect CLI and the environment. */
 export async function misc($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
   const spec = sessionSpec(ctx)
   try {

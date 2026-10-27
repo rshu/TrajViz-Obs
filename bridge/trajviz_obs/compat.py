@@ -11,7 +11,7 @@ The plugin ships against the published ``agent-trajviz>=0.2.0,<0.3``. These inte
 3. **A step cap on env-mode labeling.** ``label_trajectory()`` labels every step; :func:`labeler_step_cap`
    wraps its real ``call_llm`` so only the first steps reach the endpoint, as session mode labels them.
 4. **Native Claude attribution evidence.** :func:`install_attribution_guard` refuses capability blame when
-   the optional DECAF parser cannot preserve native JSONL Read/Bash calls in an isolated capability probe.
+   the optional attribution parser cannot preserve native JSONL Read/Bash calls in an isolated capability probe.
 
 It also runs TrajViz's plugins (public API): ``load()`` reads only the formats already registered, so
 :func:`load_plugins` runs ``agent_trajviz.load_plugins()`` once per process before the first load or view lookup,
@@ -25,6 +25,7 @@ import copy
 import functools
 import inspect
 import json
+import os
 import re
 import sys
 import tempfile
@@ -225,9 +226,9 @@ def dashboard_server_options(port: int | None) -> dict[str, Any]:
 
 @functools.lru_cache(maxsize=16)
 def _attribution_reads_native_claude(parser: Callable) -> bool:
-    """Probe DECAF's uncached parser without changing its reference root or reading a real trajectory.
+    """Probe the uncached attribution parser without changing its reference root or reading a real trajectory.
 
-    Some DECAF versions send every non-Pi JSONL file through their Codex adapter. They silently lose
+    Some attribution parser versions send every non-Pi JSONL file through their Codex adapter. They silently lose
     Claude's native ``tool_use`` blocks, then attribute missing test execution to the agent. A tiny native
     Read/Bash transcript must retain both tool identities and their canonical actions before that parser
     may diagnose this format. Cache by the actual function object so a replaced parser is checked again.
@@ -268,13 +269,42 @@ def _attribution_reads_native_claude(parser: Callable) -> bool:
         return False
 
 
+def configure_attribution_environment() -> None:
+    """Pass the public parser checkout setting to the upstream discovery API before it imports."""
+    configured = os.environ.get("TRAJVIZ_ATTRIBUTION_PATH", "").strip()
+    if configured:
+        os.environ["AWE_DECAF_PATH"] = configured
+
+
+def attribution_message(text: str | None) -> str | None:
+    """Use public attribution terminology without rewriting paths or upstream API identifiers."""
+    if text is None:
+        return None
+    text = text.replace("AWE_DECAF_PATH", "TRAJVIZ_ATTRIBUTION_PATH")
+    unavailable = re.fullmatch(
+        r"(?:DECAF unavailable \()?DECAF (import|configuration) failed \((\w+)\)\)?", text,
+        flags=re.IGNORECASE,
+    )
+    if unavailable:
+        phase, error = unavailable.groups()
+        if phase.lower() == "import":
+            return (f"Attribution parser unavailable ({error}). Set TRAJVIZ_ATTRIBUTION_PATH to its checkout "
+                    "and TRAJVIZ_REFERENCE_ROOT to the reference data.")
+        return (f"Attribution parser configuration failed ({error}). Check TRAJVIZ_ATTRIBUTION_PATH "
+                "and TRAJVIZ_REFERENCE_ROOT.")
+    text = re.sub(r"(?<![\w/\\.-])decaf(?![\w/\\-]|\.[\w])", "attribution", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b([Aa]) attribution\b", lambda match: match[1] + "n attribution", text)
+    return re.sub(r"(^|[.!?]\s+|>\s*)attribution\b", lambda match: match[1] + "Attribution", text)
+
+
 def install_attribution_guard() -> None:
-    """Protect CLI and native dashboard attribution from an incompatible optional DECAF parser.
+    """Protect CLI and native dashboard attribution from an incompatible optional parser.
 
     The original diagnosis retains all reference, byte identity and cache provenance gates. Only modern
-    native Claude JSONL is refused when the actual DECAF parser cannot preserve its diagnostic evidence.
+    native Claude JSONL is refused when the actual attribution parser cannot preserve its diagnostic evidence.
     """
     check_supported()
+    configure_attribution_environment()
     from agent_trajviz.insight import attribution
 
     native = attribution.diagnose
@@ -295,11 +325,17 @@ def install_attribution_guard() -> None:
             if not supported:
                 return attribution.AttributionResult(
                     False, mode="reference", agent=agent, instance_id=instance_id,
-                    reason="This DECAF parser does not preserve native Claude Code JSONL Read/Bash tool evidence. "
-                           "No capability verdict was issued. Update DECAF to a parser that supports native "
+                    reason="This attribution parser does not preserve native Claude Code JSONL Read/Bash tool evidence. "
+                           "No capability verdict was issued. Update the attribution parser to one that supports native "
                            "Claude Code session transcripts.")
-        return native(agent=agent, instance_id=instance_id, source_path=source_path, fmt=fmt,
-                      expected_sha=expected_sha, merged_sources=merged_sources, reference_root=reference_root)
+        result = native(agent=agent, instance_id=instance_id, source_path=source_path, fmt=fmt,
+                        expected_sha=expected_sha, merged_sources=merged_sources, reference_root=reference_root)
+        reason = attribution_message(result.reason)
+        notes = [attribution_message(note) for note in result.notes]
+        if reason != result.reason or notes != result.notes:
+            result = copy.copy(result)
+            result.reason, result.notes = reason, notes
+        return result
 
     guarded._trajviz_obs_native_guard = True
     attribution.diagnose = guarded
