@@ -1,7 +1,8 @@
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock, test, type MockClock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import { passArgs } from './lib/args'
 import { attributionText, doctorText, parseExtras, setupText, type DoctorDoc } from './commands/misc'
+import { SNAPSHOT } from './testdata/snapshot'
 
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
@@ -42,6 +43,7 @@ type World = {
 }
 
 type Host = {
+  clock: MockClock
   ran: string[][]
   spawned: string[][]
   files: Record<string, string>
@@ -66,7 +68,7 @@ function host(on: On, world: World = {}): Host {
   on('session.cwd', () => ({ value: CWD }))
   on('session.usage', () => ({ value: USAGE }))
   mock.env(on, { HOME })
-  mock.clock(on, { now: NOW })
+  const clock = mock.clock(on, { now: NOW })
   on('fs.read', (_, e) => (e.path in files ? { value: files[e.path] as string } : { deny: `ENOENT: ${e.path}` }))
   on('fs.write', (_, e) => {
     files[e.path] = e.text
@@ -103,7 +105,7 @@ function host(on: On, world: World = {}): Host {
     yield { stream: 'stdout' as const, text: 'Installed\n' }
     return { value: { code: 0, signal: null } }
   })
-  return { ran, spawned, files, statuses, toasts }
+  return { clock, ran, spawned, files, statuses, toasts }
 }
 
 const json = (doc: unknown): RunAnswer => ({ exitCode: 0, stdout: `${JSON.stringify(doc)}\n` })
@@ -364,6 +366,28 @@ test('setup alone leaves a ready environment alone; --extras names are checked; 
     `TrajViz 0.2.2 is set up at ${VENV_PY} (source ~/tv; extras llm, charts).\n` +
       `trajvizSource in /config is still ${SOURCE}: the next /obs rebuilds from it unless you set it to ~/tv there.`,
   )
+})
+
+test('manual setup and a later automatic rebuild restore the enabled summary after progress', { options: { statusline: true } }, async ($, on) => {
+  const h = host(on, {
+    bridge: { snapshot: json(SNAPSHOT), json: json({ path: '/tmp/views', bytes: 1, files: ['index.json'] }) },
+    commands: { uv: { exitCode: 0, stdout: 'uv 0.9.0\n' }, [VENV_PY]: { exitCode: 0, stdout: '0.2.1\n' } },
+  })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, '')
+  await h.clock.settle()
+  const line = h.statuses.at(-1)
+  expect(line).toContain('196 tools')
+  await obs($, 'setup --source ~/tv')
+  await h.clock.settle()
+  expect(h.statuses.at(-1)).toBe(line)
+  h.statuses.length = 0
+  // The source is now different from config, so a regular export rebuilds it.
+  await obs($, 'json')
+  await h.clock.settle()
+  expect(h.statuses[0]).toBe('obs setup: Installed')
+  expect(h.statuses.at(-1)).toBe(line)
+  expect(setupRequests(h.spawned)).toHaveLength(2)
 })
 
 test('setup without uv or Python 3.11+ is the row naming what was looked for', async ($, on) => {

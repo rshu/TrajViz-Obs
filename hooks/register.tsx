@@ -32,8 +32,8 @@ export const register: Register = (on, options) => {
     void resetStatusLine($, previouslyEnabled).catch(error => {
       $.ui.log(`obs statusline: ${error instanceof Error ? error.message : String(error)}`, { to: 'debug' })
     })
-    // A reload (a config change, /reload-plugins) starts the session hooks
-    // again with the old environment's children killed: the state follows.
+    // A restarted function environment (a config change or source reload)
+    // has lost its previous children, so the dashboard state follows.
     await resetServers($)
     return next(e)
   })

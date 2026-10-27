@@ -5,6 +5,8 @@ import { clip } from '../lib/format'
 import { ensureEnv, ensureExtra, readEnvState, trajvizSource, type EnvState, type Extra } from '../lib/python'
 import { BUSY_STALE_MS, BUSY_TEXT, FIRST_RUN_TOAST, ensureReady, sessionArgv } from '../lib/snapshot'
 import { claimRefresh, releaseRefresh } from '../lib/state'
+import { publicationGeneration } from '../lib/publication'
+import { restoreStatusLine } from '../lib/watch'
 import type { CommandContext } from './index'
 import { EMPTY_TEXT, errorRow, sessionSpec } from './overview'
 import { fmtWhen } from './sessions'
@@ -141,6 +143,7 @@ async function setup($: EngineInterface, ctx: CommandContext): Promise<string> {
   const source = trajvizSource(options)
   const claim = await claimRefresh($, BUSY_STALE_MS)
   if (claim === null) throw new BridgeError('busy', BUSY_TEXT)
+  const generation = publicationGeneration()
   const report = (line: string) => $.ui.status(`obs setup: ${clip(line, 80)}`)
   try {
     if ((await readEnvState($)) === null) $.ui.toast(FIRST_RUN_TOAST)
@@ -151,7 +154,7 @@ async function setup($: EngineInterface, ctx: CommandContext): Promise<string> {
     const configured = trajvizSource(ctx.options)
     return source === configured ? text : `${text}\ntrajvizSource in /config is still ${configured}: the next /obs rebuilds from it unless you set it to ${source} there.`
   } finally {
-    $.ui.status(undefined)
+    restoreStatusLine($, generation)
     await releaseRefresh($, claim)
   }
 }

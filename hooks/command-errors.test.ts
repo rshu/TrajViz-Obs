@@ -6,7 +6,7 @@ test('host timeout explains the failed command instead of reporting a missing ha
   expect(result.exitCode).toBe(1)
   expect(result.text).toContain('obs dashboard: Claude Code stopped the command handler')
   expect(result.text).toContain('hook time budget expired')
-  expect(result.text).toContain('/reload-plugins')
+  expect(result.text).toContain('Restart Claude Code')
   expect(result.text).not.toContain('no command.run hook answered')
 })
 

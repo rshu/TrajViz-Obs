@@ -28,7 +28,7 @@ export function commandFailure(args: string, error: HookFailure): CommandRunResu
   const detail = error.kind === 'timeout'
     ? 'Claude Code stopped the command handler after its hook time budget expired.'
     : `The command handler failed${error.message ? `: ${error.message.slice(0, 2000)}` : ' in Claude Code.'}`
-  return { text: `obs ${sub}: ${detail}\nRun /reload-plugins, then retry the command.`, exitCode: 1 }
+  return { text: `obs ${sub}: ${detail}\nRestart Claude Code, then retry the command.`, exitCode: 1 }
 }
 
 const VIEW_FLAGS = ['limit', 'offset', 'json']

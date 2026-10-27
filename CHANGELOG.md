@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.12 — 2026-10-27
+
+- Restore an enabled status line after dependency setup finishes.
+- Stack comparison uploads on narrow screens so filenames remain readable.
+- Recommend restarting Claude Code to recover a stopped function handler.
+- Make the real-session subagent check work with isolated Python.
+
 ## 0.1.11 — 2026-10-27
 
 - Align option descriptions and command help with model routing, labeling caps, and view pagination.

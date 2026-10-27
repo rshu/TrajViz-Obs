@@ -114,6 +114,18 @@ export async function syncStatusLine($: EngineInterface, snap: Snapshot | EmptyS
   }
 }
 
+/** Ends temporary setup progress, restoring the enabled summary without waiting for live usage. */
+export function restoreStatusLine($: EngineInterface, generation: number): void {
+  if (generation !== publicationGeneration()) return
+  $.ui.status(undefined)
+  void (async () => {
+    const snap = await readLatest($)
+    if (snap !== null) await syncStatusLine($, snap, generation)
+  })().catch(error => {
+    $.ui.log(`obs statusline: ${error instanceof Error ? error.message : String(error)}`, { to: 'debug' })
+  })
+}
+
 /** Whether the pane is open (placed or not), by the engine's own record. */
 async function isPaneOpen($: EngineInterface): Promise<boolean> {
   return (await $.ui.panes()).some(p => p.id === PANE_ID)

@@ -85,7 +85,7 @@ Overview, diagnostic views, and exports run locally without model calls. `/obs a
 
 The dashboard's AI sidebar and fix button always use the environment provider, independently of `llm`. Opening the sidebar starts model analysis; follow-up questions and fixes also send trajectory excerpts.
 
-Exports and cached analysis contain session data and stay on the host unless shared. Dashboards bind to `127.0.0.1` and stop on request, plugin reload, or session end.
+Exports and cached analysis contain session data and stay on the host unless shared. Dashboards bind to `127.0.0.1` and stop on request or session end.
 
 ## Troubleshooting and limits
 

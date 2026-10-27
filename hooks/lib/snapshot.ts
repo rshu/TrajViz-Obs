@@ -13,6 +13,7 @@ import { lockPublication, publicationGeneration } from './publication'
 import { SETUP_TIMEOUT_MS, ensureEnv, ensureExtra, needsSetup, readEnvState, type Extra } from './python'
 import { RESOLVE_TIMEOUT_MS, resolveTranscript, selectSession, type Transcript } from './session'
 import { claimRefresh, readFlags, readSnapshotIds, releaseRefresh, writeLatest, writeSnapshotIds, writeSnapshotMember } from './state'
+import { restoreStatusLine } from './watch'
 
 /** How many snapshots are kept. */
 export const KEEP = 5
@@ -131,6 +132,7 @@ export function installingText(extra: Extra): string {
  * and a venv must not be rebuilt under a running bridge).
  */
 async function setUp($: EngineInterface, options: PluginOptions, extra?: Extra): Promise<void> {
+  const generation = publicationGeneration()
   const work = await pending($, options, extra)
   if (work === null) return
   if (work === 'build') $.ui.toast(FIRST_RUN_TOAST)
@@ -140,7 +142,7 @@ async function setUp($: EngineInterface, options: PluginOptions, extra?: Extra):
     if (extra !== undefined) await ensureExtra($, options, extra, report)
     else await ensureEnv($, options, report)
   } finally {
-    $.ui.status(undefined)
+    restoreStatusLine($, generation)
   }
 }
 

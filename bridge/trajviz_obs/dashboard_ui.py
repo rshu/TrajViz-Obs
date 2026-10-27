@@ -88,6 +88,10 @@ _CSS = """
   .obs-dashboard .obs-workflow-body .wf-scroll { max-height: 50vh; }
 }
 @media (max-width: 768px) {
+  .obs-dashboard .obs-file-row { flex-direction: column; }
+  .obs-dashboard .obs-file-row > .column,
+  .obs-dashboard .obs-file-row > .block,
+  .obs-dashboard .obs-file-row > .form { width: 100%; flex-basis: auto !important; }
   .obs-dashboard #analysis-sidebar.right:not(.open) .toggle-button::after { content: "AI analysis"; }
   .obs-dashboard .obs-guide { padding: 10px 12px; }
   .obs-dashboard .obs-guide-grid { grid-template-columns: 1fr; gap: 10px; }
@@ -242,6 +246,12 @@ def decorate_dashboard(app: gr.Blocks, kind: str) -> gr.Blocks:
                 setattr(block, attribute, attribution_message(value))
         if kind == "converge" and isinstance(block, gr.File):
             block.height = 140
+        if kind == "converge" and isinstance(block, gr.Row) and any(
+            isinstance(child, gr.File) or isinstance(child, gr.Column) and any(
+                isinstance(part, gr.File) for part in child.children
+            ) for child in block.children
+        ):
+            block.elem_classes = [*(block.elem_classes or []), "obs-file-row"]
         extra = "obs-chart" if isinstance(block, gr.Plot) else "obs-markdown" if isinstance(block, gr.Markdown) else None
         if extra:
             block.elem_classes = [*(block.elem_classes or []), extra]

@@ -357,6 +357,46 @@ test('session reload restores the configured status line after a manual override
   expect(h.statuses).toHaveLength(cleared)
 })
 
+test('setup finishes while restoring live usage is blocked, and a later off toggle keeps the line cleared', { options: { statusline: true } }, async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, '')
+  await h.clock.settle()
+  h.statuses.length = 0
+  const gate = blockUsage(h)
+  const setup = obs($, 'setup')
+  await gate.started
+  try {
+    expect(await setup).toContain('is set up')
+    expect(await obs($, 'statusline off')).toBe('obs: statusline off')
+  } finally {
+    gate.release()
+    await h.clock.settle()
+  }
+  expect(h.statuses.every(line => line === undefined)).toBe(true)
+})
+
+test('a session change prevents setup from restoring its old summary after a delayed usage read', { options: { statusline: true } }, async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  on('classic.SessionStart', () => ({}))
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await $.classic.SessionStart({ source: 'startup', transcript_path: DERIVED, session_id: 'abc' })
+  await obs($, '')
+  await h.clock.settle()
+  h.statuses.length = 0
+  const gate = blockUsage(h)
+  const setup = obs($, 'setup')
+  await gate.started
+  try {
+    await setup
+    await $.classic.SessionStart({ source: 'clear', transcript_path: '/new/def.jsonl', session_id: 'def' })
+  } finally {
+    gate.release()
+    await h.clock.settle()
+  }
+  expect(h.statuses.every(line => line === undefined)).toBe(true)
+})
+
 test('session reload redraws a configured status line without waiting for live usage', { options: { statusline: true } }, async ($, on) => {
   const h = host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })

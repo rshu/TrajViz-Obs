@@ -97,3 +97,24 @@ def test_converge_sections_keep_all_native_controls_in_separate_tabs(tmp_path):
     assert [tab.label for tab in tabs.children] == ["Pairwise", "Batch", "Before/After"]
     for panel, action in zip(tabs.children, ("Compare", "Run Batch", "Compare Before/After"), strict=True):
         assert any(isinstance(child, gr.Button) and child.value == action for child in panel.children)
+
+
+def test_converge_upload_rows_stack_on_mobile_without_stacking_chart_rows(tmp_path):
+    app = decorate_dashboard(dashboard.converge_app(data_root=tmp_path), "converge")
+
+    def descendants(block):
+        for child in getattr(block, "children", []):
+            yield child
+            yield from descendants(child)
+
+    rows = [block for block in app.blocks.values() if "obs-file-row" in (block.elem_classes or [])]
+    files = [block for block in app.blocks.values() if isinstance(block, gr.File)]
+    covered_files = [child for row in rows for child in descendants(row) if isinstance(child, gr.File)]
+    assert len(rows) == 4 and len(covered_files) == len(files) == 6
+    assert set(covered_files) == set(files)
+    assert not any(isinstance(child, gr.Plot) for row in rows for child in descendants(row))
+    css = presentation("converge", dashboard.converge_presentation())["css"]
+    desktop, mobile = css.split("@media (max-width: 768px) {", 1)
+    assert "obs-file-row" not in desktop
+    mobile = mobile.split("\n}\n", 1)[0]
+    assert ".obs-file-row { flex-direction: column; }" in mobile

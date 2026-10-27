@@ -11,6 +11,7 @@ import json
 import os
 import queue
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -251,6 +252,13 @@ def validate_subagents(directory: Path, events: list[dict], overview: str) -> di
     siblings = [path for path in folder.rglob('agent-*.jsonl') if path.is_file() and not path.is_symlink()]
     require(siblings, 'Claude did not persist a native sibling subagent transcript')
     return {'agent_count': len(agents), 'native_transcripts': len(siblings), 'spawn_calls': len(spawns)}
+
+
+def subagent_check_command(work: Path) -> str:
+    source = str((work / 'add.py').resolve())
+    code = (f'import runpy; add = runpy.run_path({source!r})["add"]; '
+            'assert add(-1, 1) == 0; print("SUBAGENT_CHECK_OK")')
+    return shlex.join([sys.executable, '-I', '-c', code])
 
 
 def wait_native_subagent(work: Path, session_id: str, env: dict[str, str], timeout: float = 180) -> dict:
@@ -526,9 +534,13 @@ Use the tools to do this work; do not merely describe commands.'''
             check('real failed tool call and working recovery', lambda: validate_coding(coding['events'], work))
             subagent = None
             if args.test_subagent:
+                command = subagent_check_command(work)
                 subagent = turn('Use the Agent tool to launch exactly one general-purpose subagent. '
-                                'Ask it to read add.py, verify add(-1, 1) == 0 with Bash, and reply '
-                                'SUBAGENT_CHECK_OK. It must not modify files. Wait for its result and '
+                                f'Ask it to read {str(work / "add.py")!r} with Read, then run exactly this '
+                                f'command with Bash:\n{command}\n'
+                                'The command verifies add(-1, 1) == 0 and prints SUBAGENT_CHECK_OK. '
+                                'Ask it to reply SUBAGENT_CHECK_OK only after the command succeeds. '
+                                'It must not modify files. Wait for its result and '
                                 'report it. You must actually spawn the subagent; do not do the check yourself.',
                                 'real native subagent turn', timeout=240)
                 check('native subagent completion',

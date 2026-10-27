@@ -292,7 +292,7 @@ export async function stopAll($: EngineInterface): Promise<void> {
 
 /**
  * The module's load (`session.start`, which fires again at a reload: a
- * config change, /reload-plugins, a worker respawn). The engine killed the
+ * config change, source reload, a worker respawn). The engine killed the
  * previous environment's children with it and this map starts empty, but
  * `$.state` outlives the module, so `dashboards` would still name them:
  * whatever this map holds is ended and the state is made to say none runs.
