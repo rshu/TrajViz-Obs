@@ -12,6 +12,8 @@ The plugin ships against the published ``agent-trajviz>=0.2.0,<0.3``. These inte
    wraps its real ``call_llm`` so only the first steps reach the endpoint, as session mode labels them.
 4. **Native Claude attribution evidence.** :func:`install_attribution_guard` refuses capability blame when
    the optional attribution parser cannot preserve native JSONL Read/Bash calls in an isolated capability probe.
+5. **Local command display records.** Native conversion skips known command UI text, retaining source
+   positions and tool results so inspecting a session does not become part of its work trajectory.
 
 It also runs TrajViz's plugins (public API): ``load()`` reads only the formats already registered, so
 :func:`load_plugins` runs ``agent_trajviz.load_plugins()`` once per process before the first load or view lookup,
@@ -39,6 +41,7 @@ import agent_trajviz
 from agent_trajviz import LoadError, Trajectory
 
 from .errors import BridgeError
+from .native_records import normalize_native_records
 
 #: The installed TrajViz version.
 TRAJVIZ_VERSION: str = agent_trajviz.__version__
@@ -102,7 +105,50 @@ def load_plugins() -> list[str]:
     loaded, error = _plugin_outcome()
     if error is not None:
         raise BridgeError("plugin_error", error)
+    _install_native_record_filter()
     return list(loaded)
+
+
+def _install_native_record_filter() -> None:
+    """Normalize at the shared native conversion seam, including dashboard uploads and ZIPs."""
+    check_supported()
+    from agent_trajviz.insight import loaders
+
+    original = getattr(loaders, "convert_claude_code_events", None)
+    if getattr(original, "_trajviz_obs_ui_filter", False):
+        return
+    required = {"events", "source_path", "child_event_lists", "child_warnings"}
+    try:
+        parameters = inspect.signature(original).parameters if callable(original) else {}
+    except (TypeError, ValueError):
+        parameters = {}
+    if not required <= parameters.keys():
+        raise BridgeError("unsupported_trajviz", "TrajViz's native Claude Code converter changed; "
+                          "update the plugin before analyzing this session.")
+
+    @functools.wraps(original)
+    def convert(events, *, source_path=None, child_event_lists=None, child_warnings=None):
+        if not isinstance(events, list):
+            return original(events, source_path=source_path, child_event_lists=child_event_lists,
+                            child_warnings=child_warnings)
+        parent, ignored = normalize_native_records(events)
+        children = {}
+        for agent, bundle in (child_event_lists or {}).items():
+            records = bundle.get("events") if isinstance(bundle, dict) else bundle
+            if not isinstance(records, list):
+                children[agent] = bundle
+                continue
+            records, child_ignored = normalize_native_records(records)
+            ignored += child_ignored
+            children[agent] = {**bundle, "events": records} if isinstance(bundle, dict) else records
+        result = original(parent, source_path=source_path, child_event_lists=children,
+                          child_warnings=child_warnings)
+        if ignored:
+            result["_trajviz_obs_ignored_ui_records"] = ignored
+        return result
+
+    convert._trajviz_obs_ui_filter = True
+    loaders.convert_claude_code_events = convert
 
 
 def load_run(path: str, *, window_limit: int | None = None, current: bool = False) -> Trajectory:

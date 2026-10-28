@@ -6,6 +6,8 @@ import {
   IssuesList,
   KpiRow,
   MdTable,
+  PaneMetrics,
+  PaneTrends,
   PhaseRibbon,
   SparklineBlock,
   StackedBlock,
@@ -83,6 +85,100 @@ const kpiRowCells = (kpis: unknown): number[] => kids(kpis).map(row => kids(row)
 
 /** The cells of each Text on the ribbon (the Box keyed `phases`). */
 const ribbonCells = (ribbon: unknown): number[] => kids(ribbon).map(t => textOf(t).length)
+
+/** Visible text below an element, including styled Text spans. */
+const treeText = (node: unknown): string => typeof node === 'string' ? node :
+  typeof node === 'object' && node !== null && Array.isArray((node as Found).children)
+    ? ((node as Found).children as unknown[]).map(treeText).join('') : ''
+
+test('pane metrics keep fixed columns across pane widths and preserve every primary value', async ($, on) => {
+  on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) =>
+    PaneMetrics({ els: $.ui.resolve(e), snap: SNAPSHOT, usage: USAGE, columns: e.props.bodyColumns }))
+  for (const surface of ['terminal', 'desktop'] as const) for (const columns of [40, 56, 80, 100]) {
+    const ui = await $.ui.mount({ ...pane(columns), surface })
+    const rows = kids(await ui.find({ key: 'pane-metric-rows' }))
+    expect(rows).toHaveLength(4)
+    for (const row of rows) {
+      expect(kids(row)).toHaveLength(2)
+      const widths = kids(row).map(cell => cell.props?.['width'] as number)
+      expect(widths).toEqual([Math.floor((columns - 2) / 2), Math.floor((columns - 2) / 2)])
+      expect(widths.reduce((sum, n) => sum + n, 2)).toBeLessThanOrEqual(columns)
+    }
+    expect(rows.flatMap(row => kids(row).map(cell => treeText(kids(cell)[0])))).toEqual(['Steps', 'Tools', 'Tokens', 'Cost', 'Context', 'Cache', 'Agents', 'Elapsed'])
+    for (const value of ['311', '196', '4.8M', '$1.25', '24%', '95%', '2', '52m02s']) expect(await ui.find({ type: 'Text', text: value })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /7 prompts · 1 compaction · 96% tool success · p95 31s/ })).toBeDefined()
+    expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
+    await ui.unmount()
+  }
+})
+
+test('pane metrics reduce inline rows and wrap large values without dropping unknown cost', async ($, on) => {
+  let compact = true
+  let usage: typeof USAGE | undefined = USAGE
+  on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) =>
+    PaneMetrics({ els: $.ui.resolve(e), snap: SNAPSHOT, usage, columns: e.props.bodyColumns, compact }))
+  let ui = await $.ui.mount({ ...pane(80), surface: 'terminal' })
+  expect(kids(await ui.find({ key: 'pane-metric-rows' }))).toHaveLength(2)
+  expect(await ui.find({ type: 'Text', text: /Tokens 4.8M · Cache 95% · Agents 2 · Elapsed 52m02s/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Token split:/ })).toBeUndefined()
+  await ui.unmount()
+  compact = false
+  usage = { ...USAGE, cost: { usd: 1_234_567_890_123_456 } }
+  ui = await $.ui.mount({ ...pane(40), surface: 'terminal' })
+  const rows = kids(await ui.find({ key: 'pane-metric-rows' }))
+  expect(rows).toHaveLength(8)
+  for (const row of rows) expect(kids(row)[0]?.props?.['width']).toBe(40)
+  expect(await ui.find({ type: 'Text', text: '$1234567890123456.00' })).toBeDefined()
+  await ui.unmount()
+  usage = undefined
+  ui = await $.ui.mount({ ...pane(56), surface: 'terminal' })
+  const cells = kids(await ui.find({ key: 'pane-metric-rows' })).flatMap(kids)
+  expect(treeText(cells.find(cell => treeText(kids(cell)[0]) === 'Cost'))).toBe('Cost?')
+  await ui.unmount()
+})
+
+test('pane trends align sparklines with explicit units at narrow and wide widths', async ($, on) => {
+  const snap = { ...SNAPSHOT, context: { ...SNAPSHOT.context, window: 1000 }, series: {
+    tokens: { steps: [1, 2], fresh: [10, 20], cache_read: [30, 40], cache_write: [0, 0], output: [5, 10] },
+    durations: { steps: [1, 2], seconds: [null, 65], outliers: [1] },
+    context: { turns: [1, 2], occupancy: [100, 500], compactions: [] },
+  } }
+  const original = JSON.stringify(snap)
+  on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) =>
+    PaneTrends({ els: $.ui.resolve(e), snap, columns: e.props.bodyColumns }))
+  for (const surface of SURFACES) for (const columns of [40, 56, 80, 100]) {
+    const ui = await $.ui.mount({ ...pane(columns), surface })
+    const lines = await Promise.all(['tokens', 'durations', 'context'].map(key => ui.find({ key: `trend:${key}` }).then(treeText)))
+    expect(lines[0]).toMatch(/^Tokens\/step +[▁▂▃▄▅▆▇█·]+ +max 70$/)
+    expect(lines[1]).toMatch(/^Step time +[▁▂▃▄▅▆▇█·]+ +max 1m05s$/)
+    expect(lines[2]).toMatch(/^Context est\. +[▁▂▃▄▅▆▇█·]+ +max 50%$/)
+    expect(new Set(lines.map(line => line.length)).size).toBe(1)
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(columns)
+    expect(await ui.find({ type: 'Text', text: 'Trends · earlier → later' })).toBeDefined()
+    expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
+    await ui.unmount()
+  }
+  expect(JSON.stringify(snap)).toBe(original)
+})
+
+test('pane trends distinguish unavailable samples from zero and unknown context windows', async ($, on) => {
+  let snap = { ...SNAPSHOT, context: { ...SNAPSHOT.context, window: null }, series: {
+    tokens: { steps: [], fresh: [], cache_read: [], cache_write: [], output: [] },
+    durations: { steps: [1, 2], seconds: [null, null], outliers: [] },
+    context: { turns: [], occupancy: [], compactions: [] },
+  } } as typeof SNAPSHOT
+  on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) =>
+    PaneTrends({ els: $.ui.resolve(e), snap, columns: e.props.bodyColumns }))
+  let ui = await $.ui.mount({ ...pane(40), surface: 'terminal' })
+  for (const key of ['tokens', 'durations', 'context']) expect(treeText(await ui.find({ key: `trend:${key}` }))).toMatch(/n\/a$/)
+  expect(await ui.find({ type: 'Text', text: /max 0/ })).toBeUndefined()
+  await ui.unmount()
+  snap = { ...snap, series: { ...snap.series, tokens: { ...snap.series.tokens, fresh: [0] }, context: { turns: [1], occupancy: [500], compactions: [] } } }
+  ui = await $.ui.mount({ ...pane(40), surface: 'terminal' })
+  expect(treeText(await ui.find({ key: 'trend:tokens' }))).toMatch(/max 0$/)
+  expect(treeText(await ui.find({ key: 'trend:context' }))).toMatch(/max 500 tok$/)
+  await ui.unmount()
+})
 
 test('the widgets draw on every surface; Rasters only on the terminal', async ($, on) => {
   on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) => probe($.ui.resolve(e), e.surface, e.props.bodyColumns))

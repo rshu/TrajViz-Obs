@@ -252,23 +252,18 @@ test('the pane draws the latest snapshot with its tabs, on terminal and desktop'
     expect((await ui.find({ key: 'refresh' }))?.props).toMatchObject({ hotkey: 'r' })
     expect((await ui.find({ key: 'watch' }))?.props).toMatchObject({ hotkey: 'w', label: 'Watch on' })
     expect((await ui.find({ key: 'dashboard' }))?.props).toMatchObject({ hotkey: 'd' })
-    // The overview: chips, KPIs with the live context, the series, the ribbon, the top issues and the warning.
-    expect((await ui.find({ type: 'Text', text: /tool success/ }))?.props['color']).toBe('success')
+    // The overview uses aligned metrics and compact trends at every dock width.
+    expect((await ui.find({ type: 'Text', text: /^● tool success / }))?.props['color']).toBe('success')
     expect(await ui.find({ type: 'Text', text: /^311$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^24%$/ })).toBeDefined()
-    expect(await ui.find({ key: 'phases' })).toBeDefined()
+    expect(await ui.find({ key: 'pane-metrics' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Latest phase: verify' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Edit loop on hooks\/lib\/state\.ts/ })).toBeDefined()
     expect((await ui.find({ type: 'Text', text: /skipped sub-agent log/ }))?.props['color']).toBe('warning')
-    // The series are sized to the body, Rasters on the terminal only.
-    if (surface === 'terminal') {
-      for (const key of ['tokens', 'durations', 'context']) expect((await ui.find({ key }))?.props).toMatchObject({ columns: 80 })
-      expect(await ui.findAll({ type: 'Raster' })).toHaveLength(3)
-    } else {
-      expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
-      expect((await ui.findAll({ type: 'Text', text: /[▁▂▃▄▅▆▇█·]{20,}/ })).length).toBeGreaterThanOrEqual(3)
-    }
-    // The footer names the snapshot.
-    expect(await ui.find({ type: 'Text', text: /311 steps · computed in 842 ms/ })).toBeDefined()
+    for (const key of ['tokens', 'durations', 'context']) expect(await ui.find({ key: `trend:${key}` })).toBeDefined()
+    expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
+    // The footer exposes freshness and watch state without repeating the metrics above.
+    expect(await ui.find({ type: 'Text', text: /Updated .* · 311 steps · watch on/ })).toBeDefined()
     await ui.unmount()
   }
 })
@@ -348,18 +343,29 @@ test('the hotkeys switch tabs, and each tab draws its own rows', async ($, on) =
   await ui.unmount()
 })
 
-test('below 48 columns the overview is a KPI list and the drag line', async ($, on) => {
+test('unavailable health metrics remain unavailable rather than becoming good', async ($, on) => {
+  host(on, [{ ...SNAPSHOT, health: [{ metric: 'throughput', status: 'good', label: 'N/A', detail: 'No timing data' }] }])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($)
+  const ui = await $.ui.mount(pane('terminal', 80))
+  expect(await ui.find({ type: 'Text', text: '● throughput N/A' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '● throughput good' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a narrow overview keeps readable metrics and trends with a route to detailed charts', async ($, on) => {
   host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await obs($)
   const ui = await $.ui.mount(pane('terminal', 40))
-  expect(await ui.find({ key: 'kpis-summary' })).toBeDefined()
+  expect(await ui.find({ key: 'pane-metrics' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^95%$/ })).toBeDefined()
-  const drag = await ui.find({ type: 'Text', text: /Widen the pane/ })
-  expect(drag?.text).toBe('Widen the pane for charts, or open Dashboard for the full view.')
+  const drag = await ui.find({ type: 'Text', text: /Open Dashboard for detailed charts/ })
+  expect(drag?.text).toBe('Open Dashboard for detailed charts.')
   expect(drag?.props['dimColor']).toBe(true)
   expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
   expect(await ui.find({ key: 'phases' })).toBeUndefined()
+  expect(await ui.find({ key: 'pane-trends' })).toBeDefined()
   // The tabs still switch.
   expect((await ui.find({ key: 'tab:3' }))?.props['hotkey']).toBe('3')
   await ui.unmount()
@@ -370,7 +376,7 @@ test('the default dock leads with compact metrics and issue titles while preserv
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await obs($)
   const ui = await $.ui.mount(pane('terminal', 56))
-  expect(await ui.find({ key: 'kpis-summary' })).toBeDefined()
+  expect(await ui.find({ key: 'pane-metrics' })).toBeDefined()
   for (const value of ['311', '24%', '$1.25']) expect(await ui.find({ type: 'Text', text: value })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^Top issues$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Edit loop on hooks\/lib\/state\.ts/ })).toBeDefined()
@@ -391,7 +397,9 @@ test('a short inline pane avoids chart stacks and long issue evidence even on a 
   await obs($)
   const event = pane('terminal', 100)
   const ui = await $.ui.mount({ ...event, props: { ...event.props, placement: 'inline', scroll: { offset: 0, bodyRows: 14 } } })
-  expect(await ui.find({ key: 'kpis-summary' })).toBeDefined()
+  expect(await ui.find({ key: 'pane-metrics' })).toBeDefined()
+  expect(await ui.find({ key: 'pane-trends' })).toBeUndefined()
+  expect(await ui.find({ key: 'latest-phase' })).toBeUndefined()
   expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
   expect(await ui.findAll({ type: 'Text', text: /^\d\. / })).toHaveLength(1)
   expect(await ui.find({ type: 'Text', text: /2 more/ })).toBeDefined()
@@ -420,7 +428,7 @@ test('the action keys refresh, toggle watch, and run dashboard', async ($, on) =
   await ui.unmount()
   ui = await $.ui.mount(pane('terminal', 80))
   expect((await ui.find({ key: 'watch' }))?.props['label']).toBe('Watch off')
-  expect(await ui.find({ type: 'Text', text: /350 steps · computed in 842 ms · wall 52m02s · watch off$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Updated .* · 350 steps · watch off$/ })).toBeDefined()
   await ui.press({ key: 'watch' })
   await ui.unmount()
   ui = await $.ui.mount(pane('terminal', 80))

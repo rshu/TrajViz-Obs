@@ -12,13 +12,14 @@ import sys
 import threading
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import agent_trajviz as tv
 import gradio
 import pytest
 from agent_trajviz import MissingExtraError
 
-from trajviz_obs.dashboard_cmd import build_preloaded_insight
+from trajviz_obs.dashboard_cmd import _cached_label_notice, build_preloaded_insight
 from trajviz_obs.errors import BridgeError
 
 
@@ -96,10 +97,16 @@ def test_changed_dashboard_loader_cannot_silently_drop_context_window(fixture_se
 
 
 @pytest.fixture
-def dashboard_labels(tmp_path):
+def dashboard_labels(tmp_path, fixture_session):
+    from trajviz_obs.compat import load_run
+
+    index, step = next((i, step) for i, step in enumerate(load_run(str(fixture_session)).steps)
+                       if step["role"] == "assistant")
     path = tmp_path / "labels.json"
     path.write_text(json.dumps({"taxonomy_version": "2", "model": "test", "steps": [
-        {"index": 1, "role": "assistant", "phase": "understand", "action": "code_reading",
+        {"index": index, "raw_index": step["raw_index"], "role": "assistant", "agent": step.get("agent") or "",
+         "session_id": step.get("session_id"), "time_created_ms": step.get("time_created_ms"),
+         "phase": "understand", "action": "code_reading",
          "duration_s": 2.0, "tokens_total": 12, "text_preview": "Read the fixture"},
     ]}), encoding="utf-8")
     return path
@@ -124,6 +131,65 @@ def test_labels_preload_uses_all_native_charts_and_resets_for_other_trajectories
     assert any(target == (label_file._id, "change") for target in native.targets) or any(
         (label_file._id, "change") in block.targets for block in app.fns.values()
         if getattr(block.fn, "__name__", "") == "do_load_labels")
+
+
+@pytest.fixture
+def filtered_label_run(monkeypatch):
+    from trajviz_obs import dashboard_cmd
+
+    steps = [
+        {"raw_index": 10, "role": "user", "agent": "", "session_id": "main", "time_created_ms": 100},
+        {"raw_index": 12, "role": "assistant", "agent": "", "session_id": "main", "time_created_ms": 110},
+        {"raw_index": 3, "role": "assistant", "agent": "child", "session_id": "main", "time_created_ms": 120},
+        {"raw_index": 30, "role": "user", "agent": "", "session_id": "main", "time_created_ms": 130},
+    ]
+    run = SimpleNamespace(format="claude_code", raw={"_trajviz_obs_ignored_ui_records": 4}, steps=steps)
+    monkeypatch.setattr(dashboard_cmd, "load_run", lambda _path: run)
+    return run
+
+
+def test_cached_labels_accept_assistant_only_prefix_without_rewriting_it(filtered_label_run, tmp_path):
+    path = tmp_path / "labels.json"
+    # Labels need not cover the current tail, or include the user steps between assistants.
+    path.write_text(json.dumps({"steps": [dict(filtered_label_run.steps[1], index=1),
+                                         dict(filtered_label_run.steps[2], index=2)]}))
+    before = path.read_bytes()
+    assert _cached_label_notice("current.jsonl", str(path)) is None
+    assert path.read_bytes() == before
+
+
+def test_native_export_labels_are_checked_even_without_the_runtime_filter_marker(filtered_label_run, tmp_path):
+    filtered_label_run.raw = {}
+    path = tmp_path / "labels.json"
+    path.write_text(json.dumps({"steps": [dict(filtered_label_run.steps[1], index=1)]}))
+    assert _cached_label_notice("trajectory.json", str(path)) is None
+    path.write_text(json.dumps({"steps": [dict(filtered_label_run.steps[1], index=2)]}))
+    assert "Run /obs label again" in _cached_label_notice("trajectory.json", str(path))
+
+
+@pytest.mark.parametrize("change", [
+    {"index": 20}, {"raw_index": 11}, {"role": "user"}, {"agent": "other"},
+    {"session_id": "other"}, {"time_created_ms": 109}, {"raw_index": None},
+])
+def test_cached_labels_refuse_changed_step_identity(filtered_label_run, tmp_path, change):
+    path = tmp_path / "labels.json"
+    row = dict(filtered_label_run.steps[1], index=1)
+    row.update(change)
+    path.write_text(json.dumps({"steps": [row]}))
+    assert "Run /obs label again" in _cached_label_notice("current.jsonl", str(path))
+
+
+def test_incompatible_cached_labels_show_notice_and_clear_on_another_trajectory(filtered_label_run,
+                                                                             fixture_session, tmp_path):
+    path = tmp_path / "labels.json"
+    path.write_text(json.dumps({"steps": [dict(filtered_label_run.steps[1], index=2)]}))
+    before = path.read_bytes()
+    app = build_preloaded_insight(str(fixture_session), labels_path=str(path))
+    reset = next(block for block in app.fns.values() if getattr(block.fn, "__name__", "") == "reset_labels")
+    outputs = reset.fn(str(fixture_session))
+    assert outputs[-1]["value"] is None and "Run /obs label again" in outputs[1]
+    assert "Run /obs label again" not in reset.fn(str(tmp_path / "another.jsonl"))[1]
+    assert path.read_bytes() == before
 
 
 def test_dashboard_rejects_invalid_label_sidecar_before_launch(fixture_session, tmp_path, run_cli):

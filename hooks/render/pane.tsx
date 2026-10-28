@@ -10,20 +10,19 @@ import type { Dashboards, EmptySnapshot, Flags, Snapshot } from '../../types'
 import { EMPTY_TEXT } from '../commands/overview'
 import { refreshPane } from '../commands/pane'
 import { runSelectedCommand, runSnapshotCommand } from '../lib/actions'
-import { fmtCompact, fmtInt, fmtPct, fmtSecs } from '../lib/format'
+import { fmtCompact, fmtInt, fmtPct } from '../lib/format'
 import { isEmpty } from '../lib/snapshot'
 import { toggleWatch, writePaneTab } from '../lib/state'
 import {
   ContextBlock,
   HealthChips,
   IssuesList,
-  KpiRow,
   MdTable,
-  PhaseRibbon,
+  PaneMetrics,
+  PaneTrends,
   Swimlane,
   ToolBars,
   WarningsLine,
-  seriesOf,
   type Els,
 } from './widgets'
 
@@ -39,14 +38,14 @@ export const DOCK_COLUMNS = 56
 /** The body rows asked for when seated inline above the prompt. */
 export const INLINE_ROWS = 14
 
-/** Below this many body columns the overview omits its charts. */
+/** Below this many body columns the overview points to the full dashboard. */
 export const NARROW_COLUMNS = 48
 
 /** The tabs by hotkey: `1` Overview … `7` Timeline. */
 export const TABS: readonly string[] = ['Overview', 'Tools', 'Issues', 'Patterns', 'Agents', 'Context', 'Timeline']
 
 export const NO_SNAPSHOT_TEXT = 'No snapshot yet: press r or run /obs.'
-export const DRAG_TEXT = 'Widen the pane for charts, or open Dashboard for the full view.'
+export const DRAG_TEXT = 'Open Dashboard for detailed charts.'
 
 /** Live engine figures must not leave the whole pane waiting for an RPC. */
 export const PANE_USAGE_TIMEOUT_MS = 500
@@ -164,33 +163,23 @@ function overviewBody(b: Body): RenderElement {
   const { els, e, snap, columns, usage } = b
   const { Box, Text } = els
   const short = e.props.scroll.bodyRows < 24
-  if (columns < 72 || short) {
-    return (
-      <Box flexDirection="column" gap={1}>
-        {KpiRow({ els, snap, usage: usage ?? undefined, columns, summary: true })}
-        <Box flexDirection="column">
-          <Text weight="semibold">Top issues</Text>
-          {IssuesList({ els, issues: snap.issues, limit: short ? 1 : OVERVIEW_ISSUES, total: snap.counts.issues, summary: true })}
-          {snap.issues.length ? <Text dimColor>Press 3 for evidence and affected steps.</Text> : null}
-        </Box>
-        {WarningsLine({ els, warnings: snap.trajviz.warnings })}
-        {HealthChips({ els, health: snap.health })}
-        {columns < NARROW_COLUMNS ? <Text dimColor>{DRAG_TEXT}</Text> : null}
-      </Box>
-    )
-  }
+  const latestPhase = snap.phases.reduce<Snapshot['phases'][number] | null>((latest, phase) =>
+    latest === null || phase.end >= latest.end ? phase : latest, null)
   return (
-    <Box flexDirection="column" gap={1}>
-      {HealthChips({ els, health: snap.health })}
-      {KpiRow({ els, snap, usage: usage ?? undefined, columns })}
+    <Box flexDirection="column" gap={short ? 0 : 1}>
+      {PaneMetrics({ els, snap, usage: usage ?? undefined, columns, compact: short })}
+      {!short ? HealthChips({ els, health: snap.health.map(row => ({
+        ...row, label: /^(?:n\/a|unknown|\?|—)$/i.test(row.label.trim()) ? row.label : row.status,
+      })) }) : null}
       <Box flexDirection="column">
         <Text weight="semibold">Top issues</Text>
-        {IssuesList({ els, issues: snap.issues, limit: OVERVIEW_ISSUES, total: snap.counts.issues, summary: true })}
+        {IssuesList({ els, issues: snap.issues, limit: short ? 1 : OVERVIEW_ISSUES, total: snap.counts.issues, summary: true })}
         {snap.issues.length ? <Text dimColor>Press 3 for evidence and affected steps.</Text> : null}
       </Box>
-      {seriesOf({ els, surface: e.surface, snap, columns })}
-      {PhaseRibbon({ els, phases: snap.phases, total: snap.counts.records, columns })}
+      {!short ? PaneTrends({ els, snap, columns }) : null}
+      {!short && latestPhase ? <Box key="latest-phase"><Text dimColor wrap="wrap">{`Latest phase: ${latestPhase.name}`}</Text></Box> : null}
       {WarningsLine({ els, warnings: snap.trajviz.warnings })}
+      {!short && columns < NARROW_COLUMNS ? <Text dimColor>{DRAG_TEXT}</Text> : null}
     </Box>
   )
 }
@@ -353,9 +342,9 @@ export function renderPane(
   const footer =
     snap === null || isEmpty(snap)
       ? null
-      : `snapshot ${timeOf(snap.generated_at)} · ${fmtInt(snap.counts.assistant_steps)} steps · computed in ${fmtInt(snap.duration_ms)} ms · wall ${fmtSecs(snap.timing.wall_clock_s)} · watch ${flags.watch ? 'on' : 'off'}`
+      : `Updated ${timeOf(snap.generated_at)} · ${fmtInt(snap.counts.assistant_steps)} steps · watch ${flags.watch ? 'on' : 'off'}`
   return (
-    <Box flexDirection="column" gap={1}>
+    <Box flexDirection="column" gap={e.props.scroll.bodyRows < 24 ? 0 : 1}>
       <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={0}>
         {TABS.map((label, i) => {
           const n = i + 1

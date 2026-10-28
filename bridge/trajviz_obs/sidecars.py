@@ -10,8 +10,11 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from heapq import nsmallest
+from itertools import chain
 from pathlib import Path
-from typing import Any
+
+from .native_records import command_wrapper, local_caveat_id, local_command_parent, text_content
 
 #: Longest prompt text kept, in characters.
 PROMPT_CHARS = 200
@@ -41,16 +44,6 @@ class AgentMeta:
     agent_type: str
 
 
-def _text(content: Any) -> str:
-    """A string ``message.content``, or its ``text`` blocks joined by newlines."""
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    return "\n".join(b["text"] for b in content
-                     if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str))
-
-
 def _title(record: dict) -> str | None:
     for key in ("aiTitle", "title"):
         value = record.get(key)
@@ -62,16 +55,20 @@ def _title(record: dict) -> str | None:
 def scan_transcript(path: str, *, max_prompts: int = 20) -> TranscriptFacts:
     """Stream *path* once for its last ``ai-title`` and its real human prompts.
 
-    A prompt is a ``user`` record without ``isMeta: true`` whose text is not empty and does not open with
-    ``<`` (slash commands, caveats, injected reminders); tool results carry no text and never count.
+    A prompt is a ``user`` record without ``isMeta: true`` and with nonempty text that is not a known
+    host command/reminder/notification envelope. Literal XML prompts remain human input. Tool results
+    carry no text and never count.
     The first *max_prompts* texts are kept, clipped to :data:`PROMPT_CHARS`; malformed lines are skipped.
     """
     title: str | None = None
-    prompts: list[str] = []
+    first_prompts: list[tuple[int, str]] = []
+    local_caveats: set[str] = set()
+    local_commands: set[str] = set()
+    pending: dict[str, list[tuple[int, str, str | None]]] = {}
     prompt_count = meta_count = 0
     with open(path, "rb") as handle:
-        for line in handle:
-            if b"user" not in line and b"ai-title" not in line:
+        for position, line in enumerate(handle):
+            if b"user" not in line and b"ai-title" not in line and b"local_command" not in line:
                 continue
             try:
                 record = json.loads(line)
@@ -79,19 +76,38 @@ def scan_transcript(path: str, *, max_prompts: int = 20) -> TranscriptFacts:
                 continue
             if not isinstance(record, dict):
                 continue
+            if (command := local_command_parent(record)) is not None:
+                local_commands.add(command)
+                pending.pop(command, None)
             kind = record.get("type")
             if kind == "ai-title":
                 title = _title(record) or title
             elif kind == "user":
+                message = record.get("message")
+                text = text_content(message.get("content")).strip() if isinstance(message, dict) else ""
                 if record.get("isMeta") is True:
                     meta_count += 1
+                    if (caveat := local_caveat_id(record)) is not None:
+                        local_caveats.add(caveat)
                     continue
-                message = record.get("message")
-                text = _text(message.get("content")).strip() if isinstance(message, dict) else ""
-                if text and not text.startswith("<"):
+                parent = record.get("parentUuid") if isinstance(record.get("parentUuid"), str) else None
+                uuid = record.get("uuid")
+                if command_wrapper(text) and isinstance(uuid, str) and uuid:
+                    if uuid not in local_commands and parent not in local_caveats:
+                        # A later output may confirm it. Without proof it remains literal user XML.
+                        pending.setdefault(uuid, []).append((position, text[:PROMPT_CHARS], parent))
+                    continue
+                generated = text.startswith(("<system-reminder>", "<task-notification>"))
+                if text and not generated:
                     prompt_count += 1
-                    if len(prompts) < max_prompts:
-                        prompts.append(text[:PROMPT_CHARS])
+                    if len(first_prompts) < max_prompts:
+                        first_prompts.append((position, text[:PROMPT_CHARS]))
+    def unresolved():
+        return ((position, text) for rows in pending.values() for position, text, parent in rows
+                if parent not in local_caveats)
+
+    prompt_count += sum(1 for _ in unresolved())
+    prompts = [text for _, text in nsmallest(max(0, max_prompts), chain(first_prompts, unresolved()))]
     return TranscriptFacts(title=title, prompts=prompts, prompt_count=prompt_count, meta_count=meta_count)
 
 

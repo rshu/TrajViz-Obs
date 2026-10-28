@@ -24,12 +24,15 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING
 
+from agent_trajviz import LoadError
+
 from .cli import register
 from .compat import (
     dashboard_server_options,
     dashboard_window_callback,
     install_attribution_guard,
     load_plugins,
+    load_run,
     resolve_input_path,
 )
 from .dashboard_ui import decorate_dashboard, presentation
@@ -95,6 +98,39 @@ def _apply_context_window(app: gr.Blocks, transcript_path: str, window: int | No
     callbacks[0].fn = dashboard_window_callback(callbacks[0].fn, transcript_path, window)
 
 
+def _cached_label_notice(transcript_path: str, labels_path: str) -> str | None:
+    """An old native label layout must not silently describe different normalized steps.
+
+    Labels may cover only a prefix or assistant steps, so total counts are not an identity check.
+    Non-native formats retain their original behavior. Native exports use the same identity checks.
+    """
+    notice = "Cached labels use an earlier step layout. Run /obs label again to refresh them."
+    try:
+        run = load_run(transcript_path)
+        if not run.raw.get("_trajviz_obs_ignored_ui_records") and run.format != "claude_code":
+            return None
+        document = json.loads(Path(labels_path).read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or not isinstance(document.get("steps"), list):
+            return notice
+        for label in document["steps"]:
+            if not isinstance(label, dict):
+                return notice
+            index = label.get("index")
+            if type(index) is not int or not 0 <= index < len(run.steps):
+                return notice
+            step = run.steps[index]
+            if (type(label.get("raw_index")) is not int or label["raw_index"] != step.get("raw_index")
+                    or label.get("role") != step.get("role")
+                    or label.get("agent", label.get("executor_id", "")) != (step.get("agent") or "")):
+                return notice
+            for key in ("session_id", "time_created_ms"):
+                if label.get(key) not in (None, "") and label[key] != step.get(key):
+                    return notice
+    except (OSError, ValueError, KeyError, TypeError, LoadError, BridgeError):
+        return "Cached labels could not be restored. Run /obs label again, or load a labels file manually."
+    return None
+
+
 def _add_labels_preload(app: gr.Blocks, transcript_path: str, labels_path: str) -> bool:
     """Restore labels through the native reset/change handlers, after its normal trajectory reset.
 
@@ -124,7 +160,10 @@ def _add_labels_preload(app: gr.Blocks, transcript_path: str, labels_path: str) 
         path = upload_obj if isinstance(upload_obj, str) else getattr(upload_obj, "name", None)
         same_run = bool(path) and Path(path).resolve() == selected
         outputs = list(reset())
-        outputs[-1] = gr.update(value=labels_path if same_run else None)
+        notice = _cached_label_notice(transcript_path, labels_path) if same_run else None
+        outputs[-1] = gr.update(value=labels_path if same_run and notice is None else None)
+        if notice:
+            outputs[1] = f"<div style='padding:1em;color:var(--ov-muted);'>{notice}</div>"
         return tuple(outputs)
 
     gr.set_static_paths([labels_path])

@@ -62,6 +62,30 @@ def test_scan_max_prompts_caps_the_list_not_the_count(tmp_path):
     assert f.prompts == ["p0", "p1", "p2"] and f.prompt_count == 5
 
 
+def test_scan_keeps_literal_xml_and_non_meta_plugin_wording(tmp_path):
+    texts = ["<request>Keep XML input</request>", "<command-name>literal XML only</command-name>",
+             "<command-name>/example</command-name><command-message>literal XML</command-message>",
+             "The whole TrajViz view is a phrase I want explained"]
+    lines = [_user(text) for text in texts]
+    lines += [_user("<task-notification>Child completed</task-notification>"),
+              _user("TrajViz artifacts for this session go under /tmp/session", isMeta=True)]
+    facts = scan_transcript(_write(tmp_path / "s.jsonl", lines))
+    assert facts.prompts == texts and facts.prompt_count == 4 and facts.meta_count == 1
+
+
+@pytest.mark.parametrize("output_first", [False, True])
+def test_scan_confirms_local_output_without_a_caveat_and_keeps_unconfirmed_xml(tmp_path, output_first):
+    wrapper = "<command-name>/obs</command-name><command-message>obs</command-message>"
+    local = _user(wrapper, uuid="local-command")
+    output = json.dumps({"type": "system", "subtype": "local_command", "parentUuid": "local-command",
+                         "content": "<local-command-stdout>Done</local-command-stdout>"})
+    lines = [_user(wrapper, uuid="literal-xml"), *([output, local] if output_first else [local]),
+             _user("ordinary prompt"), *([] if output_first else [output]), _user("last prompt")]
+    path = _write(tmp_path / "s.jsonl", lines)
+    facts = scan_transcript(path, max_prompts=2)
+    assert facts.prompts == [wrapper, "ordinary prompt"] and facts.prompt_count == 3
+
+
 def test_agent_meta_from_nested_sidecar(tmp_session):
     meta = agent_meta(tmp_session.transcript)
     assert meta["abc"].description == "Builder check" and meta["abc"].agent_type == "general-purpose"

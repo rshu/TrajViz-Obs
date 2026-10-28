@@ -178,6 +178,96 @@ export function KpiRow({ els, snap, usage, columns, summary = false }: { els: El
   )
 }
 
+/** Stable label/value columns for the pane, without the card's variable-width tiles. */
+export function PaneMetrics({ els, snap, usage, columns, compact = false }: {
+  els: Els; snap: Snapshot; usage?: Snapshot['engine_usage']; columns: number; compact?: boolean
+}): RenderElement {
+  const { Box, Text } = els
+  const metrics = kpis(snap, usage)
+  const named = (label: string): Kpi => metrics.find(k => k.label === label) ?? { label, value: '?' }
+  const order = compact ? ['Steps', 'Tools', 'Context', 'Cost'] : ['Steps', 'Tools', 'Tokens', 'Cost', 'Context', 'Cache Efficiency', 'Agents', 'Wall clock']
+  const items = order.map(label => {
+    const k = named(label)
+    return { label: label === 'Cache Efficiency' ? 'Cache' : label === 'Wall clock' ? 'Elapsed' : label, value: k.value }
+  })
+  const width = Math.max(1, Math.floor(columns))
+  const labelWidth = 7
+  const pairWidth = Math.floor((width - 2) / 2)
+  const across = width >= 40 && items.every(k => labelWidth + 1 + k.value.length <= pairWidth) ? 2 : 1
+  const cellWidth = across === 2 ? pairWidth : width
+  const rows = Array.from({ length: Math.ceil(items.length / across) }, (_, i) => items.slice(i * across, (i + 1) * across))
+  const labelCells = Math.min(labelWidth, Math.max(1, cellWidth - 2))
+  const valueCells = Math.max(1, cellWidth - labelCells - 1)
+  const prompts = `${fmtInt(snap.counts.prompts)} prompt${snap.counts.prompts === 1 ? '' : 's'}`
+  const compactions = `${fmtInt(snap.counts.compactions)} compaction${snap.counts.compactions === 1 ? '' : 's'}`
+  return (
+    <Box key="pane-metrics" flexDirection="column">
+      <Box key="pane-metric-rows" flexDirection="column">
+        {rows.map(row => (
+          <Box flexDirection="row" columnGap={2}>
+            {row.map(k => (
+              <Box width={cellWidth} flexShrink={0} flexDirection="row" columnGap={1}>
+                <Box width={labelCells} flexShrink={0}><Text dimColor wrap="wrap">{k.label}</Text></Box>
+                <Box width={valueCells} flexShrink={0}><Text weight="semibold" wrap="wrap">{k.value}</Text></Box>
+              </Box>
+            ))}
+          </Box>
+        ))}
+      </Box>
+      {compact ? (
+        <Text dimColor wrap="wrap">{`Tokens ${named('Tokens').value} · Cache ${named('Cache Efficiency').value} · Agents ${named('Agents').value} · Elapsed ${named('Wall clock').value}`}</Text>
+      ) : (
+        <Text dimColor wrap="wrap">{`${prompts} · ${compactions} · ${fmtPct(snap.tools.success_rate)} tool success · p95 ${fmtSecs(snap.timing.p95_step_s)}`}</Text>
+      )}
+      {!compact && columns >= 72 ? <Text dimColor wrap="wrap">{`Token split: ${fmtCompact(snap.tokens.input)} fresh · ${fmtCompact(snap.tokens.cache_read)} cached · ${fmtCompact(snap.tokens.cache_write)} written · ${fmtCompact(snap.tokens.output)} out`}</Text> : null}
+    </Box>
+  )
+}
+
+/** Three small, labeled trends for the pane; detailed charts remain in diagnostic views. */
+export function PaneTrends({ els, snap, columns }: { els: Els; snap: Snapshot; columns: number }): RenderElement {
+  const { Box, Text } = els
+  const t = snap.series.tokens
+  const stacks = [t.fresh, t.cache_read, t.cache_write, t.output]
+  const tokens = Array.from({ length: Math.max(0, ...stacks.map(s => s.length)) }, (_, i) => {
+    const values = stacks.map(s => s[i]).filter((v): v is number => v !== undefined && Number.isFinite(v))
+    return values.length ? values.reduce((sum, v) => sum + Math.max(0, v), 0) : null
+  })
+  const window = snap.context.window
+  const percent = window !== null && Number.isFinite(window) && window > 0
+  const context = percent ? snap.series.context.occupancy.map(v => v * 100 / window) : snap.series.context.occupancy
+  const trends = [
+    { key: 'tokens', label: 'Tokens/step', values: tokens, color: '#10b981', format: (n: number) => fmtCompact(n) },
+    { key: 'durations', label: 'Step time', values: snap.series.durations.seconds, color: '#f59e0b', format: (n: number) => fmtSecs(n) },
+    { key: 'context', label: 'Context est.', values: context, color: '#ec4899', format: (n: number) => percent ? fmtPct(n) : `${fmtCompact(n)} tok` },
+  ].map(trend => {
+    let max: number | null = null
+    for (const v of trend.values) if (v !== null && Number.isFinite(v)) max = Math.max(max ?? 0, v)
+    return { ...trend, max, summary: max === null ? 'n/a' : `max ${trend.format(max)}` }
+  })
+  const labelWidth = Math.max(...trends.map(t => t.label.length))
+  const statWidth = Math.max(...trends.map(t => t.summary.length))
+  const plotWidth = Math.min(40, Math.floor(columns) - labelWidth - statWidth - 2)
+  return (
+    <Box key="pane-trends" flexDirection="column">
+      <Text dimColor>Trends · earlier → later</Text>
+      {trends.map(trend => {
+        const expanded = trend.values.length > 0 && trend.values.length < plotWidth
+          ? Array.from({ length: plotWidth }, (_, i) => trend.values[Math.min(trend.values.length - 1, Math.floor(i * trend.values.length / plotWidth))] ?? null)
+          : trend.values
+        const line = trend.max === null ? ' '.repeat(Math.max(0, plotWidth)) : sparkline(expanded, plotWidth)
+        return (
+          <Box key={`trend:${trend.key}`} flexDirection="column">
+            {plotWidth < 4 ? <Text dimColor wrap="wrap">{`${trend.label}: ${trend.summary}`}</Text> : (
+              <Text><Text dimColor>{`${trend.label.padEnd(labelWidth)} `}</Text><Text color={trend.color}>{line}</Text><Text dimColor>{` ${trend.summary.padStart(statWidth)}`}</Text></Text>
+            )}
+          </Box>
+        )
+      })}
+    </Box>
+  )
+}
+
 // --- series -----------------------------------------------------------------
 
 type SparklineProps = {

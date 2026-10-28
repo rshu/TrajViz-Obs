@@ -6,6 +6,8 @@ put session health in Overview's Summary, and bound dense charts and filters.
 
 from __future__ import annotations
 
+import json
+import textwrap
 from typing import TYPE_CHECKING, Any
 
 from .compat import attribution_message
@@ -60,7 +62,7 @@ _CSS = """
   min-width: 0 !important; max-height: 720px !important; overflow: auto !important;
   border: 1px solid var(--ov-border, #dce3ef); border-radius: 8px; scrollbar-width: thin;
 }
-.obs-dashboard .obs-chart > .js-plotly-plot { min-width: 640px; }
+.obs-dashboard .obs-chart > .js-plotly-plot { min-width: 0; width: 100%; }
 .obs-dashboard .obs-chart:has(> .empty) { display: none !important; }
 .obs-dashboard .obs-chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 640px), 1fr)); }
 .obs-dashboard .obs-markdown { min-width: 0 !important; max-width: 100%; overflow-x: auto; }
@@ -237,6 +239,8 @@ def decorate_dashboard(app: gr.Blocks, kind: str) -> gr.Blocks:
     """Wrap a native dashboard while preserving all its components and events."""
     import gradio as gr
 
+    if kind == "insight":
+        _sequence_attribution_load(app)
     for block in app.blocks.values():
         for attribute in ("value", "label", "info", "placeholder"):
             value = getattr(block, attribute, None)
@@ -255,8 +259,14 @@ def decorate_dashboard(app: gr.Blocks, kind: str) -> gr.Blocks:
         extra = "obs-chart" if isinstance(block, gr.Plot) else "obs-markdown" if isinstance(block, gr.Markdown) else None
         if extra:
             block.elem_classes = [*(block.elem_classes or []), extra]
+        if isinstance(block, gr.Plot):
+            _responsive_plot(block)
         if isinstance(block, gr.Row) and sum(isinstance(child, gr.Plot) for child in block.children) > 1:
             block.elem_classes = [*(block.elem_classes or []), "obs-chart-row"]
+        if isinstance(block, gr.Row) and any(isinstance(child, gr.Plot) for child in block.children):
+            for child in block.children:
+                if isinstance(child, gr.Column) and not child.children:
+                    child.visible = False
         if isinstance(block, gr.Row) and any(child.elem_id == "wf-filter-chips" for child in block.children):
             block.elem_classes = [*(block.elem_classes or []), "obs-workflow-filters"]
             for child in block.children:
@@ -312,6 +322,68 @@ def decorate_dashboard(app: gr.Blocks, kind: str) -> gr.Blocks:
             for panel, children in zip(panels, sections, strict=True):
                 panel.children.extend(children)
     return page
+
+
+def _sequence_attribution_load(app: gr.Blocks) -> None:
+    """Clear old diagnosis before loading, so it cannot overwrite the autoload result."""
+    load = next((fn for fn in app.fns.values() if fn.api_name == "_do_load"), None)
+    clear = next((fn for fn in app.fns.values() if fn.api_name == "_clear_attribution"), None)
+    if load is None or clear is None or load.trigger_after is not None or load.targets != clear.targets:
+        return
+    load.targets = [(None, "then")]
+    load.trigger_after = clear._id
+
+
+def _responsive_plot_data(value: Any) -> Any:
+    """Size serialized Plotly figures to their container without changing cached figures."""
+    data = value if isinstance(value, dict) else {"type": getattr(value, "type", None), "plot": getattr(value, "plot", None)}
+    if data.get("type") != "plotly" or not isinstance(data.get("plot"), str):
+        return value
+    figure = json.loads(data["plot"])
+    layout = figure.get("layout")
+    if layout is None:
+        layout = figure["layout"] = {}
+    layout.pop("width", None)
+    layout["autosize"] = True
+    if not figure.get("data"):
+        for annotation in layout.get("annotations", []):
+            annotation["text"] = _wrap_plot_text(annotation.get("text", ""))
+    for name, axis in list(layout.items()):
+        if not name.startswith(("xaxis", "yaxis")) or not isinstance(axis, dict):
+            continue
+        title = axis.get("title")
+        text = title.get("text") if isinstance(title, dict) else title
+        wrapped = _wrap_plot_text(text)
+        if wrapped != text:
+            if isinstance(title, dict):
+                title["text"] = wrapped
+            else:
+                axis["title"] = wrapped
+            if name.startswith("xaxis"):
+                margin = layout.setdefault("margin", {})
+                margin["b"] = max(70, margin.get("b") or 0)
+    update = {"plot": json.dumps(figure)}
+    return {**value, **update} if isinstance(value, dict) else value.model_copy(update=update)
+
+
+def _wrap_plot_text(text: Any) -> Any:
+    if not isinstance(text, str) or len(text) <= 28 or "<" in text or "\n" in text:
+        return text
+    return "<br>".join(textwrap.wrap(text, width=28, break_long_words=False, break_on_hyphens=False))
+
+
+def _responsive_plot(block: gr.Plot) -> None:
+    """Keep each native Plot's postprocessor, normalizing only its Plotly output."""
+    if getattr(block, "_obs_responsive", False):
+        return
+    original = block.postprocess
+
+    def postprocess(value: Any) -> Any:
+        return _responsive_plot_data(original(value))
+
+    block.postprocess = postprocess
+    block.value = _responsive_plot_data(block.value)
+    block._obs_responsive = True
 
 
 def _focus_overview(page: gr.Blocks) -> None:

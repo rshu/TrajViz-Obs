@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.14 — 2026-10-28
+
+- Give the pane overview aligned metrics, compact labeled trends, and a readable latest phase.
+- Keep inline panes and freshness information compact, and retain unavailable health metrics as unavailable.
+- Exclude confirmed local-command display records from native work steps without changing source files or identities.
+- Show a refresh notice when cached labels use an incompatible step layout; retain valid partial labels.
+- Let dashboard charts use the available width and finish automatic attribution after clearing its previous result.
+
 ## 0.1.13 — 2026-10-28
 
 - Strip terminal control sequences from display text so trajectory previews cannot blank the pane or overview.

@@ -44,8 +44,8 @@ def test_snapshot_keys_and_bounds(big_session):
 def test_snapshot_enrichment(tmp_session):  # title, prompts, agent label from meta
     snap = _snapshot(tmp_session.transcript)
     assert snap["title"] == "Build the obs plugin" and snap["counts"]["prompts"] == 1
-    # TrajViz counts every user record (caveat, slash command, prompt, the sub-agent's prompt); prompts are the real one.
-    assert snap["task"] == "fix the tests" and snap["counts"]["user_records"] == 4
+    # Known local-command caveats and wrappers are not work records; actual and child prompts remain.
+    assert snap["task"] == "fix the tests" and snap["counts"]["user_records"] == 2
     agent = next(a for a in snap["agents"] if a["id"] == "abc")
     assert agent["label"] == "Builder check" and agent["type"] == "general-purpose"
     assert any(lane["label"] == "Builder check" for lane in snap["swimlane"]["lanes"])
