@@ -51,6 +51,16 @@ Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path
 
 Watch refreshes an open pane after turns. `/obs statusline on` pins a summary under the prompt. Use `/obs watch off` and `/obs statusline off` to stop automatic refreshes.
 
+## Demo
+
+Claude Code overview and live pane in light mode, rendered from recorded output of a controlled test session:
+
+![Claude Code overview and live pane in light mode](assets/demo-terminal-light.png)
+
+Dashboard summary from the same session:
+
+![Dashboard summary with session health, tool success, and issues](assets/demo-dashboard.jpg)
+
 ## Configure
 
 Use Claude Code's `/config` menu for plugin options. Model features default to `llm=session`, using Claude Code's client: `analysisModel=sonnet` for analysis and fixes, and `labelModel=haiku` for labeling. Set either model option to `session` to follow the main conversation's model.
