@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.13 — 2026-10-28
+
+- Strip terminal control sequences from display text so trajectory previews cannot blank the pane or overview.
+- Keep the pane usable when live usage is delayed, and offer retry and close controls if drawing fails.
+
 ## 0.1.12 — 2026-10-27
 
 - Restore an enabled status line after dependency setup finishes.

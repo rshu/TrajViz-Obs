@@ -1,5 +1,6 @@
 import type { Register } from 'claude-code'
 import { parseArgs } from './lib/args'
+import { safeRenderText } from './lib/format'
 import { resetServers, stopAll } from './lib/servers'
 import { rememberTranscript } from './lib/session'
 import { isEmpty, parseSnapshotId } from './lib/snapshot'
@@ -8,7 +9,7 @@ import { onTurnComplete, resetStatusLine } from './lib/watch'
 import { readDashboards, readFlags, readLatest, readPaneTab, readSession, readSnapshotMember, seedFlags } from './lib/state'
 import { commandFailure, dispatch } from './commands/index'
 import { cardColumns, renderCard, showsButtons } from './render/card'
-import { paneUsage, renderPane } from './render/pane'
+import { paneUsage, renderPane, renderPaneFailure } from './render/pane'
 
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
@@ -57,7 +58,7 @@ export const register: Register = (on, options) => {
     if (id === null) return next(e)
     const snap = await readSnapshotMember($, id)
     if (snap === null || isEmpty(snap)) return next(e)
-    return renderCard($, e, snap, { options, showButtons: showsButtons(e), columns: cardColumns(e), usage: snap.engine_usage ?? null })
+    return safeRenderText(renderCard($, e, snap, { options, showButtons: showsButtons(e), columns: cardColumns(e), usage: snap.engine_usage ?? null }))
   })
 
   // The live pane (`$.ui.open({ id: 'obs' })`): the latest snapshot on the
@@ -69,8 +70,9 @@ export const register: Register = (on, options) => {
     const flags = await readFlags($)
     const dashboards = await readDashboards($)
     const selected = (await readSession($)).selected
-    return renderPane($, e, snap, tab, flags, dashboards, { options, usage: selected ? null : await paneUsage($, tab) })
-  })
+    const capturedUsage = snap !== null && !isEmpty(snap) ? snap.engine_usage ?? null : null
+    return safeRenderText(renderPane($, e, snap, tab, flags, dashboards, { options, usage: selected ? null : await paneUsage($, tab, capturedUsage) }))
+  }).catch(($, e, next) => safeRenderText(renderPaneFailure($, e, next.error)))
 
   // Live refresh: after a main-loop turn (`e.agentId` absent), one more
   // snapshot for the open pane or the status line, detached from the

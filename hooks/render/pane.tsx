@@ -5,7 +5,7 @@
 // `e.props.bodyColumns`, and a footer naming the snapshot. `openPane` and
 // `renderPane` are function declarations taking `$` (validate follows `$`
 // across an import only into one); state is reached through state.ts.
-import type { EngineInterface, PaneOpenArgs, PluginOptions, RenderElement, RenderInput, SessionUsage, UiOpenResult } from 'claude-code'
+import type { EngineInterface, HookFailure, PaneOpenArgs, PluginOptions, RenderElement, RenderInput, SessionUsage, Timer, UiOpenResult } from 'claude-code'
 import type { Dashboards, EmptySnapshot, Flags, Snapshot } from '../../types'
 import { EMPTY_TEXT } from '../commands/overview'
 import { refreshPane } from '../commands/pane'
@@ -48,14 +48,20 @@ export const TABS: readonly string[] = ['Overview', 'Tools', 'Issues', 'Patterns
 export const NO_SNAPSHOT_TEXT = 'No snapshot yet: press r or run /obs.'
 export const DRAG_TEXT = 'Widen the pane for charts, or open Dashboard for the full view.'
 
+/** Live engine figures must not leave the whole pane waiting for an RPC. */
+export const PANE_USAGE_TIMEOUT_MS = 500
+
 /** The pane as the hook sees it, on whichever surface. */
 export type PaneEvent = RenderInput<'Pane'>
+
+/** Captured figures suffice; live Context reads can also include the breakdown. */
+export type PaneUsage = Pick<SessionUsage, 'context' | 'cost'>
 
 /** What the render hook hands `renderPane` beyond the state: the options (for a refresh) and the engine's usage. */
 export type PaneExtras = {
   options: PluginOptions
   /** `$.session.usage()`, with the breakdown on the Context tab; null where the session has none. */
-  usage: SessionUsage | null
+  usage: PaneUsage | null
 }
 
 /** How many issues the overview tab lists; the Issues tab lists them all. */
@@ -105,13 +111,36 @@ export async function openPane($: EngineInterface, opts: { focus?: boolean; inli
   return (await placePane($, opts)).isPlaced
 }
 
-/** The engine's usage for the pane: with the summary breakdown on the Context tab; null where the session has none. */
-export async function paneUsage($: EngineInterface, tab: number): Promise<SessionUsage | null> {
+/** Live usage, with a Context breakdown; the captured figures keep a delayed host usable. */
+export async function paneUsage($: EngineInterface, tab: number, fallback: PaneUsage | null = null): Promise<PaneUsage | null> {
+  let timer: Timer | undefined
+  const expired = new Promise<PaneUsage | null>(resolve => {
+    timer = $.clock.after(PANE_USAGE_TIMEOUT_MS, () => resolve(fallback))
+  })
   try {
-    return tab === 6 ? await $.session.usage({ breakdown: 'summary' }) : await $.session.usage()
+    const live = tab === 6 ? $.session.usage({ breakdown: 'summary' }) : $.session.usage()
+    return await Promise.race([live.catch(() => fallback), expired])
   } catch {
-    return null
+    return fallback
+  } finally {
+    timer?.cancel()
   }
+}
+
+/** A failed drawing still offers recovery without repeating the state reads that failed. */
+export function renderPaneFailure($: EngineInterface, e: PaneEvent, error: HookFailure): RenderElement {
+  const { Box, Button, Text } = $.ui.resolve(e)
+  $.ui.log(`obs pane: ${error.kind}${error.message ? `: ${error.message.slice(0, 2000)}` : ''}`, { to: 'debug' })
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Text color="warning">Unable to draw the obs pane.</Text>
+      <Text dimColor>Retry the drawing, or run /obs dashboard for the full view.</Text>
+      <Box flexDirection="row" columnGap={2}>
+        <Button key="retry" label="Retry" hotkey="r" variant="primary" plain onPress={() => $.ui.invalidate('ui.render')} />
+        <Button key="close" label="Close" hotkey="x" plain onPress={() => $.ui.close({ id: PANE_ID })} />
+      </Box>
+    </Box>
+  )
 }
 
 const two = (n: number): string => String(n).padStart(2, '0')
@@ -128,7 +157,7 @@ const keysOf = (rows: Record<string, unknown>[]): string[] => Object.keys(rows[0
 
 // --- tab bodies -------------------------------------------------------------
 
-type Body = { els: Els; e: PaneEvent; snap: Snapshot; columns: number; usage: SessionUsage | null }
+type Body = { els: Els; e: PaneEvent; snap: Snapshot; columns: number; usage: PaneUsage | null }
 
 /** The dock and short inline surface show a compact summary before detailed diagnostics. */
 function overviewBody(b: Body): RenderElement {

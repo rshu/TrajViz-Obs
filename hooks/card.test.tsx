@@ -83,6 +83,24 @@ const row = (text: string, surface: RenderSurface, viewport: RenderViewport) =>
 
 const BUTTON_KEYS = ['dashboard', 'pane', 'json', 'fixes', 'analyze']
 
+test('terminal control text cannot discard the overview card or break its actions', async ($, on) => {
+  const marked = { ...SNAPSHOT, issues: SNAPSHOT.issues.map((issue, i) => i === 0
+    ? { ...issue, title: '\u001b[31mObserved failure\u001b[0m', evidence: 'tool output\u0000after nul' } : issue) }
+  const { calls } = host(on, [marked], { json: { files: ['index.json'], bytes: 100, path: '/exports/views' } })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  const text = await obs($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount(row(text, surface, { columns: 120, rows: 40, isFullscreen: true }))
+    expect(await ui.find({ type: 'Text', text: /Observed failure/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /tool outputafter nul/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeUndefined()
+    await ui.press({ key: 'json' })
+    await ui.unmount()
+  }
+  expect(calls.filter(call => call[0] === 'json')).toHaveLength(2)
+  expect(marked.issues[0]!.title).toBe('\u001b[31mObserved failure\u001b[0m')
+})
+
 test('card draws from its own snapshot id, not latest', async ($, on) => {
   host(on, [SNAPSHOT, SECOND])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })

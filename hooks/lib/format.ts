@@ -1,4 +1,5 @@
 // Number and text formatting for cards, tables and the status line.
+import type { RenderElement } from 'claude-code'
 
 const UNKNOWN = '?'
 
@@ -64,4 +65,29 @@ export function clip(s: string, n: number): string {
   if (s.length <= n) return s
   if (n <= 0) return ''
   return `${s.slice(0, n - 1)}…`
+}
+
+/** Plain display text: keep Unicode, tabs and line breaks, without terminal commands. */
+export function displayText(text: string): string {
+  return text
+    // OSC hyperlinks/titles, including a sequence cut short by a preview limit.
+    .replace(/(?:\u001b\]|\u009d)[\s\S]*?(?:\u0007|\u001b\\|\u009c|$)/g, '')
+    // DCS, SOS, PM and APC string commands end at ST, rather than a printable byte.
+    .replace(/(?:\u001b[PX^_]|[\u0090\u0098\u009e\u009f])[\s\S]*?(?:\u001b\\|\u009c|$)/g, '')
+    .replace(/(?:\u001b\[|\u009b)[0-?]*[ -/]*(?:[@-~]|$)/g, '')
+    .replace(/\u001b[ -/]*[0-~]?/g, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '')
+}
+
+/** Sanitize only rendered text; keep source data, action handles and element addresses intact. */
+export function safeRenderText(tree: RenderElement): RenderElement {
+  let node = tree
+  if (node.type === 'Markdown') node = { ...node, props: { ...node.props, text: displayText(node.props.text) } }
+  else if (node.type === 'Code') node = { ...node, props: { ...node.props, source: displayText(node.props.source) } }
+  else if (node.type === 'Button') node = { ...node, props: { ...node.props, label: displayText(node.props.label) } }
+  if ('children' in node && node.children !== undefined) {
+    return { ...node, children: node.children.map(child => typeof child === 'string' ? displayText(child) : safeRenderText(child)) } as RenderElement
+  }
+  return node
 }

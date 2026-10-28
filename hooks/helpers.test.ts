@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
-import type { EngineInterface } from 'claude-code'
+import type { EngineInterface, RenderElement } from 'claude-code'
 import { artifactsDir, cacheRoot, configDir, isSsh, isWindows, projectSlug, venvPython } from './lib/paths'
-import { clip, fmtCompact, fmtInt, fmtPct, fmtSecs } from './lib/format'
+import { clip, displayText, fmtCompact, fmtInt, fmtPct, fmtSecs, safeRenderText } from './lib/format'
 import { bar, fit, sparkline } from './lib/sparkline'
 import { DEFAULT_COLOR, encodeCells, sparklineRaster, stackedRaster, swimlaneRaster } from './lib/raster'
 
@@ -35,6 +35,34 @@ function decodeCells(b64: string): [number, number, number][] {
 
 const glyph = (cells: [number, number, number][], columns: number, col: number, row: number): string =>
   String.fromCodePoint(cells[row * columns + col]![0])
+
+test('display text removes terminal sequences and controls while retaining readable Unicode and lines', () => {
+  expect(displayText('\u001b[31m失败 ✓\u001b[0m\r\nnext\tcolumn\rprogress\u0000\u0007\u007f')).toBe('失败 ✓\nnext\tcolumn\nprogress')
+  expect(displayText('\u001b]8;;https://example.test\u0007link\u001b]8;;\u001b\\')).toBe('link')
+  expect(displayText('\u009b32mgreen\u009b0m\u009d0;title\u009c text')).toBe('green text')
+  expect(displayText('before\u001bPdevice command\u001b\\ after\u001b(B')).toBe('before after')
+  expect(displayText('preview\u001b[38;2;12')).toBe('preview')
+  expect(displayText('preview\u001b]8;;truncated')).toBe('preview')
+  expect(displayText('plain 👩‍💻 café\n\tunchanged')).toBe('plain 👩‍💻 café\n\tunchanged')
+})
+
+test('render sanitation preserves action identity and source text instead of changing stored data', () => {
+  const press = { plugin: 'trajviz-obs', handle: 42 }
+  const tree: RenderElement = { type: 'Box', props: {}, children: [
+    { type: 'Text', props: {}, children: ['\u001b[31merror\u001b[0m'] },
+    { type: 'Markdown', props: { text: '| file |\n| a\u0000.py |' } },
+    { type: 'Code', props: { source: 'one\rtwo' } },
+    { type: 'Button', props: { key: 'action', label: 'Open\u0007', hotkey: 'd' }, press },
+  ] }
+  const clean = safeRenderText(tree)
+  const children = 'children' in clean ? clean.children : undefined
+  expect(children?.[0]).toMatchObject({ children: ['error'] })
+  expect(children?.[1]).toMatchObject({ props: { text: '| file |\n| a.py |' } })
+  expect(children?.[2]).toMatchObject({ props: { source: 'one\ntwo' } })
+  expect(children?.[3]).toMatchObject({ props: { key: 'action', label: 'Open', hotkey: 'd' }, press })
+  expect((children?.[3] as { press: unknown }).press).toBe(press)
+  expect(tree.children?.[0]).toMatchObject({ children: ['\u001b[31merror\u001b[0m'] })
+})
 
 test('slug, formats, sparkline', () => {
   expect(projectSlug('/Users/me/a.b_c')).toBe('-Users-me-a-b-c')

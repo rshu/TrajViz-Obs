@@ -1,7 +1,8 @@
-import { expect, mock, test, type Engine } from 'claude-code/testing'
+import { expect, mock, test, type Engine, type MockClock } from 'claude-code/testing'
 import type { On, PaneOpenArgs, RenderSurface, UiOpenResult } from 'claude-code'
 import { parseArgs } from './lib/args'
 import { SNAPSHOT } from './testdata/snapshot'
+import { PANE_USAGE_TIMEOUT_MS } from './render/pane'
 
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
@@ -43,7 +44,16 @@ const SECOND = { ...SNAPSHOT, counts: { ...SNAPSHOT.counts, assistant_steps: 350
 type RunAnswer = { exitCode: number; stdout: string }
 const json = (doc: unknown): RunAnswer => ({ exitCode: 0, stdout: `${JSON.stringify(doc)}\n` })
 
-type Host = { runs: string[]; opens: PaneOpenArgs[]; closes: string[]; snapshots: number; usageArgs: unknown[]; bridgeCalls: string[][] }
+type Host = {
+  clock: MockClock
+  runs: string[]
+  opens: PaneOpenArgs[]
+  closes: string[]
+  snapshots: number
+  usageArgs: unknown[]
+  bridgeCalls: string[][]
+  usageBlock: { wait: Promise<void>; started: () => void } | null
+}
 
 /**
  * The host beneath `/obs` and its pane: env, files, session, usage (the
@@ -51,18 +61,21 @@ type Host = { runs: string[]; opens: PaneOpenArgs[]; closes: string[]; snapshots
  * one repeats), and the engine's pane calls recorded.
  */
 function host(on: On, snapshots: unknown[], placed: UiOpenResult = { isPlaced: true }): Host {
-  const h: Host = { runs: [], opens: [], closes: [], snapshots: 0, usageArgs: [], bridgeCalls: [] }
+  const clock = mock.clock(on, { now: NOW })
+  const h: Host = { clock, runs: [], opens: [], closes: [], snapshots: 0, usageArgs: [], bridgeCalls: [], usageBlock: null }
   on('command.register', () => ({ value: { command: 'obs' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 'abc' }))
   on('session.cwd', () => ({ value: CWD }))
-  on('session.usage', (_, e) => {
+  on('session.usage', async (_, e) => {
     h.usageArgs.push(e)
+    const block = h.usageBlock
+    h.usageBlock = null
+    if (block) { block.started(); await block.wait }
     return { value: e?.breakdown ? BREAKDOWN : USAGE }
   })
   mock.env(on, { HOME })
-  mock.clock(on, { now: NOW })
   on('fs.read', (_, e) => (e.path === STATE_PATH ? { value: STATE_JSON } : { deny: `ENOENT: ${e.path}` }))
   on('fs.exists', (_, e) => ({ value: e.path === VENV_PY || e.path === DERIVED }))
   on('ui.toast', () => ({ value: undefined }))
@@ -113,6 +126,112 @@ const pane = (surface: RenderSurface, bodyColumns: number) =>
   }) as const
 
 const TABS = ['Overview', 'Tools', 'Issues', 'Patterns', 'Agents', 'Context', 'Timeline']
+
+/** The next usage RPC stays pending until the test releases it. */
+function blockUsage(h: Host): { started: Promise<void>; release: () => void } {
+  let started: () => void = () => {}
+  let release: () => void = () => {}
+  const entered = new Promise<void>(resolve => { started = resolve })
+  const wait = new Promise<void>(resolve => { release = resolve })
+  h.usageBlock = { wait, started }
+  return { started: entered, release }
+}
+
+test('pending live usage falls back to the captured figures without leaving a blank pane', async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($)
+  const blocked = blockUsage(h)
+  let drawn = false
+  const mounting = $.ui.mount(pane('terminal', 56)).then(ui => { drawn = true; return ui })
+  await blocked.started
+  await h.clock.advance(PANE_USAGE_TIMEOUT_MS - 1)
+  expect(drawn).toBe(false)
+  await h.clock.advance(1)
+  const wasDrawn = drawn
+  blocked.release()
+  const ui = await mounting
+  expect(wasDrawn).toBe(true)
+  expect(await ui.find({ key: 'refresh' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^24%$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a delayed Context breakdown keeps controls and captured usage available', async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($)
+  const before = await $.ui.mount(pane('terminal', 56))
+  await before.press({ key: 'tab:6' })
+  await before.unmount()
+  const blocked = blockUsage(h)
+  const mounting = $.ui.mount(pane('terminal', 56))
+  await blocked.started
+  await h.clock.advance(PANE_USAGE_TIMEOUT_MS)
+  const ui = await mounting
+  expect(await ui.find({ key: 'tab:6' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /engine context · 24%/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /no breakdown from the engine/ })).toBeDefined()
+  blocked.release()
+  await ui.unmount()
+})
+
+test('a failed pane drawing offers retry and close without reading the broken state again', async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  let broken = true
+  let latestReads = 0
+  on('state.get', { plugin: 'trajviz-obs', key: 'latest' }, (_, e, next) => {
+    latestReads++
+    if (broken) return { deny: 'transient pane state read failure' }
+    return next(e)
+  })
+  const ui = await $.ui.mount(pane('terminal', 56))
+  expect(await ui.find({ type: 'Text', text: /Unable to draw the obs pane/ })).toBeDefined()
+  expect(await ui.find({ key: 'retry' })).toBeDefined()
+  expect(latestReads).toBe(1)
+  broken = false
+  await ui.press({ key: 'retry' })
+  expect(await ui.find({ key: 'refresh' })).toBeDefined()
+  expect(await ui.find({ key: 'retry' })).toBeUndefined()
+  await ui.unmount()
+  broken = true
+  const failed = await $.ui.mount(pane('terminal', 56))
+  await failed.press({ key: 'close' })
+  expect(h.closes).toEqual(['obs'])
+  await failed.unmount()
+})
+
+test('terminal output escape sequences in snapshot text do not invalidate a pane', async ($, on) => {
+  const marked = {
+    ...SNAPSHOT,
+    tools: { ...SNAPSHOT.tools, by_tool: SNAPSHOT.tools.by_tool.map((tool, i) => i === 0 ? { ...tool, tool: '\u0000Bash' } : tool) },
+    issues: SNAPSHOT.issues.map((issue, i) => i === 0 ? { ...issue, title: '\u001b[31mObserved failure\u001b[0m', evidence: 'tool output\u0000after nul' } : issue),
+    patterns: { ...SNAPSHOT.patterns, repeated_searches: [{ query: 'search\u001b[31m output\u001b[0m', count: 3 }] },
+    agents: SNAPSHOT.agents.map((agent, i) => i === 0 ? { ...agent, label: 'Agent diagnostic\u0007' } : agent),
+    context: { ...SNAPSHOT.context, window_source: 'engine\u001b[31m' },
+    timeline: SNAPSHOT.timeline.map((step, i) => i === 0 ? { ...step, preview: '\u001b]0;terminal title\u0007Timeline diagnostic text\u001b[32m\u0000\rprogress\u001b[0m' } : step),
+  }
+  host(on, [marked])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount(pane(surface, 56))
+    await ui.press({ key: 'tab:1' })
+    expect(await ui.find({ key: 'refresh' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Observed failure/ })).toBeDefined()
+    await ui.press({ key: 'tab:3' })
+    expect(await ui.find({ type: 'Text', text: /tool output.*after nul/ })).toBeDefined()
+    await ui.press({ key: 'tab:7' })
+    expect(await ui.find({ type: 'Text', text: /Timeline diagnostic text/ })).toBeDefined()
+    for (let tab = 1; tab <= 7; tab++) {
+      await ui.press({ key: `tab:${tab}` })
+      expect(await ui.find({ type: 'Text', text: TABS[tab - 1] })).toBeDefined()
+      expect(await ui.find({ key: 'refresh' })).toBeDefined()
+      expect(await ui.find({ key: 'retry' })).toBeUndefined()
+    }
+    await ui.unmount()
+  }
+})
 
 test('the pane draws the latest snapshot with its tabs, on terminal and desktop', async ($, on) => {
   host(on, [SNAPSHOT])
