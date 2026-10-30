@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.16 — 2026-10-30
+
+- Initialize format adapters before Converge CLI comparisons so OpenCode 2 sessions retain their tokens, tools, and subagents in pairwise, batch, and before/after reports. Includes OpenCode adapter 0.1.1.
+
 ## 0.1.15 — 2026-10-30
 
 - Add the independently packaged OpenCode 2 adapter (0.1.0), with native commands, a live panel, status footer, and the shared dashboard and analysis features.

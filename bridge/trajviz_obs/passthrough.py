@@ -26,7 +26,7 @@ from agent_trajviz.collect import __main__ as collect_main
 from agent_trajviz.converge import cli as converge_cli
 
 from .cli import register
-from .compat import EmptySession, install_attribution_guard
+from .compat import EmptySession, install_attribution_guard, load_plugins
 from .views_cmd import _load, _session_args
 
 #: Most bytes of a pass-through's stdout or stderr returned inline (UTF-8).
@@ -138,6 +138,9 @@ def run_converge_cli(argv: list[str], out_dir: Path) -> dict:
     in ``path`` (``text`` is ``None``); otherwise ``path`` is ``None`` and ``text`` is what the run printed
     (stdout on success, stderr on failure), at most :data:`OUTPUT_CAP` bytes.
     """
+    # The CLI reads files in this fresh bridge process, so install the same
+    # native converters used by the session views and browser dashboards.
+    load_plugins()
     status, stdout, stderr = _captured(converge_cli.main, argv)
     if status == 0 and _is_json(stdout):
         return {"exit": 0, "path": str(_write_numbered(out_dir / "converge", stdout)), "text": None}
