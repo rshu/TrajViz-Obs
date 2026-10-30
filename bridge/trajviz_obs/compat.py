@@ -1,4 +1,4 @@
-"""The one place TrajViz internals are touched, each shim behind :func:`check_supported`.
+"""Version-checked compatibility shims for TrajViz internals.
 
 The plugin ships against the published ``agent-trajviz>=0.2.0,<0.3``. These integrations need internal seams:
 
@@ -14,6 +14,8 @@ The plugin ships against the published ``agent-trajviz>=0.2.0,<0.3``. These inte
    the optional attribution parser cannot preserve native JSONL Read/Bash calls in an isolated capability probe.
 5. **Local command display records.** Native conversion skips known command UI text, retaining source
    positions and tool results so inspecting a session does not become part of its work trajectory.
+6. **OpenCode 2 records.** The versioned capture adapter normalizes the native message schema and
+   retains explicit skill, timing and compaction observations without changing the original source.
 
 It also runs TrajViz's plugins (public API): ``load()`` reads only the formats already registered, so
 :func:`load_plugins` runs ``agent_trajviz.load_plugins()`` once per process before the first load or view lookup,
@@ -106,6 +108,9 @@ def load_plugins() -> list[str]:
     if error is not None:
         raise BridgeError("plugin_error", error)
     _install_native_record_filter()
+    from .opencode import install as install_opencode
+
+    install_opencode()
     return list(loaded)
 
 
@@ -347,8 +352,8 @@ def attribution_message(text: str | None) -> str | None:
 def install_attribution_guard() -> None:
     """Protect CLI and native dashboard attribution from an incompatible optional parser.
 
-    The original diagnosis retains all reference, byte identity and cache provenance gates. Only modern
-    native Claude JSONL is refused when the actual attribution parser cannot preserve its diagnostic evidence.
+    The original diagnosis retains all reference, byte identity and cache provenance gates. Native
+    Claude JSONL and OpenCode 2 are refused when the parser cannot preserve their diagnostic evidence.
     """
     check_supported()
     configure_attribution_environment()
@@ -361,6 +366,29 @@ def install_attribution_guard() -> None:
     @functools.wraps(native)
     def guarded(*, agent, instance_id, source_path=None, fmt=None, expected_sha=None, merged_sources=0,
                 reference_root=None):
+        if attribution.DECAF_AVAILABLE and fmt == "opencode" and source_path is not None:
+            from .opencode import attribution_source, attribution_supported
+
+            source = attribution_source(source_path)
+            if source is not None:
+                reason = None
+                if source.get("children") or Path(source_path).suffix.lower() == ".zip":
+                    reason = ("Attribution cannot currently certify an OpenCode 2 subagent family or ZIP bundle. "
+                              "No capability verdict was issued; use a supported single-session native export.")
+                else:
+                    try:
+                        from awe.adapters import _parse_normalized
+
+                        supported = attribution_supported(_parse_normalized, source.get("source_format") == "opencode_v2")
+                    except Exception:  # noqa: BLE001 - optional parser failure is unavailable, never blame
+                        supported = False
+                    if not supported:
+                        reason = ("This attribution parser does not preserve native OpenCode 2 read/shell tool "
+                                  "evidence. No capability verdict was issued. Update the attribution parser "
+                                  "to one that supports OpenCode 2 session exports.")
+                if reason:
+                    return attribution.AttributionResult(False, mode="reference", agent=agent,
+                                                         instance_id=instance_id, reason=reason)
         if (attribution.DECAF_AVAILABLE and fmt == "claude_code" and source_path is not None
                 and Path(source_path).suffix.lower() == ".jsonl"):
             try:

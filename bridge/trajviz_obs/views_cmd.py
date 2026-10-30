@@ -127,6 +127,12 @@ def coerce_options(view_id: str, raw: dict[str, str], run: Trajectory) -> dict:
         elif key == "agent":
             agents = [a["key"] for a in run.view("context_pressure").data["agents"]]
             agent = "__main__" if value == "main" else value
+            if value == "main" and agent not in agents:
+                # OpenCode gives the parent window its native session id.
+                metadata = run.raw.get("metadata", {})
+                root = metadata.get("session_id") if isinstance(metadata, dict) else None
+                if root in agents:
+                    agent = root
             if agent not in agents:
                 raise _bad_option(view_id, f"No agent {value!r} in this session; agents: {', '.join(agents)}.",
                                   options, agents=agents)

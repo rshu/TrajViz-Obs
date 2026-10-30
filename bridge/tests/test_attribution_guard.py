@@ -194,3 +194,92 @@ def test_native_browser_missing_parser_diagnostic_uses_public_terminology(seam, 
     html, status = callback({"_source_path": str(fixture_session)}, "claude_code", "case", "")
     assert "Attribution parser unavailable" in html and "TRAJVIZ_ATTRIBUTION_PATH" in html
     assert "decaf" not in (html + status).lower() and seam.calls == []
+
+
+def _v2_parser_fixture(agent, instance_id):
+    config, calls, mode = (globals()[key] for key in ("config", "calls", "mode"))
+    path = config.TRAJECTORY_DIR / agent / (instance_id + ".json")
+    calls.append(path)
+    payload = json.loads(path.read_text())
+    steps = []
+    if mode == "supported":
+        for message in payload["messages"]:
+            for part in message.get("content", []):
+                if part.get("type") == "tool":
+                    steps.append(SimpleNamespace(type="tool_call", native_tool=part["name"],
+                        canonical_action={"read": "read", "shell": "run_test"}[part["name"]]))
+    return SimpleNamespace(steps=steps)
+
+
+def _v2_parser(seam, mode="supported"):
+    namespace = {"config": seam.config, "json": json, "SimpleNamespace": SimpleNamespace,
+                 "calls": seam.calls, "mode": mode}
+    seam.adapters._parse_normalized = types.FunctionType(_v2_parser_fixture.__code__, namespace, "parse_v2")
+
+
+@pytest.fixture
+def opencode_source(tmp_path):
+    raw = {"source_format": "opencode_v2", "schema_version": 1, "session": {"id": "ses_test"},
+           "messages": [{"type": "assistant", "id": "a", "agent": "build", "model": {"id": "test"},
+                         "content": [], "time": {"created": 1790000000000}}], "children": []}
+    path = tmp_path / "opencode.json"
+    path.write_text(json.dumps(raw))
+    return path, raw
+
+
+def test_v2_parser_that_loses_tools_cannot_issue_a_capability_verdict(seam, opencode_source):
+    _v2_parser(seam, "unsupported")
+    path, _ = opencode_source
+    compat.install_attribution_guard()
+    result = native_attribution.diagnose(**request(fmt="opencode", source_path=str(path)))
+    assert not result.available and "OpenCode 2 read/shell" in result.reason
+    assert result.faults == result.scorecard == [] and result.primary is None
+    assert seam.native_calls == [] and len(seam.calls) == 1
+    assert not seam.calls[0].exists() and list(seam.real_root.iterdir()) == []
+
+
+def test_supported_v2_parser_keeps_every_original_identity_and_reference_gate(seam, opencode_source):
+    _v2_parser(seam)
+    path, _ = opencode_source
+    compat.install_attribution_guard()
+    args = request(agent="opencode", fmt="opencode", source_path=str(path), merged_sources=3)
+    assert native_attribution.diagnose(**args).available
+    assert native_attribution.diagnose(**args).available
+    assert seam.native_calls == [args, args] and len(seam.calls) == 1
+    assert seam.config.TRAJECTORY_DIR == seam.real_root
+
+
+def test_v2_subagent_families_are_not_certified_by_a_single_session_probe(seam, opencode_source):
+    _v2_parser(seam)
+    path, raw = opencode_source
+    raw["children"] = [{"session": {"id": "ses_child"}, "messages": []}]
+    path.write_text(json.dumps(raw))
+    compat.install_attribution_guard()
+    result = native_attribution.diagnose(**request(fmt="opencode", source_path=str(path)))
+    assert not result.available and "subagent family" in result.reason
+    assert result.faults == [] and seam.native_calls == seam.calls == []
+
+
+def test_v2_zip_container_requires_its_own_parser_support(seam, opencode_source, tmp_path):
+    import zipfile
+
+    _v2_parser(seam)
+    path, _ = opencode_source
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.write(path, "source.json")
+    compat.install_attribution_guard()
+    result = native_attribution.diagnose(**request(fmt="opencode", source_path=str(archive)))
+    assert not result.available and "ZIP bundle" in result.reason
+    assert seam.native_calls == seam.calls == []
+
+
+def test_legacy_opencode_exports_keep_their_existing_attribution_contract(seam, tmp_path):
+    _v2_parser(seam, "unsupported")
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps({"info": {"id": "ses_old"}, "messages": [
+        {"info": {"role": "assistant"}, "parts": []}]}))
+    compat.install_attribution_guard()
+    args = request(fmt="opencode", source_path=str(path))
+    assert native_attribution.diagnose(**args).available
+    assert seam.native_calls == [args] and seam.calls == []

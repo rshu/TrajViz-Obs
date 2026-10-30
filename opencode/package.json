@@ -1,0 +1,55 @@
+{
+  "name": "trajviz-obs-opencode",
+  "version": "0.1.0",
+  "description": "TrajViz session observability for OpenCode 2",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rshu/TrajViz-Obs.git",
+    "directory": "opencode"
+  },
+  "exports": {
+    ".": "./src/server.ts",
+    "./tui": "./src/tui.tsx",
+    "./rpc": "./src/rpc.ts"
+  },
+  "files": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "runtime/bridge/**/*.py",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test ./test",
+    "prepack": "bun scripts/package.mjs",
+    "pretypecheck": "bun scripts/package.mjs",
+    "pretest": "bun scripts/package.mjs",
+    "build": "bun scripts/package.mjs"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.2.2",
+    "@opencode/schema": "2.2.2",
+    "zod": "4.1.12",
+    "@opencode/client": "2.2.2"
+  },
+  "peerDependencies": {
+    "@opentui/core": "0.7.0",
+    "@opentui/solid": "0.7.0",
+    "solid-js": ">=1.9.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.1",
+    "@types/node": "22.18.6",
+    "typescript": "5.9.3",
+    "solid-js": "1.9.12",
+    "@opentui/core": "0.7.0",
+    "@opentui/solid": "0.7.0",
+    "@opencode/theme": "2.2.2"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}

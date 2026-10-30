@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.15 — 2026-10-30
+
+- Add the independently packaged OpenCode 2 adapter (0.1.0), with native commands, a live panel, status footer, and the shared dashboard and analysis features.
+- Normalize OpenCode 2 history, confirmed subagents, tool outcomes, context usage, skills, and manual compactions while retaining native source data.
+- Keep concurrent captures and model plans immutable, scope dashboard processes by session, and validate attribution parser compatibility.
+
 ## 0.1.14 — 2026-10-28
 
 - Give the pane overview aligned metrics, compact labeled trends, and a readable latest phase.

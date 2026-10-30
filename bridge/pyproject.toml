@@ -1,7 +1,7 @@
 [project]
 name = "trajviz-obs-bridge"
-version = "0.1.14"
-description = "TrajViz bridge for the /obs Claude Code plugin (JSON on stdout)."
+version = "0.1.15"
+description = "Shared TrajViz bridge for /obs host adapters (JSON on stdout)."
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = ["agent-trajviz[all]>=0.2.0,<0.3"]

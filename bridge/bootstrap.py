@@ -51,9 +51,9 @@ def install_lock(path: Path, timeout: float = LOCK_WAIT_S):
                 if exc.errno not in (11, 13, 35, 36):
                     raise
                 if time.monotonic() >= deadline:
-                    raise TimeoutError("Another Claude session is setting up TrajViz; try again after it finishes.") from exc
+                    raise TimeoutError("Another session is setting up TrajViz; try again after it finishes.") from exc
                 if not said:
-                    print("Waiting for another Claude session's TrajViz setup...", file=sys.stderr, flush=True)
+                    print("Waiting for another session's TrajViz setup...", file=sys.stderr, flush=True)
                     said = True
                 time.sleep(0.1)
         try:

@@ -1,12 +1,14 @@
 # TrajViz Obs
 
 [![Checks](https://github.com/rshu/TrajViz-Obs/actions/workflows/checks.yml/badge.svg?branch=main&event=push)](https://github.com/rshu/TrajViz-Obs/actions/workflows/checks.yml)
-[![Plugin version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frshu%2FTrajViz-Obs%2Fmain%2F.claude-plugin%2Fplugin.json&query=%24.version&label=plugin&prefix=v&color=blue)](https://github.com/rshu/TrajViz-Obs/blob/main/.claude-plugin/plugin.json)
+[![Claude Code plugin version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frshu%2FTrajViz-Obs%2Fmain%2F.claude-plugin%2Fplugin.json&query=%24.version&label=Claude%20Code&prefix=v&color=blue)](https://github.com/rshu/TrajViz-Obs/blob/main/.claude-plugin/plugin.json)
 [![License](https://img.shields.io/github/license/rshu/TrajViz-Obs)](LICENSE)
 
-Visualize and diagnose Claude Code sessions with [TrajViz](https://github.com/rshu/TrajViz). Use `/obs` for a quick health check and `/obs dashboard` to inspect steps, tools, subagents, and context use.
+Visualize and diagnose Claude Code and OpenCode 2 sessions with [TrajViz](https://github.com/rshu/TrajViz). Use `/obs` for a quick health check and `/obs dashboard` to inspect steps, tools, subagents, and context use.
 
 ## Install
+
+For **OpenCode 2.2.2**, follow the [OpenCode installation guide](opencode/README.md). The instructions below install the Claude Code plugin.
 
 Requires Claude Code with function hooks (mods) and process execution, plus [uv](https://docs.astral.sh/uv/) or **Python 3.11+**. Validated on Claude Code **2.1.308**; hosts limited to shell hooks and Markdown commands cannot run this plugin.
 
@@ -65,6 +67,8 @@ Dashboard summary from the same session:
 
 Use Claude Code's `/config` menu for plugin options. Model features default to `llm=session`, using Claude Code's client: `analysisModel=sonnet` for analysis and fixes, and `labelModel=haiku` for labeling. Set either model option to `session` to follow the main conversation's model.
 
+OpenCode uses [plugin options in `opencode.json`](opencode/README.md#options) and defaults to its selected model.
+
 <details>
 <summary>Use an external model provider</summary>
 
@@ -83,7 +87,7 @@ Labeling uses `LABEL_BASE_URL`, `LABEL_API_KEY`, and `LABEL_MODEL`, falling back
 <details>
 <summary>Optional attribution setup</summary>
 
-Start Claude Code with `TRAJVIZ_ATTRIBUTION_PATH=/path/to/attribution-checkout` and `TRAJVIZ_REFERENCE_ROOT=/path/to/reference-data`. Use `/obs attribution` or the dashboard's **Attribution** tab.
+Start your host with `TRAJVIZ_ATTRIBUTION_PATH=/path/to/attribution-checkout` and `TRAJVIZ_REFERENCE_ROOT=/path/to/reference-data`. Use `/obs attribution` or the dashboard's **Attribution** tab.
 
 Reference data must include requirements, patch, canonical trajectory, and a failed evaluation outcome. The uploaded trajectory must match its reference byte for byte. Unsupported parsers or merged subagent sessions show an explanation instead of a capability verdict.
 
@@ -91,18 +95,18 @@ Reference data must include requirements, patch, canonical trajectory, and a fai
 
 ## Data and model use
 
-Overview, diagnostic views, and exports run locally without model calls. `/obs analyze`, `/obs fixes`, and `/obs label` send redacted prompts to a model and may incur usage charges. They show the planned calls and model first; interactive sessions ask before more than four calls. Headless labeling is capped by `labelMaxSteps` (default 50).
+Overview, diagnostic views, and exports run locally without model calls. `/obs analyze`, `/obs fixes`, and `/obs label` send redacted prompts to a model and may incur usage charges. They show the planned calls and model first; interactive sessions ask before more than four calls. Labeling defaults to at most 50 steps.
 
 The dashboard's AI sidebar and fix button always use the environment provider, independently of `llm`. Opening the sidebar starts model analysis; follow-up questions and fixes also send trajectory excerpts.
 
-Exports and cached analysis contain session data and stay on the host unless shared. Dashboards bind to `127.0.0.1` and stop on request or session end.
+Exports and cached analysis contain session data and stay on the host unless shared. Dashboards bind to `127.0.0.1` and stop on request or plugin unload.
 
 ## Troubleshooting and limits
 
 Run `/obs doctor` to check setup or `/obs setup` to install dependencies. If `/obs` is missing, check the Claude Code debug log for disabled function hooks or an API mismatch. If the dashboard is empty, export `/obs bundle` and load its ZIP manually. Over SSH, forward the displayed port; set `openBrowser=false` to disable browser opening.
 
 - Timing is estimated from transcripts; workflow-spawned work and subagent finish times may be incomplete.
-- Files above **32 MiB** require manual refresh. Insight analyzes at most the first **2,000 steps**; `/obs json --with-trajectory` retains the full parsed trajectory.
+- Claude Code files above **32 MiB** require manual refresh; OpenCode has [live-capture limits](opencode/README.md#options). Insight analyzes at most the first **2,000 steps**; `/obs json --with-trajectory` retains the full parsed trajectory.
 - Real-session validation covers **macOS**. Linux and Windows still need platform-specific end-to-end testing.
 
 ## Development

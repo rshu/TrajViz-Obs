@@ -1,1 +1,1 @@
-"""TrajViz observability bridge for the ``/obs`` Claude Code plugin."""
+"""Shared TrajViz observability bridge for the ``/obs`` host adapters."""

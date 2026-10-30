@@ -96,7 +96,7 @@ def empty_snapshot(reason: str, transcript_path: str) -> dict:
             "transcript": _transcript(transcript_path, None, None)}
 
 
-def _evidence(run: Trajectory, steps: list) -> str:
+def _evidence(run: Trajectory, steps: list, *, kind: str = "", title: str = "") -> str:
     """``"<tool>: <command or path excerpt>"`` of the first step's first tool call; ``""`` when there is none."""
     index = steps[0] if steps else None
     if not isinstance(index, int) or not 0 <= index < len(run.steps):
@@ -105,6 +105,13 @@ def _evidence(run: Trajectory, steps: list) -> str:
     if not calls or not isinstance(calls[0], dict):
         return ""
     call = calls[0]
+    if kind == "error":
+        from agent_trajviz.insight.shell_cmd import tool_chart_name
+        from agent_trajviz.insight.tool_failure import tool_call_failed
+
+        failed = [c for c in calls if isinstance(c, dict) and tool_call_failed(c)]
+        if failed:
+            call = next((c for c in failed if title.startswith(tool_chart_name(c) + ":")), failed[0])
     tool = str(call.get("tool_name") or "tool")
     params = call.get("input") if isinstance(call.get("input"), dict) else {}
     excerpt = next((params[k] for k in EVIDENCE_KEYS if isinstance(params.get(k), str) and params[k].strip()), "")
@@ -179,10 +186,26 @@ def _phase_band(phases: list[dict], n: int) -> list[dict]:
 def _context(run: Trajectory, pressure: dict, n: int) -> tuple[dict, dict]:
     """The ``context`` block and the ``series.context`` block (the main agent's occupancy by step)."""
     stats = pressure["stats"]
-    main = next((a for a in pressure["series"]["agents"] if a.get("key") == "__main__"), None)
+    metadata = run.raw.get("metadata", {})
+    root_session = metadata.get("session_id") if isinstance(metadata, dict) else None
+    agents = pressure["series"]["agents"]
+    main = next((a for a in agents if a.get("key") == "__main__"), None)
+    if main is None and root_session:
+        main = next((a for a in agents if a.get("agent_id") == root_session), None)
     points = main["points"] if main else []
     window = window_info(run)
     current = points[-1]["occupancy"] if points else None
+    from .opencode import NATIVE_KEY
+
+    if NATIVE_KEY in run.raw:
+        latest = next((s for s in reversed(run.steps) if s.get("session_id") == root_session
+                       and s.get("role") in {"assistant", "compaction"}), None)
+        # Compaction usage bills the summary request, not its resulting window.
+        # An interrupted response may likewise leave no measured prompt usage.
+        if latest and (latest.get("role") == "compaction" or latest.get("_metrics_unavailable_fields")):
+            current = None
+        window["window_note"] = ((window.get("window_note") or "") + " Latest logged model request; "
+                                 "post-compaction occupancy is unknown until another measured response.").strip()
     pct = round(current / window["window"] * 100, 1) if current is not None and window["window"] else None
     context = {**window, "current_occupancy": current, "current_pct": pct,
                "peak_occupancy": stats.get("peak_occupancy"), "peak_pct": stats.get("peak_pct"),
@@ -308,7 +331,8 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
                   "failed": metrics.get("tool_fail"), "by_tool": _by_tool(views["tool_outcomes"]["calls"])},
         "health": [{k: h.get(k) for k in ("metric", "status", "label", "detail")} for h in views["health"]],
         "issues": [{"kind": i.get("kind"), "title": i.get("title"), "detail": i.get("detail"), "why": i.get("why"),
-                    "steps": list(i.get("steps") or [])[:ROW_STEPS], "evidence": _evidence(run, i.get("steps") or [])}
+                    "steps": list(i.get("steps") or [])[:ROW_STEPS], "evidence": _evidence(
+                        run, i.get("steps") or [], kind=i.get("kind", ""), title=i.get("title", ""))}
                    for i in views["issues"][:TOP_ISSUES]],
         "bottlenecks": [{"step": b.get("step_idx"), "duration_s": b.get("duration"), "cause": b.get("cause"),
                          "title": b.get("title"), "detail": b.get("detail")}
@@ -390,8 +414,14 @@ def _snapshot(args: argparse.Namespace) -> dict:
         return empty_snapshot(exc.reason, args.transcript)
     source = input_path(run)
     is_file = source is not None and source.is_file()
-    facts = scan_transcript(str(source)) if is_file else TranscriptFacts(None, [], 0, 0)
-    meta = agent_meta(str(source)) if is_file else {}
+    if run.format == "claude_code" and is_file:
+        facts, meta = scan_transcript(str(source)), agent_meta(str(source))
+    else:
+        prompts = [str(step.get("text_preview") or "") for step in run.steps
+                   if step.get("role") == "user" and not step.get("is_sub_agent")]
+        metadata = run.raw.get("metadata", {})
+        facts = TranscriptFacts(metadata.get("title") or None, [p[:200] for p in prompts[:20]], len(prompts), 0)
+        meta = {}
     return build_snapshot(run, transcript_path=args.transcript, facts=facts, agents_meta=meta,
                           artifacts=args.artifacts, max_points=args.max_points,
                           duration_ms=int((time.monotonic() - started) * 1000))
