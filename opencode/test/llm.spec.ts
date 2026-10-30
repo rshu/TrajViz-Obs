@@ -5,6 +5,7 @@ import path from 'node:path'
 import type { Backend } from '../src/backend.js'
 import type { RunInput } from '../src/rpc.js'
 import { cancelModel, runModel } from '../src/llm.js'
+import { inspectSource } from '../src/source-info.js'
 
 const folders: string[] = []
 afterEach(async () => { for (const folder of folders.splice(0)) await rm(folder, { recursive: true, force: true }) })
@@ -155,10 +156,11 @@ test('binary ZIP input is frozen byte for byte before a model plan is reviewed',
   cancelModel(f.backend)
 })
 
-test('JSONL families pass through the shared bundle boundary before the frozen model plan', async () => {
-  const f = await fixture(5), source = path.join(f.folder, 'session.jsonl')
+for (const suffix of ['.jsonl', '.jsonl.zst', '.jsonl.zstd']) test(`${suffix} families pass through the shared bundle boundary before the frozen model plan`, async () => {
+  const f = await fixture(5), source = path.join(f.folder, `session${suffix}`)
   const content = '{"type":"user","message":{"role":"user","content":"Controlled"}}\n'
   await writeFile(source, content)
+  expect((await inspectSource(source)).compound).toBe(true)
   const child = path.join(f.folder, 'session', 'subagents', 'agent-child.jsonl')
   await mkdir(path.dirname(child), { recursive: true }); await writeFile(child, content)
   f.backend.session = async () => ({ sessionID: 'ses_test', transcript: source, artifacts: f.folder,
@@ -182,6 +184,37 @@ test('JSONL families pass through the shared bundle boundary before the frozen m
   expect(await readFile(child, 'utf8')).toBe(content)
   expect(f.generations).toEqual([])
   cancelModel(f.backend)
+})
+
+test('directory and valid manifest variants freeze companion data before a model preview', async () => {
+  for (const manifestPath of [undefined, 'manifest.json', 'manifest.txt', 'bom-manifest.json']) {
+    const f = await fixture(5), folder = path.join(f.folder, 'capture')
+    await mkdir(folder)
+    const manifest = path.join(folder, 'manifest.json')
+    await writeFile(manifest, JSON.stringify({ type: 'agent-trajviz-otlp-bundle', schema_version: 1, traces: ['traces.jsonl'] }))
+    await writeFile(path.join(folder, 'traces.jsonl'), 'Controlled companion data')
+    const source = manifestPath ? path.join(folder, manifestPath) : folder
+    if (manifestPath && manifestPath !== 'manifest.json') await writeFile(source, `${manifestPath.startsWith('bom-') ? '\uFEFF' : ''}${await readFile(manifest, 'utf8')}`)
+    f.backend.session = async () => ({ sessionID: 'captured_A', captureSessionID: 'A', transcript: source, artifacts: f.folder,
+      argv: ['--transcript', source, '--artifacts', f.folder, '--session-id', 'A'] })
+    const originalRun = f.backend.runtime.run.bind(f.backend.runtime)
+    f.backend.runtime.run = async <T>(argv: readonly string[]): Promise<T> => {
+      if (argv[0] !== 'bundle') return await originalRun(argv) as T
+      f.calls.push([...argv])
+      const output = argv[argv.indexOf('--out') + 1]!
+      await mkdir(path.dirname(output), { recursive: true }); await writeFile(output, ZIP)
+      return { path: output } as T
+    }
+    const preview = await runModel(f.backend, { ...f.input, args: `analyze what's missing --session "${source}" --session-id A` }, new AbortController().signal)
+    expect(preview.confirmation).toBeDefined()
+    expect(f.calls.map(call => call[0])).toEqual(['bundle', 'llm-prompt'])
+    for (const call of f.calls) expect(call[call.indexOf('--session-id') + 1]).toBe('A')
+    const plan = f.calls[1]!
+    expect(plan[plan.indexOf('--question') + 1]).toBe("what's missing")
+    expect(plan[plan.indexOf('--transcript') + 1]).toEndWith('.zip')
+    expect(f.generations).toEqual([])
+    cancelModel(f.backend)
+  }
 })
 
 test('label output preflight validates the original source before any model call or replay plan', async () => {

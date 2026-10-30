@@ -56,8 +56,8 @@ def _loader(app):
     return next(block for block in app.fns.values() if getattr(block.fn, "__name__", "") == "_do_load")
 
 
-def _loaded_run(block, path):
-    values = block.fn(str(path), False, "")
+def _loaded_run(block, path, session_id=None):
+    values = block.fn(str(path), False, "", session_id) if session_id is not None else block.fn(str(path), False, "")
     return next(value for value in values.values() if isinstance(value, tv.Trajectory))
 
 
@@ -119,10 +119,14 @@ def test_labels_preload_uses_all_native_charts_and_resets_for_other_trajectories
     label_file = next(block for block in app.blocks.values()
                       if isinstance(block, gradio.File) and block.label == "Labels (optional)")
     reset = next(block for block in app.fns.values() if getattr(block.fn, "__name__", "") == "reset_labels")
-    assert reset.inputs == [next(block for block in app.blocks.values()
-                                if isinstance(block, gradio.File) and str(block.label).startswith("Trajectory"))]
-    assert reset.fn(str(fixture_session))[-1]["value"] == str(dashboard_labels)
-    assert reset.fn(str(synthetic_session))[-1]["value"] is None
+    assert len(reset.inputs) == 3 and reset.inputs[0] is next(block for block in app.blocks.values()
+        if isinstance(block, gradio.File) and str(block.label).startswith("Trajectory"))
+    assert isinstance(reset.inputs[1], gradio.Dropdown) and isinstance(reset.inputs[2], gradio.State)
+    loader = _loader(app)
+    assert reset.trigger_after == loader._id and reset.targets == [(None, "then")]
+    assert reset.fn(str(fixture_session), None, _loaded_run(loader, fixture_session))[-1]["value"] == str(dashboard_labels)
+    assert reset.fn(str(synthetic_session), None, _loaded_run(loader, synthetic_session))[-1]["value"] is None
+    assert reset.fn(str(fixture_session), None, None)[-1]["value"] is None
     assert reset.outputs[-1] is label_file and gradio.utils.is_static_file(str(dashboard_labels))
     native = next(block for block in app.fns.values() if getattr(block.fn, "__name__", "") == "do_load_labels")
     values = native.fn(str(dashboard_labels), False)
@@ -179,16 +183,18 @@ def test_cached_labels_refuse_changed_step_identity(filtered_label_run, tmp_path
     assert "Run /obs label again" in _cached_label_notice("current.jsonl", str(path))
 
 
-def test_incompatible_cached_labels_show_notice_and_clear_on_another_trajectory(filtered_label_run,
-                                                                             fixture_session, tmp_path):
+def test_incompatible_cached_labels_show_notice_and_clear_on_another_trajectory(fixture_session,
+                                                                             fixture_run, tmp_path):
     path = tmp_path / "labels.json"
-    path.write_text(json.dumps({"steps": [dict(filtered_label_run.steps[1], index=2)]}))
+    step = next(step for step in fixture_run.steps if step["role"] == "assistant")
+    path.write_text(json.dumps({"steps": [dict(step, index=len(fixture_run.steps) + 1)]}))
     before = path.read_bytes()
     app = build_preloaded_insight(str(fixture_session), labels_path=str(path))
     reset = next(block for block in app.fns.values() if getattr(block.fn, "__name__", "") == "reset_labels")
-    outputs = reset.fn(str(fixture_session))
+    loaded = _loaded_run(_loader(app), fixture_session)
+    outputs = reset.fn(str(fixture_session), None, loaded)
     assert outputs[-1]["value"] is None and "Run /obs label again" in outputs[1]
-    assert "Run /obs label again" not in reset.fn(str(tmp_path / "another.jsonl"))[1]
+    assert "Run /obs label again" not in reset.fn(str(tmp_path / "another.jsonl"), None, loaded)[1]
     assert path.read_bytes() == before
 
 
@@ -423,3 +429,188 @@ def test_other_os_error_with_a_port_stays_internal(kind, stage, fixture_session,
         monkeypatch.setattr(gradio.Blocks, "launch", unwritable)
     code, out = run_cli([*_argv(kind, fixture_session, tmp_path), "--port", str(_free_port())])
     assert code == 3 and out["error"]["code"] == "internal" and "Permission denied" in out["error"]["message"]
+
+
+@pytest.fixture
+def captured_sessions(tmp_path):
+    from trajviz_obs.compat import load_run
+
+    folder = tmp_path / "capture"
+    folder.mkdir()
+    spans = [{"traceId": str(index) * 32, "spanId": str(index) * 16, "name": "claude_code.llm_request",
+        "startTimeUnixNano": "1790000000000000000", "endTimeUnixNano": "1790000001000000000",
+        "attributes": [{"key": "session.id", "value": {"stringValue": sid}},
+                       {"key": "input_tokens", "value": {"intValue": "7"}}]}
+        for index, sid in enumerate(("capture-a", "capture-b"), 1)]
+    source = folder / "traces.jsonl"
+    source.write_text(json.dumps({"resourceSpans": [{"scopeSpans": [{"spans": spans}]}]}) + "\n")
+    manifest = folder / "manifest.json"
+    manifest.write_text(json.dumps({"type": "agent-trajviz-otlp-bundle", "schema_version": 1,
+                                   "profile": "claude_code", "traces": [source.name], "logs": []}))
+    run = load_run(str(folder), session_id="capture-a")
+    step = run.steps[0]
+    labels = tmp_path / "labels-a.json"
+    labels.write_text(json.dumps({"schema_version": "trajectory_labels.v2", "taxonomy_version": "2", "steps": [{
+        "index": 0, "raw_index": step["raw_index"], "role": step["role"], "agent": step["agent"],
+        "session_id": step["session_id"], "time_created_ms": step["time_created_ms"],
+        "phase": "understand", "action": "code_reading", "text_preview": "Controlled capture"}]}))
+    return SimpleNamespace(directory=folder, manifest=manifest, source=source, labels=labels)
+
+
+def _session_inspector(app):
+    return next(block for block in app.fns.values() if block.api_name == "_inspect_sessions")
+
+
+def test_dashboard_capture_default_is_target_only_and_user_selection_wins(captured_sessions, tmp_path):
+    source = str(captured_sessions.source)
+    app = build_preloaded_insight(source, session_id="capture-a")
+    loader = _loader(app)
+    assert _loaded_run(loader, source).raw["_otel"]["session_id"] == "capture-a"
+    assert _loaded_run(loader, source, "capture-b").raw["_otel"]["session_id"] == "capture-b"
+    inspector = _session_inspector(app)
+    assert inspector.fn(source)["value"] == "capture-a"
+    other = tmp_path / "other-capture.jsonl"
+    other.write_bytes(captured_sessions.source.read_bytes())
+    assert inspector.fn(str(other))["value"] is None
+
+
+def test_dashboard_does_not_choose_the_first_session_from_an_ambiguous_capture(captured_sessions):
+    app = build_preloaded_insight(str(captured_sessions.source))
+    assert _session_inspector(app).fn(str(captured_sessions.source))["value"] is None
+    result = _loader(app).fn(str(captured_sessions.source), False, "", None)
+    assert not any(isinstance(value, tv.Trajectory) for value in result.values())
+
+
+def test_dashboard_directory_display_manifest_maps_back_to_original_capture(captured_sessions):
+    from trajviz_obs.compat import input_path
+
+    app = build_preloaded_insight(str(captured_sessions.directory), session_id="capture-a")
+    assert app._obs_display_path == str(captured_sessions.manifest)
+    first = _loaded_run(_loader(app), app._obs_display_path)
+    second = _loaded_run(_loader(app), app._obs_display_path, "capture-b")
+    assert input_path(first) == captured_sessions.directory
+    assert first.raw["_otel"]["session_id"] == "capture-a" and second.raw["_otel"]["session_id"] == "capture-b"
+    assert _session_inspector(app).fn(app._obs_display_path)["value"] == "capture-a"
+
+
+def test_labels_follow_loaded_session_state_and_clear_after_selection_change_or_failure(captured_sessions, tmp_path):
+    app = build_preloaded_insight(str(captured_sessions.directory), session_id="capture-a",
+                                  labels_path=str(captured_sessions.labels))
+    loader = _loader(app)
+    reset = next(block for block in app.fns.values() if getattr(block.fn, "__name__", "") == "reset_labels")
+    display = app._obs_display_path
+    first = _loaded_run(loader, display)
+    second = _loaded_run(loader, display, "capture-b")
+    assert reset.fn(display, "capture-a", first)[-1]["value"] == str(captured_sessions.labels)
+    assert reset.fn(display, "capture-b", second)[-1]["value"] is None
+    assert reset.fn(display, "capture-b", first)[-1]["value"] is None
+    assert reset.fn(display, None, second)[-1]["value"] is None
+    assert reset.fn(display, "capture-a", None)[-1]["value"] is None
+    assert reset.fn(str(tmp_path / "another-capture.json"), "capture-a", first)[-1]["value"] is None
+    assert reset.trigger_after == loader._id and reset.inputs[2] in loader.outputs
+
+
+def test_labels_fail_closed_when_the_native_loaded_state_seam_is_absent(fixture_session, dashboard_labels):
+    from trajviz_obs import dashboard_cmd
+
+    app = dashboard_cmd._dashboard().insight_app()
+    loader = _loader(app)
+    original = loader.fn
+
+    def _do_load(*args):
+        return original(*args)
+
+    loader.fn = _do_load
+    assert dashboard_cmd._add_labels_preload(app, str(fixture_session), str(dashboard_labels)) is False
+    reset = next(block for block in app.fns.values() if getattr(block.fn, "__name__", "") == "_reset_labels")
+    assert not reset.inputs and reset.fn()[-1]["value"] is None
+
+
+def test_cached_label_validation_applies_to_every_format_and_selected_session(filtered_label_run, tmp_path):
+    filtered_label_run.format = "pi"
+    filtered_label_run.raw = {}
+    labels = tmp_path / "labels.json"
+    labels.write_text(json.dumps({"steps": [dict(filtered_label_run.steps[1], index=2)]}))
+    assert "Run /obs label again" in _cached_label_notice("pi.jsonl", str(labels))
+    labels.write_text(json.dumps({"steps": [dict(filtered_label_run.steps[1], index=1)]}))
+    assert _cached_label_notice("pi.jsonl", str(labels), session_id="other", run=filtered_label_run)
+
+
+def test_dashboard_capture_selection_refusal_happens_before_any_server_announcement(captured_sessions, run_cli,
+                                                                                  monkeypatch):
+    from trajviz_obs import dashboard_cmd
+
+    monkeypatch.setattr(dashboard_cmd, "serve_insight", lambda *_args, **_kwargs: pytest.fail("No server may start"))
+    argv = ["dashboard", "--transcript", str(captured_sessions.directory), "--session-id", "missing-session"]
+    code, result = run_cli(argv)
+    assert code == 1 and result["error"]["trajviz_code"] == "session_not_found"
+
+
+def test_dashboard_multi_session_directory_without_default_opens_its_selector(captured_sessions):
+    app = build_preloaded_insight(str(captured_sessions.directory), labels_path=str(captured_sessions.labels))
+    assert app._obs_display_path == str(captured_sessions.manifest)
+    assert _session_inspector(app).fn(app._obs_display_path)["value"] is None
+    assert app._obs_labels_preloaded is False
+    result = _loader(app).fn(app._obs_display_path, False, "", None)
+    assert not any(isinstance(value, tv.Trajectory) for value in result.values())
+    assert _loaded_run(_loader(app), app._obs_display_path, "capture-b").raw["_otel"]["session_id"] == "capture-b"
+
+
+def test_dashboard_cli_can_serve_a_capture_without_selecting_a_session(captured_sessions, run_cli, monkeypatch):
+    from trajviz_obs import dashboard_cmd
+
+    launched = []
+
+    def launch(path, _port, **options):
+        launched.append((path, options["session_id"]))
+        dashboard_cmd._announce("http://127.0.0.1:1234/")
+
+    monkeypatch.setattr(dashboard_cmd, "serve_insight", launch)
+    code, result = run_cli(["dashboard", "--transcript", str(captured_sessions.directory)])
+    assert code == 0 and result["url"] == "http://127.0.0.1:1234/"
+    assert launched == [(str(captured_sessions.directory), None)]
+
+
+def _native_directory(tmp_path):
+    folder = tmp_path / "native"
+    folder.mkdir()
+    rows = [{"type": "session", "version": 4, "id": "controlled", "createdAt": 1790000000000},
+            {"type": "assistant/message", "time": 1790000000300, "data": {"message": {
+                "id": "a", "content": [{"type": "text", "text": "Controlled reply"}]},
+                "usage": {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}}}]
+    (folder / "session.v4.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return folder
+
+
+def test_native_directory_uses_a_private_display_export_and_keeps_original_analysis_source(tmp_path):
+    from trajviz_obs.compat import input_path
+
+    folder = _native_directory(tmp_path)
+    app = build_preloaded_insight(str(folder))
+    try:
+        display = Path(app._obs_display_path)
+        assert display.is_file() and display.parent != folder
+        run = _loaded_run(_loader(app), str(display))
+        assert run.format == "dsh" and run.metrics["tokens"]["total"] == 5
+        assert input_path(run) == folder
+    finally:
+        app.close()
+        app._obs_display_owner.cleanup()
+
+
+def test_dashboard_server_exposes_only_display_file_and_cleans_temporary_export(tmp_path, monkeypatch, capsys):
+    from trajviz_obs import dashboard_cmd
+
+    folder = _native_directory(tmp_path)
+    allowed = []
+
+    def launch(_app, **options):
+        allowed.extend(options["allowed_paths"])
+        assert len(allowed) == 1 and Path(allowed[0]).is_file() and allowed[0] != str(folder)
+        return None, "http://127.0.0.1:1234/", None
+
+    monkeypatch.setattr(gradio.Blocks, "launch", launch)
+    monkeypatch.setattr(dashboard_cmd, "_wait_for_shutdown", lambda **_: None)
+    dashboard_cmd.serve_insight(str(folder), None)
+    assert json.loads(capsys.readouterr().out)["url"] == "http://127.0.0.1:1234/"
+    assert not Path(allowed[0]).exists()

@@ -1,11 +1,11 @@
 import type { CommandRunResult, EngineInterface } from 'claude-code'
-import { flagValues } from '../lib/args'
+import { flagValues, valueArgv } from '../lib/args'
 import { runBridge } from '../lib/bridge'
 import { fmtBytes, fmtInt } from '../lib/format'
 import { artifactsDir } from '../lib/paths'
 import { ensureReady, sessionArgv } from '../lib/snapshot'
 import type { CommandContext } from './index'
-import { EMPTY_TEXT, errorRow, sessionSpec } from './overview'
+import { EMPTY_TEXT, errorRow, captureSessionSpec, sessionSpec } from './overview'
 
 /** The exports load every step and may draw figures: the plan's 600 s. */
 const EXPORT_TIMEOUT_MS = 600_000
@@ -13,7 +13,7 @@ const EXPORT_TIMEOUT_MS = 600_000
 type Empty = { empty: true; reason: string }
 type Written = { path: string; bytes: number }
 type JsonDoc = Empty | (Written & { files: string[] })
-type BundleDoc = Written & { members: string[]; members_total: number }
+type BundleDoc = Written & { members: string[]; members_total: number; note?: string }
 type SchemasDoc = Written & { files: string[] }
 
 /** `<n> <word>s`. */
@@ -48,7 +48,7 @@ async function exportJson($: EngineInterface, ctx: CommandContext, spec: string 
   const views = flagValues(ctx.args, 'view')
   if (views.some(v => v === true || !v.trim())) return VIEW_USAGE
   await ensureReady($, ctx.options)
-  const { argv } = await sessionArgv($, spec)
+  const { argv } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
   const call = ['json', ...argv]
   const out = outFlag(ctx)
   if (out) call.push('--out', out)
@@ -59,15 +59,16 @@ async function exportJson($: EngineInterface, ctx: CommandContext, spec: string 
   return `${count(doc.files.length, 'file')} (${fmtBytes(doc.bytes)}) written to ${doc.path}.`
 }
 
-/** `bundle [-o PATH]`: the transcript and its sub-agent logs as a ZIP for a hosted dashboard. */
+/** `bundle [-o PATH]`: the original session family as a ZIP. */
 async function bundle($: EngineInterface, ctx: CommandContext, spec: string | undefined): Promise<string> {
   await ensureReady($, ctx.options)
-  const { transcript } = await sessionArgv($, spec)
-  const call = ['bundle', '--transcript', transcript.path, '--artifacts', await artifactsDir($, transcript.sessionId)]
+  const { transcript } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
+  const call = ['bundle', '--transcript', transcript.path, '--artifacts', await artifactsDir($, transcript.sessionId, transcript.captureSessionId, transcript.path)]
+  if (transcript.captureSessionId !== undefined) call.push(...valueArgv('session-id', transcript.captureSessionId))
   const out = outFlag(ctx)
   if (out) call.push('--out', out)
   const doc = await runBridge<BundleDoc>($, call, { timeoutMs: EXPORT_TIMEOUT_MS })
-  return `Bundle of ${count(doc.members_total, 'file')} (${fmtBytes(doc.bytes)}) written to ${doc.path}; upload it to a hosted TrajViz dashboard.`
+  return `Bundle of ${count(doc.members_total, 'file')} (${fmtBytes(doc.bytes)}) written to ${doc.path}.${doc.note ? `\n${doc.note}` : ''}`
 }
 
 /** `schemas [DIR]`: the JSON Schema of every view, as files. */

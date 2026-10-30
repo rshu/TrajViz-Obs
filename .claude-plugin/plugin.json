@@ -1,6 +1,6 @@
 {
   "name": "trajviz-obs",
-  "version": "0.1.16",
+  "version": "0.2.0",
   "description": "TrajViz observability for the current Claude Code session: /obs visualizes and diagnoses the session's trajectory",
   "author": { "name": "Rui Shu" },
   "homepage": "https://github.com/rshu/TrajViz-Obs#readme",
@@ -13,7 +13,7 @@
       "type": "string",
       "title": "TrajViz source",
       "description": "pip requirement or local checkout path for agent-trajviz",
-      "default": "agent-trajviz>=0.2.0,<0.3"
+      "default": "agent-trajviz==0.3.1"
     },
     "python": {
       "type": "string",

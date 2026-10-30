@@ -1,17 +1,18 @@
 // Number and text formatting for cards, tables and the status line.
 import type { RenderElement } from 'claude-code'
+import type { Snapshot } from '../../types'
 
 const UNKNOWN = '?'
 
 /** An integer with thousands separators: `1,234,567`; `?` when not finite. */
-export function fmtInt(n: number): string {
-  if (!Number.isFinite(n)) return UNKNOWN
+export function fmtInt(n: number | null | undefined): string {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return UNKNOWN
   return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
 }
 
 /** A count in at most four characters: `999`, `1.2k`, `12k`, `3.4M`, `2.5G`; `?` when not finite. */
-export function fmtCompact(n: number): string {
-  if (!Number.isFinite(n)) return UNKNOWN
+export function fmtCompact(n: number | null | undefined): string {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return UNKNOWN
   const sign = n < 0 ? '-' : ''
   let v = Math.abs(n)
   if (v < 999.5) return sign + fmtInt(v)
@@ -41,8 +42,8 @@ export function fmtBytes(n: number): string {
 }
 
 /** A duration: `3.1s`, `46s`, `4m05s`, `1h02m`; `?` for null or not finite. */
-export function fmtSecs(s: number | null): string {
-  if (s === null || !Number.isFinite(s)) return UNKNOWN
+export function fmtSecs(s: number | null | undefined): string {
+  if (typeof s !== 'number' || !Number.isFinite(s)) return UNKNOWN
   const v = Math.max(0, s)
   if (v < 9.95) return `${v.toFixed(1)}s`
   // Round the whole duration first so 59.5 carries into `1m00s`, never `0m60s`.
@@ -55,9 +56,42 @@ export function fmtSecs(s: number | null): string {
 }
 
 /** A percentage already in 0–100: `12%`, or `12.3%` with `digits`; `?` for null or not finite. */
-export function fmtPct(p: number | null, digits = 0): string {
-  if (p === null || !Number.isFinite(p)) return UNKNOWN
+export function fmtPct(p: number | null | undefined, digits = 0): string {
+  if (typeof p !== 'number' || !Number.isFinite(p)) return UNKNOWN
   return `${p.toFixed(digits)}%`
+}
+
+/** A measured total requires every component; an absent component is never zero. */
+export function sumMeasured(values: readonly (number | null | undefined)[]): number | null {
+  if (!values.length || values.some(value => typeof value !== 'number' || !Number.isFinite(value))) return null
+  return (values as readonly number[]).reduce((sum, value) => sum + value, 0)
+}
+
+/** Known failures and unrecorded outcomes remain separate, including a true zero. */
+export function failureSummary(errors: number | null, unknown = 0): string {
+  if (unknown > 0) return `${errors === null ? '?' : fmtInt(errors)} observed failures · ${fmtInt(unknown)} unknown outcome${unknown === 1 ? '' : 's'}`
+  return errors === null ? 'failures unknown' : `${fmtInt(errors)} failed`
+}
+
+export function unavailableView(snap: Snapshot, view: string): boolean {
+  return snap.availability?.[view]?.status === 'unavailable'
+}
+
+/** A short evidence note; full field counts and reasons stay in the existing data-quality view. */
+export function qualitySummary(snap: Snapshot): string | null {
+  const fields = Object.values(snap.data_quality?.fields ?? {})
+  const notes: string[] = []
+  if (Object.values(snap.tokens).some(value => value === null)) notes.push('usage incomplete')
+  if ((snap.tools.unknown ?? 0) > 0) notes.push(`${fmtInt(snap.tools.unknown)} unknown tool outcome${snap.tools.unknown === 1 ? '' : 's'}`)
+  else if (snap.tools.failed === null || snap.tools.success_rate === null && snap.tools.calls > 0) notes.push('tool outcomes incomplete')
+  const missing = fields.filter(field => field.status === 'unavailable').length
+  const unknown = fields.filter(field => field.status === 'unknown').length
+  const partial = fields.filter(field => field.status === 'partial').length
+  if (missing) notes.push(`${fmtInt(missing)} field${missing === 1 ? '' : 's'} unavailable`)
+  if (unknown) notes.push(`${fmtInt(unknown)} field${unknown === 1 ? '' : 's'} unknown`)
+  if (partial) notes.push(`${fmtInt(partial)} field${partial === 1 ? '' : 's'} partial`)
+  if (!notes.length && !snap.data_quality) return null
+  return notes.length ? `Data quality: ${notes.join(' · ')}` : 'Data quality: capture completeness unknown'
 }
 
 /** The first `n` characters of `s`, the last one an ellipsis when it was cut. */

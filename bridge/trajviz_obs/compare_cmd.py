@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -133,7 +134,10 @@ def compare_sessions(current: Trajectory, other_path: str, *, anchor_patch: str 
     (reference, ref_path), (compared, cmp_path) = (other, other_path), (current, current.source)
     if reverse:
         (reference, ref_path), (compared, cmp_path) = (compared, cmp_path), (reference, ref_path)
-    report = tv.compare(reference=reference, compared=compared, fuzzy_commands=fuzzy, anchor_patch=anchor_patch)
+    try:
+        report = tv.compare(reference=reference, compared=compared, fuzzy_commands=fuzzy, anchor_patch=anchor_patch)
+    except ValueError as exc:
+        raise BridgeError("compare_failed", str(exc)) from exc
     views = tv.comparison_views(report)
     orientation = {"reference": ref_path, "compared": cmp_path}
     path = _views_file(destination, views, orientation=orientation)
@@ -174,6 +178,9 @@ def scorecard(current: Trajectory | None, others: list[str], *, fuzzy: bool, lab
     is a row with its ``error``; fewer than two runs raise ``BridgeError("compare_failed")``.
     """
     load_plugins()  # TrajViz loads the others itself (and with --no-self nothing went through load_run)
+    if current is not None and not no_self and current.raw.get("_otel", {}).get("mapping") == "operation":
+        raise BridgeError("compare_failed", "Transcript alignment is unavailable for operation-based OTLP captures. "
+                          "Inspect their observed token, timing and tool views instead.")
     sources: list[Trajectory | str] = [] if no_self else [current]
     destination = out_dir / "compare" / "scorecard.json"
     if current is not None:
@@ -240,8 +247,29 @@ def label_views_payload(sidecar: str, other: str | None) -> dict:
         out["comparison"] = {side: {"name": counts[side]["name"], **_phases(counts[side], durations[side])}
                              for side in ("reference", "compared")}
         views.update(pair)
+    from .label_quality import label_coverage
+
+    records = json.loads(Path(sidecar).read_text(encoding="utf-8"))["steps"]
+    primary_fields = label_coverage({"steps": records})
+    if other is not None:
+        records = [*records, *json.loads(Path(other).read_text(encoding="utf-8"))["steps"]]
+    fields = label_coverage({"steps": records})
+    if fields:
+        for vid, view in tuple(views.items()):
+            source_fields = fields if "comparison" in vid else primary_fields
+            selected = source_fields if vid == "label_timeline" else {"duration": source_fields["duration"]} if (
+                source_fields and "duration" in vid) else None
+            if selected:
+                states = {row["status"] for row in selected.values()}
+                status = "observed" if states == {"observed"} else "partial" if any(
+                    row["observed"] for row in selected.values()) else "unavailable"
+                views[vid] = replace(view, availability={"status": status, "basis": "source_records", "fields": selected})
+        if any(row["status"] != "observed" for row in fields.values()):
+            out["notice"] = "Some token or timing evidence is unavailable; duration totals include recorded steps only."
     out["views"] = {vid: view.to_dict() for vid, view in views.items()}
     out["text"] = _labels_text(summary, phases, out.get("comparison"))
+    if out.get("notice"):
+        out["text"] += "\n" + out["notice"]
     return out
 
 

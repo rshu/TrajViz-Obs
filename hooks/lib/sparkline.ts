@@ -20,7 +20,7 @@ export function fit(values: (number | null)[], width: number): (number | null)[]
     let max: number | null = null
     for (let j = start; j < end; j++) {
       const v = values[j]
-      if (v !== null && v !== undefined && (max === null || v > max)) max = v
+      if (typeof v === 'number' && Number.isFinite(v) && (max === null || v > max)) max = v
     }
     out.push(max)
   }

@@ -23,7 +23,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
-FORMATS = {'claude_code', 'codex', 'cursor', 'codearts', 'icode', 'opencode', 'pi', 'dsh'}
+FORMATS = {'claude_code', 'codex', 'cursor', 'codearts', 'icode', 'opencode', 'pi', 'dsh', 'otlp'}
 BASE_MS = 1_792_660_800_000
 
 
@@ -133,6 +133,28 @@ def fixtures(root: Path) -> dict[str, Path]:
                                      'additional_properties': {'failed': True}}]),
             icode_message('assistant', 3, [{'type': 'text', 'text': 'Failure preserved'}], 5),
         ]}})
+    def span(index: int, name: str, parent: int | None = None, **values) -> dict:
+        attributes = {'session.id': 'controlled', 'agent_id': 'main', **values}
+        return {'name': name, 'traceId': '1' * 32, 'spanId': f'{index:016x}',
+                **({'parentSpanId': f'{parent:016x}'} if parent else {}),
+                'startTimeUnixNano': str(BASE_MS * 1_000_000 + index * 100_000_000),
+                'endTimeUnixNano': str(BASE_MS * 1_000_000 + index * 100_000_000 + 50_000_000),
+                'attributes': [{'key': key, 'value': {
+                    'boolValue' if isinstance(value, bool) else 'intValue' if isinstance(value, int) else 'stringValue': value
+                }} for key, value in attributes.items()]}
+    result['otlp'] = write(root / 'otlp.json', {'resourceSpans': [{'resource': {'attributes': []},
+        'scopeSpans': [{'scope': {'name': 'claude-code'}, 'spans': [
+            span(1, 'claude_code.interaction', user_prompt='Run check'),
+            span(2, 'claude_code.llm_request', 1, request_id='request-a', input_tokens=12, output_tokens=8,
+                 cache_read_tokens=0, cache_creation_tokens=0, reasoning_tokens=0,
+                 **{'response.model_output': 'Checking'}),
+            span(3, 'claude_code.tool', 2, request_id='request-a', tool_name='Bash', tool_use_id='call',
+                 tool_input=json.dumps({'command': 'pytest -q'}), tool_output='synthetic failure', success=False),
+            span(4, 'claude_code.llm_request', 1, request_id='request-b', input_tokens=3, output_tokens=2,
+                 cache_read_tokens=0, cache_creation_tokens=0, reasoning_tokens=0,
+                 **{'response.model_output': 'Failure preserved'}),
+            span(5, 'claude_code.tool.execution', 3, tool_use_id='call', success=False),
+        ]}]}]})
     return result
 
 
@@ -188,6 +210,11 @@ def run(python: str, output: Path) -> dict:
             require(reloaded['trajviz']['format'] == name and reloaded['tokens'] == snapshot['tokens']
                     and reloaded['counts']['tool_calls'] == 1 and reloaded['tools']['failed'] == 1,
                     f'{name}: reloadable trajectory lost identity, tokens or failed tool')
+            bundled = call('bundle', '--transcript', str(source), '--out', str(artifacts / 'portable.zip'))
+            portable = call('snapshot', '--transcript', bundled['path'])
+            require(portable['trajviz']['format'] == name and portable['tokens'] == snapshot['tokens']
+                    and portable['counts']['tool_calls'] == 1 and portable['tools']['failed'] == 1,
+                    f'{name}: bundled trajectory lost identity, tokens or failed tool')
             require(hashlib.sha256(source.read_bytes()).hexdigest() == original[name], f'{name}: source was changed')
             ledger['formats'][name] = {'label': declared[name], 'assistant_steps': 2, 'failed_tools': 1, 'tokens': 25,
                                        'views': len(doc(exported / 'index.json')['views'])}

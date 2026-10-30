@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 — 2026-10-30
+
+- Upgrade both plugins to TrajViz 0.3.1, with all 36 views, schema 2 exports, data-quality reporting, and compressed-session support. Includes OpenCode adapter 0.2.0.
+- Select individual sessions inside saved OTLP captures, keeping artifacts, labels, dashboards, and model history separate.
+- Preserve unknown measurements and pending tool outcomes in native summaries, panes, and model prompts; keep observed zero distinct.
+- Preserve active Pi branches, portable imported-session bundles, and original input files during exports and model replay.
+
 ## 0.1.16 — 2026-10-30
 
 - Initialize format adapters before Converge CLI comparisons so OpenCode 2 sessions retain their tokens, tools, and subagents in pairwise, batch, and before/after reports. Includes OpenCode adapter 0.1.1.

@@ -1,10 +1,10 @@
 [project]
 name = "trajviz-obs-bridge"
-version = "0.1.16"
+version = "0.2.0"
 description = "Shared TrajViz bridge for /obs host adapters (JSON on stdout)."
 license = "MIT"
 requires-python = ">=3.11"
-dependencies = ["agent-trajviz[all]>=0.2.0,<0.3"]
+dependencies = ["agent-trajviz[all]==0.3.1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5", "jsonschema>=4.23,<5"]

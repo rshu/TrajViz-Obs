@@ -10,6 +10,7 @@ export type TranscriptInfo = {
   size: number
   mtime_ms: number
   sha256: string
+  capture_session_id?: string
 }
 
 export type TrajvizInfo = {
@@ -24,7 +25,7 @@ export type Counts = {
   assistant_steps: number
   user_records: number
   prompts: number
-  compactions: number
+  compactions: number | null
   agents: number
   tool_calls: number
   /** Every detected issue, before the snapshot's top-ten preview. */
@@ -32,12 +33,13 @@ export type Counts = {
 }
 
 export type Tokens = {
-  total: number
-  input: number
-  output: number
-  cache_read: number
-  cache_write: number
-  reasoning: number
+  /** Null means the source did not record this measurement; zero is a measured zero. */
+  total: number | null
+  input: number | null
+  output: number | null
+  cache_read: number | null
+  cache_write: number | null
+  reasoning: number | null
 }
 
 export type Timing = {
@@ -50,12 +52,14 @@ export type Timing = {
   tool_wait_share: number | null
 }
 
-export type ToolRow = { tool: string; calls: number; errors: number }
+export type ToolRow = { tool: string; calls: number; errors: number | null; unknown?: number }
 
 export type Tools = {
   success_rate: number | null
   calls: number
-  failed: number
+  failed: number | null
+  /** Calls whose final outcome was not recorded. */
+  unknown?: number
   /** Top 12 by calls. */
   by_tool: ToolRow[]
 }
@@ -82,14 +86,14 @@ export type Context = {
   current_pct: number | null
   peak_occupancy: number | null
   peak_pct: number | null
-  compaction_count: number
+  compaction_count: number | null
   largest_drop: number | null
 }
 
 export type Series = {
-  tokens: { steps: number[]; fresh: number[]; cache_read: number[]; cache_write: number[]; output: number[] }
+  tokens: { steps: number[]; fresh: (number | null)[]; cache_read: (number | null)[]; cache_write: (number | null)[]; output: (number | null)[] }
   durations: { steps: number[]; seconds: (number | null)[]; outliers: number[] }
-  context: { turns: number[]; occupancy: number[]; compactions: number[] }
+  context: { turns: number[]; occupancy: (number | null)[]; compactions: number[] }
 }
 
 export type Phase = { name: string; start: number; end: number }
@@ -100,9 +104,11 @@ export type Agent = {
   type: string | null
   description: string | null
   steps: number
-  tokens: number
+  tokens: number | null
   tool_calls: number
-  errors: number
+  errors: number | null
+  unknown_outcomes?: number
+  observed_errors?: number
   duration_s: number | null
   cache_pct: number | null
   gen_tps: number | null
@@ -135,23 +141,24 @@ export type TimelineRow = {
   role: string
   category: string
   agent: string
-  errors: number
+  errors: number | null
+  unknown_outcomes?: number
   tool_calls: number
   duration_s: number | null
-  tokens: number
+  tokens: number | null
   preview: string
 }
 
 export type Files = {
-  unique: number
-  reads: number
-  writes: number
-  searches: number
+  unique: number | null
+  reads: number | null
+  writes: number | null
+  searches: number | null
   /** Top 8. */
   top: { file: string; reads: number; writes: number }[]
 }
 
-export type Plan = { items: number; done: number; stalled: number }
+export type Plan = { items: number | null; done: number | null; stalled: number | null }
 
 export type Skill = { skill: string; calls: number }
 
@@ -159,6 +166,27 @@ export type Artifacts = {
   dir: string | null
   views: string | null
   labels: string | null
+}
+
+export type EvidenceField = {
+  status: string
+  observed?: number
+  partial?: number
+  total?: number
+  reasons?: Record<string, number>
+}
+
+export type Availability = { status: string; basis?: string; reason?: string; fields?: Record<string, EvidenceField> }
+
+/** Evidence coverage over the captured source; it does not assert capture completeness. */
+export type DataQuality = {
+  source: string
+  basis: string
+  capture_complete: boolean | null
+  fields: Record<string, EvidenceField>
+  limitations?: string[]
+  profile?: string
+  profile_version?: number
 }
 
 /** The bridge's `snapshot` document: mirrors the contract exactly. */
@@ -178,6 +206,8 @@ export type Snapshot = {
   timing: Timing
   tools: Tools
   health: HealthRow[]
+  data_quality?: DataQuality
+  availability?: Record<string, Availability>
   /** Top 10. */
   issues: Issue[]
   /** Top 5. */
@@ -213,7 +243,7 @@ export type SessionState = {
   environment?: { revision?: number; pythonOption?: string; sourceCwd?: string; python: string; trajviz: string | null; extras: string[]; source: string; createdAt: number }
   transcriptPath: string | null
   sessionId: string | null
-  selected: { path: string; id: string; label: string } | null
+  selected: { path: string; id: string; label: string; captureSessionId?: string } | null
 }
 
 export type Flags = {

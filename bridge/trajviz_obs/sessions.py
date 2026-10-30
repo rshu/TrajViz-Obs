@@ -1,7 +1,7 @@
 """``resolve`` and ``sessions``: find a session transcript and list this project's sessions.
 
-Nothing here loads a transcript: listing reads at most the first 50 lines of each
-file for its start time and counts newlines for its record count.
+Native listing reads at most the first 50 lines for a transcript's start time
+and counts newlines. Capture listing uses TrajViz's bounded saved-OTLP reader.
 """
 
 from __future__ import annotations
@@ -176,6 +176,13 @@ def page_limit(text: str) -> int:
     return value
 
 
+def capture_session_id(text: str) -> str:
+    """An exact session id inside a saved OTLP capture, separate from the host session selector."""
+    if not text.strip() or len(text) > 4096 or "\x00" in text:
+        raise argparse.ArgumentTypeError("session-id must be a non-empty captured session id up to 4096 characters")
+    return text
+
+
 def _within(rows: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
     """The first *rows* whose JSON list (as the CLI prints it) takes at most *budget* bytes."""
     shown, used = [], 0
@@ -208,6 +215,10 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     _add_location(p)
     p.add_argument("--limit", type=page_limit, default=20,
                    help=f"Most sessions to list (default: 20, at most {MAX_LIMIT}).")
+    p = sub.add_parser("capture-sessions", help="List selectable sessions inside a saved OTLP capture.")
+    p.add_argument("--transcript", required=True, help="The saved capture file, manifest directory, or ZIP.")
+    p.add_argument("--limit", type=page_limit, default=20,
+                   help=f"Most captured sessions to list (default: 20, at most {MAX_LIMIT}).")
 
 
 @register("resolve")
@@ -227,3 +238,22 @@ def _sessions(args: argparse.Namespace) -> dict:
     if len(shown) < len(rows):
         out["cut"] = len(rows) - len(shown)
     return out
+
+
+@register("capture-sessions")
+def _capture_sessions(args: argparse.Namespace) -> dict:
+    import agent_trajviz as tv
+
+    from .compat import load_plugins
+
+    load_plugins()
+    rows = tv.list_sessions(args.transcript)
+    # IDs appear again in the readable text. Reserve room for that second copy.
+    shown = _within(rows[:args.limit], LIST_BYTES // 2)
+    cut = len(rows) - len(shown)
+    lines = [f"{len(shown)} captured sessions in {args.transcript}:",
+             *(str(row["id"]) for row in shown)]
+    if cut:
+        lines.append(f"… {cut} more")
+    lines.append("Select one with --session <capture-path> --session-id <id>.")
+    return {"path": args.transcript, "sessions": shown, "cut": cut, "text": "\n".join(lines)}

@@ -27,6 +27,7 @@ import os
 import re
 import tempfile
 import time
+import types
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, get_args
@@ -38,11 +39,14 @@ from .compare_cmd import label_views_payload
 from .compat import (
     EmptySession,
     check_supported,
+    input_files,
     labeler_chat,
     labeler_run,
     labeler_step_cap,
     llm_env_value,
     load_plugins,
+    project_analysis,
+    project_brief,
     protect_run_outputs,
     window_info,
 )
@@ -305,15 +309,37 @@ def _run(run: Trajectory, feature: str, *, chat: Chat | None, config: Any, trans
     from agent_trajviz import llm
 
     if feature == "analyze":
-        return llm.ask(run, question, history, config=config, chat=chat, language=language)
+        # Keep the public client's redaction, history, configuration and error
+        # handling, while giving it the same evidence-aware brief as /obs brief.
+        original = llm.ask
+        if not isinstance(original, types.FunctionType):
+            raise BridgeError("unsupported_trajviz", "TrajViz's analysis client changed; update the plugin.")
+        ask = types.FunctionType(original.__code__, {**original.__globals__, "brief": project_brief},
+                                 original.__name__, original.__defaults__, original.__closure__)
+        ask.__kwdefaults__ = original.__kwdefaults__
+        return ask(run, question, history, config=config, chat=chat, language=language)
     if feature == "fixes":
-        return llm.suggest_fixes(run, config=config, chat=chat, language=language, limit=limit)
+        return llm.suggest_fixes(_AnalysisRun(run), config=config, chat=chat, language=language, limit=limit)
     with labeler_run(run):
         if chat is None:
             return _label(transcript_path, out_path, assistant_only=assistant_only, model=model,
                           label_options=label_options, **(label_client or {}))
         with labeler_chat(chat):
             return _label(transcript_path, out_path, assistant_only=assistant_only, model=model, label_options=label_options)
+
+
+class _AnalysisRun:
+    """Read-only analysis facade; native canonical steps and source stay unchanged."""
+
+    def __init__(self, run: Trajectory) -> None:
+        self._run = run
+
+    @property
+    def _analysis(self):
+        return project_analysis(self._run)
+
+    def __getattr__(self, name: str):
+        return getattr(self._run, name)
 
 
 def _capture(run: Trajectory, feature: str, *, transcript_path: str, question: str, history: list[dict],
@@ -655,6 +681,8 @@ def _freeze_current(args: argparse.Namespace, run: Trajectory, plan: dict) -> di
         captured_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
     _write_json(manifest, {"schema_version": 1, "hash": plan["hash"], "feature": args.feature,
                            "transcript": _input_identity(args.transcript), "source": source,
+                           "capture_session_id": getattr(args, "session_id", None),
+                           "inputs": [str(path.absolute()) for path in input_files(run)],
                            "trajectory_sha256": captured_sha256})
     return source
 
@@ -669,7 +697,8 @@ def _frozen_current(args: argparse.Namespace, replies: dict) -> tuple[Trajectory
         manifest = json.loads((folder / "transaction.json").read_text(encoding="utf-8"))
         valid = (isinstance(manifest, dict) and manifest.get("schema_version") == 1
                  and manifest.get("hash") == fingerprint and manifest.get("feature") == args.feature
-                 and manifest.get("transcript") == _input_identity(args.transcript))
+                 and manifest.get("transcript") == _input_identity(args.transcript)
+                 and manifest.get("capture_session_id") == getattr(args, "session_id", None))
         if not valid:
             raise ValueError("the saved request belongs to a different transcript or feature")
         check_supported()
@@ -685,6 +714,15 @@ def _frozen_current(args: argparse.Namespace, replies: dict) -> tuple[Trajectory
         source = manifest.get("source")
         if not isinstance(source, dict) or source.get("sha256") != run.sha256:
             raise ValueError("the saved trajectory identity changed")
+        inputs = manifest.get("inputs", [args.transcript])
+        if not isinstance(inputs, list) or any(not isinstance(path, str) for path in inputs):
+            raise ValueError("the saved input list changed")
+        destinations = ([_out(args)] if args.feature == "label" else
+                        [_artifacts(args) / "analyze.json", _history_lock_path(_artifacts(args) / "analyze.json")]
+                        if args.feature == "analyze" else [])
+        # A frozen run intentionally does not reopen live inputs. Keep the original
+        # validated companion files protected even after they change or disappear.
+        protect_inputs(destinations, map(Path, inputs))
         return run, {"path": args.transcript, "sha256": run.sha256, "frozen": True}
     except (OSError, ValueError, TypeError) as exc:
         raise BridgeError("stale_prompts", f"Cannot read the saved input for these replies ({exc}); "

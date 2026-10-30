@@ -1,5 +1,5 @@
 // The managed Python environment: immutable virtual environments built by uv or
-// by the newest Python 3.11+ on PATH, `agent-trajviz[llm,charts]` installed from
+// by the newest Python 3.11+ on PATH, `agent-trajviz[llm,charts,zstd]` installed from
 // `options.trajvizSource`, and `state.json` beside the venv recording what was
 // installed so a setup is decided without running pip. Every helper taking
 // `$` is a function declaration (validate follows `$` into one); the
@@ -9,7 +9,7 @@ import { cacheRoot, isWindows } from './paths'
 import { readSession, updateSession } from './state'
 
 /** The manifest's default `trajvizSource`. */
-export const DEFAULT_SOURCE = 'agent-trajviz>=0.2.0,<0.3'
+export const DEFAULT_SOURCE = 'agent-trajviz==0.3.1'
 
 /** The interpreters tried on PATH, in order, when no override is set. */
 export const PYTHON_CANDIDATES: readonly string[] = ['python3.13', 'python3.12', 'python3.11', 'python3', 'python']
@@ -23,8 +23,8 @@ const BOOTSTRAP_TIMEOUT_MS = 600_000
 /** Includes host Python discovery/download, lock waiting, installation and verification. */
 export const SETUP_TIMEOUT_MS = BOOTSTRAP_TIMEOUT_MS + PROBE_TIMEOUT_MS * (PYTHON_CANDIDATES.length + 2)
 /** Rebuild older environments that omitted the chart imports required by TrajViz's LLM renderer. */
-export const ENV_REVISION = 4
-const BASE_EXTRAS: readonly string[] = ['llm', 'charts']
+export const ENV_REVISION = 5
+const BASE_EXTRAS: readonly string[] = ['llm', 'charts', 'zstd']
 
 export type EnvState = {
   revision?: number
@@ -34,7 +34,7 @@ export type EnvState = {
   python: string
   /** The installed agent-trajviz version, null when it could not be read. */
   trajviz: string | null
-  /** The pip extras installed so far (`llm` and `charts` on a fresh build). */
+  /** The pip extras installed so far (`llm`, `charts`, and `zstd` on a fresh build). */
   extras: string[]
   /** The `trajvizSource` the environment was built from. */
   source: string

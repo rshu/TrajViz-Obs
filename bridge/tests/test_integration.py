@@ -32,7 +32,7 @@ def _replies(plan: dict, text: str, dest: Path) -> str:
 
 
 def test_every_subcommand_runs_on_fixture(run_cli, fixture_session, synthetic_session, fake_projects,
-                                          tmp_artifacts, tmp_path):
+                                          tmp_artifacts, tmp_path, captured_sessions):
     ran: set[str] = set()
 
     def ok(argv: list[str]) -> dict:
@@ -47,7 +47,8 @@ def test_every_subcommand_runs_on_fixture(run_cli, fixture_session, synthetic_se
 
     assert ok(["resolve", "--session", "bbb", *location])["session_id"] == BBB3
     assert ok(["sessions", *location])["sessions"][0]["id"] == BBB3
-    assert ok(["doctor"])["trajviz"]["version"].startswith("0.2")
+    assert {row["id"] for row in ok(["capture-sessions", "--transcript", str(captured_sessions)])["sessions"]} == {"A", "B"}
+    assert ok(["doctor"])["trajviz"]["version"].startswith("0.3")
 
     assert ok(["snapshot", *session])["context"]["window"] == 200000
     assert ok(["view", *session])["views"]

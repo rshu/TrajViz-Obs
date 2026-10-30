@@ -86,7 +86,7 @@ export class Runtime {
   }
   async ready(extras: string[] = [], signal?: AbortSignal): Promise<Environment> {
     signal?.throwIfAborted()
-    const source = this.options.trajvizSource ?? 'agent-trajviz>=0.2.0,<0.3'
+    const source = this.options.trajvizSource ?? 'agent-trajviz==0.3.1'
     if (this.environment?.source === source && extras.every(e => this.environment!.extras.includes(e))) return this.environment
     if (this.preparing) { await this.preparing; return this.ready(extras, signal) }
     this.preparing = (async () => {
@@ -95,7 +95,7 @@ export class Runtime {
         const relativeSource = /^(?:\.\.?[/\\]|~[/\\])/.test(source) && !source.startsWith('~')
         const relative = typeof prior.python === 'string' ? path.relative(this.cache, prior.python).split(path.sep).join('/') : ''
         const managed = /^envs\/[a-f0-9]{24}\/[a-f0-9]{32}\/(?:bin\/python|Scripts\/python\.exe)$/.test(relative)
-        if (prior.revision === 4 && prior.source === source && (prior.pythonOption ?? '') === (this.options.python ?? '') && Array.isArray(prior.extras) && ['llm','charts',...extras].every(e => prior.extras.includes(e)) && managed && (!relativeSource || prior.sourceCwd === this.cwd) && await exists(prior.python)) return prior
+        if (prior.revision === 5 && prior.source === source && (prior.pythonOption ?? '') === (this.options.python ?? '') && Array.isArray(prior.extras) && ['llm','charts','zstd',...extras].every(e => prior.extras.includes(e)) && managed && (!relativeSource || prior.sourceCwd === this.cwd) && await exists(prior.python)) return prior
       } catch { /* Bootstrap validates and repairs a missing or stale generation. */ }
       let host: string[] | undefined
       if (!this.options.python) {

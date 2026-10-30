@@ -110,6 +110,33 @@ test('file selection is resolved without treating the virtual id as a native ses
   expect(selected.argv).toEqual(['--transcript', file, '--artifacts', selected.artifacts])
 })
 
+test('capture sessions in one file have isolated identities, artifacts and dashboard ownership', async () => {
+  const { backend, directory } = await fixture()
+  const file = path.join(directory, 'capture.json')
+  await writeFile(file, '{}')
+  const a = await backend.session('ses_root', file, undefined, '../../A')
+  const b = await backend.session('ses_root', file, undefined, '../../B')
+  expect(a.sessionID).not.toBe(b.sessionID)
+  expect(a.artifacts).not.toBe(b.artifacts)
+  expect(a.artifacts).toMatch(/\/[a-f0-9]{32}$/)
+  expect(a.argv.slice(-2)).toEqual(['--session-id', '../../A'])
+  expect(a.argv).not.toContain('--window')
+  expect((await backend.session('ses_root', file, undefined, '--A')).argv).toContain('--session-id=--A')
+  let began!: () => void
+  const ready = new Promise<void>(resolve => { began = resolve })
+  backend.runtime.argv = async (_args, signal) => {
+    began()
+    return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(new Error('Cancelled controlled setup')), { once: true }))
+  }
+  const pending = backend.serve('dashboard', ['dashboard', '--transcript', file, '--session-id', '../../A'], undefined, a.sessionID).catch(error => error)
+  await ready
+  expect(await backend.stop('dashboard', b.sessionID)).toBe(false)
+  expect(await backend.stop('dashboard', a.sessionID)).toBe(true)
+  expect(String(await pending)).toContain('Cancelled')
+  await expect(backend.resolve('ses_root', undefined, 'A')).rejects.toThrow('requires --session')
+  await expect(backend.resolve('ses_root', 'ses_root', 'A')).rejects.toThrow('existing capture path')
+})
+
 test('current-session analysis retains the empty-session contract without changing saved selectors', async () => {
   const { backend, source } = await fixture()
   await backend.sync(source)

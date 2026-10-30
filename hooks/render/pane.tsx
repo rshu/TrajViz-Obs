@@ -10,11 +10,12 @@ import type { Dashboards, EmptySnapshot, Flags, Snapshot } from '../../types'
 import { EMPTY_TEXT } from '../commands/overview'
 import { refreshPane } from '../commands/pane'
 import { runSelectedCommand, runSnapshotCommand } from '../lib/actions'
-import { fmtCompact, fmtInt, fmtPct } from '../lib/format'
+import { failureSummary, fmtCompact, fmtInt, fmtPct, unavailableView } from '../lib/format'
 import { isEmpty } from '../lib/snapshot'
 import { toggleWatch, writePaneTab } from '../lib/state'
 import {
   ContextBlock,
+  DataQualityNote,
   HealthChips,
   IssuesList,
   MdTable,
@@ -168,6 +169,7 @@ function overviewBody(b: Body): RenderElement {
   return (
     <Box flexDirection="column" gap={short ? 0 : 1}>
       {PaneMetrics({ els, snap, usage: usage ?? undefined, columns, compact: short })}
+      {DataQualityNote({ els, snap })}
       {!short ? HealthChips({ els, health: snap.health.map(row => ({
         ...row, label: /^(?:n\/a|unknown|\?|—)$/i.test(row.label.trim()) ? row.label : row.status,
       })) }) : null}
@@ -190,13 +192,15 @@ function toolsBody({ els, snap, columns }: Body): RenderElement {
   const { tools, files, skills } = snap
   return (
     <Box flexDirection="column" gap={1}>
-      <Text>{`${fmtInt(tools.calls)} calls · ${fmtPct(tools.success_rate)} ok · ${fmtInt(tools.failed)} failed`}</Text>
+      <Text>{`${fmtInt(tools.calls)} calls · ${fmtPct(tools.success_rate)} ok · ${failureSummary(tools.failed, tools.unknown)}`}</Text>
       {ToolBars({ els, byTool: tools.by_tool, width: columns })}
       <Box flexDirection="column">
-        <Text dimColor>{`files: ${fmtInt(files.unique)} touched · ${fmtInt(files.reads)} reads · ${fmtInt(files.writes)} writes · ${fmtInt(files.searches)} searches`}</Text>
-        {files.top.length ? MdTable({ els, rows: files.top, columns: FILE_COLUMNS, limit: files.top.length, width: columns }) : null}
+        {snap.availability?.file_interactions?.status === 'partial' ? <Text dimColor>Partial evidence: file counts reflect recorded activity.</Text> : null}
+        <Text dimColor>{unavailableView(snap, 'file_interactions') ? 'File activity unavailable: tool inputs were not recorded.' : `files: ${fmtInt(files.unique)} touched · ${fmtInt(files.reads)} reads · ${fmtInt(files.writes)} writes · ${fmtInt(files.searches)} searches`}</Text>
+        {!unavailableView(snap, 'file_interactions') && files.top.length ? MdTable({ els, rows: files.top, columns: FILE_COLUMNS, limit: files.top.length, width: columns }) : null}
       </Box>
       {skills.length ? <Text dimColor>{`skills: ${skills.map(s => `${s.skill} ×${fmtInt(s.calls)}`).join(' · ')}`}</Text> : null}
+      {!skills.length && unavailableView(snap, 'skill_calls') ? <Text dimColor>Skill activity unavailable: tool inputs were not recorded.</Text> : null}
     </Box>
   )
 }
@@ -231,7 +235,8 @@ export function patternRows(data: Snapshot['patterns'][keyof Snapshot['patterns'
 function patternsBody({ els, snap, columns }: Body): RenderElement {
   const { Box, Text } = els
   const sections = PATTERN_SECTIONS.map(s => ({ ...s, rows: patternRows(snap.patterns[s.key]) })).filter(s => s.rows.length > 0)
-  if (sections.length === 0) return <Text dimColor>No patterns found.</Text>
+  const missing = PATTERN_SECTIONS.filter(section => unavailableView(snap, section.key))
+  if (sections.length === 0) return <Text dimColor>{missing.length ? 'Patterns unavailable: required evidence was not recorded. /obs view data_quality' : 'No patterns found.'}</Text>
   return (
     <Box flexDirection="column" gap={1}>
       {sections.map(s => (
@@ -240,16 +245,22 @@ function patternsBody({ els, snap, columns }: Body): RenderElement {
           {MdTable({ els, rows: s.rows, columns: keysOf(s.rows), limit: PATTERN_ROWS, width: columns })}
         </Box>
       ))}
+      {missing.length ? <Text dimColor wrap="wrap">{`Unavailable: ${missing.map(section => section.title).join(', ')}. /obs view data_quality`}</Text> : null}
     </Box>
   )
 }
 
 /** Tab 5: the agents table and the swimlane. */
 function agentsBody({ els, e, snap, columns }: Body): RenderElement {
-  const { Box } = els
+  const { Box, Text } = els
+  const unknown = snap.agents.some(agent => agent.unknown_outcomes)
+  const agents = unknown ? snap.agents.map(agent => ({ ...agent, observed_errors: agent.observed_errors ?? agent.errors })) : snap.agents
+  const fields = unknown ? [...AGENT_COLUMNS.map(field => field === 'errors' ? 'observed_errors' : field), 'unknown_outcomes'] : AGENT_COLUMNS
   return (
     <Box flexDirection="column" gap={1}>
-      {MdTable({ els, rows: snap.agents, columns: AGENT_COLUMNS, limit: TABLE_ROWS, width: columns })}
+      {snap.tools.unknown ? <Text dimColor wrap="wrap">{`${fmtInt(snap.tools.unknown)} tool outcomes unknown; error counts show observed failures.`}</Text> : null}
+      {MdTable({ els, rows: agents, columns: fields, limit: TABLE_ROWS, width: columns })}
+      <Text dimColor>Activity by step · /obs view agent_swimlane for details</Text>
       {Swimlane({ els, surface: e.surface, lanes: snap.swimlane.lanes, total: snap.swimlane.total_steps, columns })}
     </Box>
   )
@@ -283,7 +294,7 @@ function contextBody({ els, e, snap, columns, usage }: Body): RenderElement {
 
 /** Tab 7: the last steps as a table. */
 function timelineBody({ els, snap, columns }: Body): RenderElement {
-  return MdTable({ els, rows: snap.timeline, columns: TIMELINE_COLUMNS, limit: TABLE_ROWS, width: columns })
+  return MdTable({ els, rows: snap.timeline, columns: snap.timeline.some(step => step.unknown_outcomes) ? [...TIMELINE_COLUMNS, 'unknown_outcomes'] : TIMELINE_COLUMNS, limit: TABLE_ROWS, width: columns })
 }
 
 function tabBody(tab: number, b: Body): RenderElement {
@@ -361,6 +372,7 @@ export function renderPane(
       {dashboards.converge ? <Text dimColor wrap="wrap">{`Compare: ${dashboards.converge.url}`}</Text> : null}
       <Box flexDirection="column">
         <Text weight="semibold">{TABS[tab - 1] ?? TABS[0]}</Text>
+        {snap?.transcript.capture_session_id !== undefined ? <Text dimColor wrap="wrap">{`Captured session: ${snap.transcript.capture_session_id}`}</Text> : null}
         {columns >= 72 && e.props.scroll.bodyRows >= 24 ? <Text dimColor wrap="wrap">{TAB_GUIDES[tab - 1] ?? TAB_GUIDES[0]}</Text> : null}
       </Box>
       {body}

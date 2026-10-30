@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On, ToolSpec } from 'claude-code'
 import { SNAPSHOT } from './testdata/snapshot'
+import { PARTIAL_SNAPSHOT } from './testdata/quality'
 
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
@@ -11,7 +12,7 @@ const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const ARTIFACTS = `${CACHE}/sessions/abc`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 12 }, rateLimits: [] }
 const NOW = 1_761_150_000_000
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: NOW })
+const STATE_JSON = JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.3.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.3.1', createdAt: NOW })
 
 /** The argv every session-bound bridge subcommand gets for the current session. */
 const SESSION_ARGV = ['--transcript', DERIVED, '--window', '1000000', '--artifacts', ARTIFACTS, '--kind', 'current']
@@ -142,6 +143,14 @@ test('what: "health" answers the health rows of the snapshot', async ($, on) => 
   expect(JSON.parse(r.result ?? '')).toEqual({ health: SNAPSHOT.health, total: SNAPSHOT.health.length })
 })
 
+test('the model tool retains evidence coverage beside an empty issues list', async ($, on) => {
+  host(on, { snapshot: json(PARTIAL_SNAPSHOT) })
+  await start($)
+  const result = JSON.parse((await callObs($, { what: 'issues' })).result ?? '')
+  expect(result.issues).toEqual([])
+  expect(result.data_quality).toEqual(PARTIAL_SNAPSHOT.data_quality)
+})
+
 test('issues reports the full count when the snapshot carries only its top preview', async ($, on) => {
   host(on, { snapshot: json({ ...SNAPSHOT, counts: { ...SNAPSHOT.counts, issues: 37 } }) })
   await start($)
@@ -227,6 +236,21 @@ test('the tool reads the session --session selected', async ($, on) => {
   expect((await callObs($, { what: 'brief' })).result).toBe('the other session')
   const brief = bridgeCalls(ran).find(c => c[0] === 'brief')
   expect(brief).toEqual(['brief', '--transcript', other, '--artifacts', `${CACHE}/sessions/def`, '--kind', 'other'])
+})
+
+for (const suffix of ['.jsonl', '.jsonl.zst', '.jsonl.zstd', '.manifest.txt', '.json', '.zip']) test(`model tool refreshes selected ${suffix} imports even when parent metadata is unchanged`, async ($, on) => {
+  const source = `/captures/session${suffix}`
+  const snapshot = { ...SNAPSHOT, transcript: { ...SNAPSHOT.transcript, path: source } }
+  const { ran } = host(on, { resolve: json({ path: source, session_id: 'capture', kind: 'file' }), snapshot: json(snapshot) })
+  on('fs.stat', () => ({ value: { kind: 'file', size: snapshot.transcript.size, mtimeMs: snapshot.transcript.mtime_ms, isLink: false } }))
+  await start($)
+  await $.command.run({ command: 'obs', args: `--session ${source}`, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
+  ran.length = 0
+  await callObs($, { what: 'issues' })
+  await callObs($, { what: 'health' })
+  const snapshots = bridgeCalls(ran).filter(argv => argv[0] === 'snapshot')
+  expect(snapshots).toHaveLength(2)
+  for (const argv of snapshots) expect(argv).toContain(source)
 })
 
 test('a bridge error is answered as its row', async ($, on) => {

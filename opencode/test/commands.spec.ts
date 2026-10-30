@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { Backend, SourceRef } from '../src/backend.js'
 import { runCommand } from '../src/commands.js'
 import { pageArguments, parseExtras, validateArguments } from '../src/command-args.js'
+import { argvValue, parseArgs, quoteOption, valueArgv } from '../src/shared/args.js'
 
 function fixture(responses: Record<string, unknown> = {}) {
   const calls: { argv: string[]; timeout?: number }[] = []
@@ -17,7 +18,11 @@ function fixture(responses: Record<string, unknown> = {}) {
       calls.push({ argv, timeout })
       return (responses[argv[0]!] ?? { path: '/tmp/output.json', bytes: 10, text: 'Bridge result' }) as T
     } },
-    async session(_id: string, selector?: string) { selections.push(selector ?? 'ses_current'); return source(selector) },
+    async session(_id: string, selector?: string, _signal?: AbortSignal, captureSessionID?: string) {
+      selections.push(selector ?? 'ses_current')
+      const selected = source(selector)
+      return captureSessionID === undefined ? selected : { ...selected, captureSessionID, argv: [...selected.argv, ...valueArgv('session-id', captureSessionID)] }
+    },
     async resolve(_id: string, selector?: string) { return { sessionID: selector ?? 'ses_current' } },
     async snapshot() { return { schema_version: 1, empty: true as const, reason: 'No assistant steps', transcript: {} } },
     async sessions() { return [{ id: 'ses_current', title: 'Controlled session' }] },
@@ -52,6 +57,22 @@ describe('OpenCode obs command contract', () => {
     expect(calls).toEqual([])
   })
 
+  test('capture listing uses the bridge while native listing stays on the SDK', async () => {
+    const f = fixture({ 'capture-sessions': { text: 'Captured sessions: A, B', sessions: [{ session_id: 'A' }, { session_id: 'B' }] } })
+    f.backend.resolve = async () => ({ sessionID: 'source_capture', path: '/server/capture folder' })
+    expect((await f.execute('sessions 2 --session "/server/capture folder"')).text).toBe('Captured sessions: A, B')
+    expect(f.calls[0]!.argv).toEqual(['capture-sessions', '--transcript', '/server/capture folder', '--limit', '2'])
+    for (const args of ['overview --session-id A', 'overview --session source --session-id', 'sessions --session source --session-id A']) expect(validateArguments(args)).toBeDefined()
+  })
+
+  test('empty unavailable views retain their evidence notice in JSON mode', async () => {
+    const notice = 'Evidence unavailable; an empty view does not mean no activity.'
+    const f = fixture({ view: { view: { id: 'failure_patterns', title: 'Failures' }, path: '/tmp/view.json', rows_total: 0, inline: { data: [] }, availability: { status: 'unavailable' }, notice } })
+    const result = await f.execute('view failure_patterns --json')
+    expect(result.text).toContain(notice)
+    expect(result.text).toContain('[]')
+  })
+
   test('diagnostic shortcuts and full views preserve paging, options and selection', async () => {
     for (const [sub, view] of Object.entries({ issues: 'issues', health: 'health', patterns: 'hotspots', agents: 'agents', context: 'context_pressure', timeline: 'workflow' })) {
       const { execute, calls } = fixture({ view: { view: { id: view, title: 'View title' }, path: '/tmp/view.json', rows_total: 3, inline: { table: 'Full evidence' } } })
@@ -73,6 +94,15 @@ describe('OpenCode obs command contract', () => {
     expect(calls[1]!.argv).toEqual(['bundle', '--transcript', '/tmp/controlled project/ses_current.json', '--artifacts', '/tmp/controlled obs/artifacts', '--out', '/tmp/export bundle.zip'])
   })
 
+  test('bundle output retains format-specific guidance without claiming generic hosted ZIP support', async () => {
+    const note = 'Open this ZIP in /obs dashboard; for another TrajViz dashboard, extract and upload trajectory.json.'
+    const { execute } = fixture({ bundle: { path: '/tmp/session.zip', bytes: 100, note } })
+    const result = await execute('bundle')
+    expect(result.text).toContain('Session bundle written: /tmp/session.zip')
+    expect(result.text).toContain(note)
+    expect(result.text).not.toContain('hosted')
+  })
+
   test('dashboard receives exact session and context; stop stays scoped to that session', async () => {
     const { execute, served, stopped } = fixture()
     const result = await execute('dashboard --session ses_other --port 7860')
@@ -80,6 +110,17 @@ describe('OpenCode obs command contract', () => {
     expect(served[0]!.argv).toEqual(['dashboard', '--transcript', '/tmp/controlled project/ses_other.json', '--window', '200000', '--port', '7860'])
     await execute('dashboard stop')
     expect(stopped).toEqual([['dashboard', 'ses_current']])
+  })
+
+  test('a selected capture dashboard prints an executable stop command for that exact source and ID', async () => {
+    const f = fixture(), selector = '/server/capture folder', id = '-A\nB'
+    const result = await f.execute(`dashboard ${quoteOption('session', selector)} ${quoteOption('session-id', id)}`)
+    const start = result.text.indexOf('/obs dashboard stop')
+    const stop = result.text.slice(start + 5, result.text.indexOf(' closes it.', start))
+    expect(parseArgs(stop)).toMatchObject({ sub: 'dashboard', positional: ['stop'], flags: { session: selector, 'session-id': id } })
+    await f.execute(stop)
+    expect(f.stopped).toEqual([['dashboard', selector]])
+    expect(argvValue(f.served[0]!.argv, 'session-id')).toBe(id)
   })
 
   test('comparison and scorecard resolve each OpenCode source through the backend', async () => {

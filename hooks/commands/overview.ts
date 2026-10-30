@@ -31,6 +31,11 @@ export function sessionSpec(ctx: CommandContext): string | undefined {
   return typeof s === 'string' && s ? s : undefined
 }
 
+export function captureSessionSpec(ctx: CommandContext): string | undefined {
+  const id = ctx.parsed.flags['session-id']
+  return typeof id === 'string' && id ? id : undefined
+}
+
 type Candidate = { id?: unknown; started?: unknown }
 
 /**
@@ -62,7 +67,7 @@ export async function overview($: EngineInterface, ctx: CommandContext): Promise
   let id
   let generation
   try {
-    ;({ snap, id, generation } = await captureSnapshot($, ctx.options, spec))
+    ;({ snap, id, generation } = await captureSnapshot($, ctx.options, spec, undefined, captureSessionSpec(ctx)))
   } catch (e) {
     return { text: errorRow(e, spec) }
   }
@@ -71,5 +76,5 @@ export async function overview($: EngineInterface, ctx: CommandContext): Promise
   const at = new Date(snap.generated_at)
   const text = `${provenanceLine(id, snap, Number.isNaN(at.getTime()) ? new Date() : at)}\n${snap.text}`
   await maybeOpenPane($, ctx)
-  return { text, context: [contextNote(await artifactsDir($, snap.transcript.session_id))] }
+  return { text, context: [contextNote(snap.artifacts.dir ?? await artifactsDir($, snap.transcript.session_id, snap.transcript.capture_session_id, snap.transcript.path))] }
 }

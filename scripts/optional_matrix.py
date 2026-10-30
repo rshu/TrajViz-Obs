@@ -241,7 +241,7 @@ def run_matrix(python: str, output: Path, *, attribution_root: Path | None = Non
             call("json", "--transcript", str(destination), "--out", str(folder), "--with-trajectory")
             call("schemas", "--out", str(output / "schemas"))
             index = json.loads((folder / "index.json").read_text(encoding="utf-8"))
-            assert len(index["views"]) >= 35
+            assert len(index["views"]) >= 36
             reloaded = folder / "reloaded"
             call("json", "--transcript", str(folder / "trajectory.json"), "--out", str(reloaded))
             for entry in index["views"]:
@@ -289,7 +289,7 @@ def run_matrix(python: str, output: Path, *, attribution_root: Path | None = Non
             fallback = call("attribution", "--transcript", str(exports / "codearts.json"),
                             "--reference-root", str(output / "missing-reference"),
                             "--agent", "codearts", "--instance", "synthetic")
-            assert fallback["available"] is False and "Attribution parser unavailable" in fallback["reason"]
+            assert fallback["available"] is False and "Attribution unavailable" in fallback["reason"]
             assert not fallback["faults"] and not fallback["scorecard"] and fallback["primary"] is None
             ledger["attribution_fallback"] = "passed: missing dependency, no fabricated verdict"
         else:

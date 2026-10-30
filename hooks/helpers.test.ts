@@ -4,10 +4,25 @@ import { artifactsDir, cacheRoot, configDir, isSsh, isWindows, projectSlug, venv
 import { clip, displayText, fmtCompact, fmtInt, fmtPct, fmtSecs, safeRenderText } from './lib/format'
 import { bar, fit, sparkline } from './lib/sparkline'
 import { DEFAULT_COLOR, encodeCells, sparklineRaster, stackedRaster, swimlaneRaster } from './lib/raster'
+import { sha256 } from './lib/identity'
 
 /** A `$` whose only facet is `env.get` over the given variables. */
 const envOf = (vars: Record<string, string>): EngineInterface =>
   ({ env: { get: async (name: string) => vars[name] } }) as unknown as EngineInterface
+
+test('capture artifacts use verified SHA-256 identities without exposing captured IDs as paths', async () => {
+  expect(sha256('')).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+  expect(sha256('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
+  expect(sha256('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq')).toBe('248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1')
+  expect(sha256('你好 🧪')).toBe('32fa00e7eaed955db5bc3daca18277a46181b3f77cd8223ac7ed0ba501a19fe5')
+  const $ = envOf({ HOME: '/home/me' })
+  const a = await artifactsDir($, 'capture', '../../A', '/source/capture.json')
+  const b = await artifactsDir($, 'capture', '../../B', '/source/capture.json')
+  expect(a).toMatch(/^\/home\/me\/\.cache\/trajviz-obs\/sessions\/captures\/[a-f0-9]{64}$/)
+  expect(a).not.toBe(b)
+  expect(a).toBe(await artifactsDir($, 'display name changed', '../../A', '/source/capture.json'))
+  expect(a).not.toBe(await artifactsDir($, 'capture', '../../A', '/different/capture.json'))
+})
 
 /** The cells back from the Raster encoding: `[cp, fg, bg]` per cell. */
 function decodeCells(b64: string): [number, number, number][] {

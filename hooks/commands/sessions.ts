@@ -2,10 +2,11 @@ import type { CommandRunResult, EngineInterface } from 'claude-code'
 import { runBridge } from '../lib/bridge'
 import { fmtBytes, fmtInt } from '../lib/format'
 import { configDir } from '../lib/paths'
+import { resolveTranscript } from '../lib/session'
 import { ensureReady } from '../lib/snapshot'
 import type { CommandContext } from './index'
 import { MAX_LIMIT } from './inline'
-import { errorRow } from './overview'
+import { errorRow, sessionSpec } from './overview'
 
 const SESSIONS_TIMEOUT_MS = 120_000
 
@@ -49,6 +50,12 @@ export async function sessions($: EngineInterface, ctx: CommandContext): Promise
   if (ctx.parsed.positional.length > 1 || (limit !== undefined && (limit < 1 || limit > MAX_LIMIT))) return { text: SESSIONS_USAGE }
   try {
     await ensureReady($, ctx.options)
+    const spec = sessionSpec(ctx)
+    if (spec) {
+      const transcript = await resolveTranscript($, spec)
+      const doc = await runBridge<{ text: string }>($, ['capture-sessions', '--transcript', transcript.path, '--limit', String(limit ?? 20)], { timeoutMs: SESSIONS_TIMEOUT_MS })
+      return { text: doc.text }
+    }
     const argv = ['sessions', '--cwd', await $.session.cwd(), '--config-dir', await configDir($)]
     if (limit !== undefined) argv.push('--limit', String(limit))
     const doc = await runBridge<SessionsDoc>($, argv, { timeoutMs: SESSIONS_TIMEOUT_MS })

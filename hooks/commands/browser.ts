@@ -1,12 +1,14 @@
 import type { CommandRunResult, EngineInterface } from 'claude-code'
 import { BridgeError, launcherArgv } from '../lib/bridge'
+import { valueArgv } from '../lib/args'
 import { openTarget, type OpenResult } from '../lib/open'
 import { configDir, projectSlug } from '../lib/paths'
 import { publicationGeneration } from '../lib/publication'
-import { type Kind, hasServer, portOf, running, startServer, stopServer } from '../lib/servers'
+import { type Kind, hasServer, portOf, running, serverSourceMatches, startServer, stopServer } from '../lib/servers'
+import { resolveTranscript } from '../lib/session'
 import { ensureReady, sessionArgv } from '../lib/snapshot'
 import type { CommandContext } from './index'
-import { errorRow, sessionSpec } from './overview'
+import { errorRow, captureSessionSpec, sessionSpec } from './overview'
 
 const MAX_PORT = 65_535
 let unverifiedSidecar = 0
@@ -89,8 +91,9 @@ async function dashboard($: EngineInterface, ctx: CommandContext, port: number |
   const spec = sessionSpec(ctx)
   try {
     await ensureReady($, ctx.options, 'app')
-    const { transcript, argv: session, generation } = await sessionArgv($, spec)
+    const { transcript, argv: session, generation } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
     const argv = ['dashboard', '--transcript', transcript.path]
+    if (transcript.captureSessionId !== undefined) argv.push(...valueArgv('session-id', transcript.captureSessionId))
     const windowAt = session.indexOf('--window')
     if (windowAt >= 0) argv.push('--window', session[windowAt + 1]!)
     const artifactsAt = session.indexOf('--artifacts')
@@ -106,6 +109,8 @@ async function dashboard($: EngineInterface, ctx: CommandContext, port: number |
         revision = `unverified:${++unverifiedSidecar}`
       }
     }
+    // Any imported file may be a manifest whose companions changed independently.
+    if (spec) revision = JSON.stringify([revision, 'capture', ++unverifiedSidecar])
     if (port !== undefined) argv.push('--port', String(port))
     const what = (preloaded: boolean): string =>
       preloaded
@@ -137,7 +142,15 @@ export async function browser($: EngineInterface, ctx: CommandContext): Promise<
   const { kind, name } = KINDS[sub]
   const [action, ...rest] = ctx.parsed.positional
   if (action === 'stop' && rest.length === 0) {
+    if (Object.keys(ctx.parsed.flags).some(name => name !== 'session' && name !== 'session-id')) return { text: usage(sub) }
     if (!hasServer(kind)) return { text: `No ${name} is running.` }
+    const spec = sessionSpec(ctx)
+    if (sub === 'dashboard' && spec) {
+      try {
+        const target = await resolveTranscript($, spec)
+        if (!serverSourceMatches(kind, target.path, captureSessionSpec(ctx))) return { text: 'No matching session dashboard is running.' }
+      } catch (error) { return { text: errorRow(error, spec) } }
+    }
     await stopServer($, kind)
     return { text: `${name} stopped.` }
   }

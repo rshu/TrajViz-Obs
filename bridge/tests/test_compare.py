@@ -57,6 +57,27 @@ def test_scorecard_current_is_first_row(fixture_run, synthetic_session, tmp_arti
 def test_label_views_payload(sidecar_path): assert "classification_rate" in label_views_payload(sidecar_path, None)["summary"]
 
 
+def test_label_comparison_coverage_does_not_change_primary_views(sidecar_path, tmp_path):
+    document = json.loads(Path(sidecar_path).read_text())
+    row = next(step for step in document["steps"] if step["role"] == "assistant")
+    document["trajectory_file"] = ""
+    document["steps"] = [{**row, "duration_s": 1, "tokens_total": 5,
+                           "duration_observed": True, "tokens_observed": True}]
+    primary = tmp_path / "known.json"
+    primary.write_text(json.dumps(document))
+    other = tmp_path / "unknown.json"
+    document["steps"] = [{**row, "duration_s": None, "tokens_total": 0,
+                           "duration_observed": False, "tokens_observed": False}]
+    other.write_text(json.dumps(document))
+    alone = label_views_payload(str(primary), None)["views"]
+    compared = label_views_payload(str(primary), str(other))["views"]
+    for view in ("label_timeline", "label_phase_durations", "label_action_durations"):
+        assert compared[view] == alone[view]
+        assert compared[view]["availability"]["status"] == "observed"
+    coverage = compared["label_phase_duration_comparison"]["availability"]["fields"]["duration"]
+    assert coverage["status"] == "partial" and coverage["observed"] == 1 and coverage["total"] == 2
+
+
 def test_compare_file_summary_and_text(fixture_run, synthetic_session, tmp_artifacts):
     out = compare_sessions(fixture_run, synthetic_session, anchor_patch=None, fuzzy=False, reverse=False,
                            out_dir=tmp_artifacts)

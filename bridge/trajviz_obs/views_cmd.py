@@ -10,6 +10,7 @@ is at most :data:`INLINE_JSON_BYTES`. A page is at most ``MAX_LIMIT`` rows, and 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -24,10 +25,10 @@ from agent_trajviz import Trajectory
 
 from . import paths
 from .cli import register
-from .compat import EmptySession, load_plugins, load_run, protect_run_outputs
+from .compat import EmptySession, load_plugins, load_run, project_view, protect_run_outputs
 from .errors import BridgeError
 from .outputs import staged_path
-from .sessions import MAX_LIMIT, _positive_int, page_limit
+from .sessions import MAX_LIMIT, _positive_int, capture_session_id, page_limit
 from .text import _clip, _num, render_series, render_table
 
 #: Largest view file whose data ``--json`` puts inline (the output-size rule for stdout).
@@ -236,7 +237,7 @@ def view_payload(run: Trajectory, view_id: str, options: dict, *, limit: int, of
     """One view (*options* already coerced): written whole to ``out_dir/<id>.json``, a page of it inline (at most
     :data:`INLINE_STDOUT_BYTES` on stdout)."""
     _options_help(view_id)
-    view = run.view(view_id, **options)
+    view = project_view(run, run.view(view_id, **options))
     path = out_dir / f"{view_id}.json"
     protect_run_outputs(run, [path])
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -254,8 +255,14 @@ def view_payload(run: Trajectory, view_id: str, options: dict, *, limit: int, of
                                  unit="row", **paging)}
     else:
         inline = {"table": _fit(lambda n: render_table(rows, limit=n, offset=offset), len(rows), unit="row", **paging)}
+    availability = dict(view.availability) if view.availability is not None else None
+    status = (availability or {}).get("status")
+    notice = ("Evidence unavailable; an empty view does not mean no activity." if status == "unavailable" else
+              "Partial evidence; values describe the observed subset." if status == "partial" else None)
     return {"view": {"id": view.id, "title": view.title, "kind": view.kind, "description": view.description},
-            "path": str(path), "bytes": size, "rows_total": len(rows), "inline": inline}
+            "path": str(path), "bytes": size, "rows_total": len(rows), "inline": inline,
+            **({"availability": availability} if availability is not None else {}),
+            **({"notice": notice} if notice else {})}
 
 
 def export(run: Trajectory, out_dir: Path, *, only: list[str] | None, with_trajectory: bool) -> dict:
@@ -270,8 +277,20 @@ def export(run: Trajectory, out_dir: Path, *, only: list[str] | None, with_traje
     # TrajViz's exporter uses fixed <name>.tmp files. Give each invocation a private directory so its
     # internal staging cannot collide with another export or follow an existing staging symlink.
     with tempfile.TemporaryDirectory(prefix=".trajviz-obs-", dir=out_dir) as scratch:
-        written = tv.export_json(run if with_trajectory else run.views(only=only), scratch,
-                                 only=only if with_trajectory else None)
+        source_views = run.views(only=only)
+        projected = {view_id: project_view(run, view) for view_id, view in source_views.items()}
+        if with_trajectory:
+            written = tv.export_json(run, scratch, only=only)
+            # The normalized trajectory preserves native observations and provenance.
+            # Project only the display views, retaining the trajectory's index metadata.
+            if any(projected[view_id] is not view for view_id, view in source_views.items()):
+                index_path = Path(scratch) / "index.json"
+                index = json.loads(index_path.read_text(encoding="utf-8"))
+                tv.export_json(projected, scratch)
+                updated = json.loads(index_path.read_text(encoding="utf-8"))
+                _write_json(index_path, {**index, **updated})
+        else:
+            written = tv.export_json(projected, scratch)
         final = [out_dir / path.name for path in written]
         for temporary, destination in zip(written, final, strict=True):
             os.replace(temporary, destination)
@@ -296,11 +315,15 @@ def _artifacts(args: argparse.Namespace) -> Path:
         return args.artifacts
     transcript = Path(args.transcript)
     session_id = transcript.name if transcript.is_dir() else transcript.stem
+    if capture_id := getattr(args, "session_id", None):
+        identity = json.dumps([str(transcript.expanduser().absolute()), capture_id], ensure_ascii=False)
+        session_id += "-capture-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
     return paths.artifacts_dir(paths.cache_root(os.environ), session_id)
 
 
 def _load(args: argparse.Namespace) -> Trajectory:
-    return load_run(args.transcript, window_limit=args.window, current=args.kind == "current")
+    return load_run(args.transcript, window_limit=args.window, current=args.kind == "current",
+                    session_id=getattr(args, "session_id", None))
 
 
 def _offset(text: str) -> int:
@@ -315,6 +338,8 @@ def _offset(text: str) -> int:
 
 def _session_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--transcript", required=True, help="The session transcript (or session directory).")
+    p.add_argument("--session-id", type=capture_session_id, default=None,
+                   help="Select this exact session inside a saved OTLP capture.")
     p.add_argument("--window", type=_positive_int, default=None,
                    help="The real context window in tokens (default: TrajViz's own estimate).")
     p.add_argument("--artifacts", type=Path, default=None,

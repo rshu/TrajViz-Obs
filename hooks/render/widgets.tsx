@@ -8,7 +8,7 @@
 // on the Text beside it.
 import type { ElementTable, RenderElement, RenderSurface, ThemeKey } from 'claude-code'
 import type { HealthRow, Issue, Phase, Segment, Snapshot, Tokens, ToolRow } from '../../types'
-import { clip, fmtCompact, fmtInt, fmtPct, fmtSecs } from '../lib/format'
+import { clip, failureSummary, fmtCompact, fmtInt, fmtPct, fmtSecs, qualitySummary, sumMeasured } from '../lib/format'
 import { bar, sparkline } from '../lib/sparkline'
 import { sparklineRaster, stackedRaster, swimlaneRaster } from '../lib/raster'
 
@@ -48,8 +48,8 @@ export function statusColor(status: string): ThemeKey | undefined {
 
 /** Cache reads over every input token (fresh, cache read and cache write), in 0–100; null with no input at all. */
 export function cacheEfficiency(t: Tokens): number | null {
-  const all = t.input + t.cache_read + t.cache_write
-  return all > 0 ? (t.cache_read / all) * 100 : null
+  const all = sumMeasured([t.input, t.cache_read, t.cache_write])
+  return all !== null && all > 0 && t.cache_read !== null ? (t.cache_read / all) * 100 : null
 }
 
 /** The Raster's limits: 1 to 512 columns, 1 to 256 rows. */
@@ -64,12 +64,23 @@ export function HealthChips({ els, health }: { els: Els; health: HealthRow[] }):
   return (
     <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={0}>
       {health.map(row => (
-        <Text color={statusColor(row.status)} weight="semibold">
-          {`● ${row.metric.replace(/_/g, ' ')} ${row.label}`}
+        <Text color={statusColor(row.status)} dimColor={row.status === 'unavailable'} weight="semibold">
+          {`${row.status === 'unavailable' ? '○' : '●'} ${row.metric.replace(/_/g, ' ')} ${row.status === 'unavailable' ? 'unavailable' : row.label}`}
         </Text>
       ))}
     </Box>
   )
+}
+
+/** Coverage belongs beside the figures it qualifies; the full view retains every reason. */
+export function DataQualityNote({ els, snap }: { els: Els; snap: Snapshot }): RenderElement | null {
+  const { Box, Text } = els
+  const summary = qualitySummary(snap)
+  if (!summary) return null
+  return <Box key="data-quality" flexDirection="column">
+    <Text dimColor wrap="wrap">{summary}</Text>
+    <Text dimColor wrap="wrap">Unknown values use ? / — / ·. /obs view data_quality</Text>
+  </Box>
 }
 
 // --- KPIs -------------------------------------------------------------------
@@ -84,7 +95,7 @@ function kpis(snap: Snapshot, usage?: Snapshot['engine_usage']): Kpi[] {
     { label: 'Agents', value: fmtInt(counts.agents), sub: `${fmtInt(counts.compactions)} compactions` },
     { label: 'Tokens', value: fmtCompact(tokens.total), sub: `${fmtCompact(tokens.input)} fresh · ${fmtCompact(tokens.cache_read)} cache · ${fmtCompact(tokens.output)} out` },
     { label: 'Cache Efficiency', value: fmtPct(cacheEfficiency(tokens)), sub: `${fmtCompact(tokens.cache_write)} written` },
-    { label: 'Tools', value: fmtInt(tools.calls), sub: `${fmtPct(tools.success_rate)} ok · ${fmtInt(tools.failed)} failed` },
+    { label: 'Tools', value: fmtInt(tools.calls), sub: `${fmtPct(tools.success_rate)} ok · ${failureSummary(tools.failed, tools.unknown)}` },
     { label: 'Wall clock', value: fmtSecs(timing.wall_clock_s), sub: `avg ${fmtSecs(timing.avg_step_s)} · p95 ${fmtSecs(timing.p95_step_s)}` },
   ]
   if (usage?.cost) out.push({ label: 'Cost', value: `$${usage.cost.usd.toFixed(2)}` })
@@ -229,13 +240,10 @@ export function PaneTrends({ els, snap, columns }: { els: Els; snap: Snapshot; c
   const { Box, Text } = els
   const t = snap.series.tokens
   const stacks = [t.fresh, t.cache_read, t.cache_write, t.output]
-  const tokens = Array.from({ length: Math.max(0, ...stacks.map(s => s.length)) }, (_, i) => {
-    const values = stacks.map(s => s[i]).filter((v): v is number => v !== undefined && Number.isFinite(v))
-    return values.length ? values.reduce((sum, v) => sum + Math.max(0, v), 0) : null
-  })
+  const tokens = Array.from({ length: Math.max(0, ...stacks.map(s => s.length)) }, (_, i) => sumMeasured(stacks.map(s => s[i])))
   const window = snap.context.window
   const percent = window !== null && Number.isFinite(window) && window > 0
-  const context = percent ? snap.series.context.occupancy.map(v => v * 100 / window) : snap.series.context.occupancy
+  const context = percent ? snap.series.context.occupancy.map(v => v === null ? null : v * 100 / window) : snap.series.context.occupancy
   const trends = [
     { key: 'tokens', label: 'Tokens/step', values: tokens, color: '#10b981', format: (n: number) => fmtCompact(n) },
     { key: 'durations', label: 'Step time', values: snap.series.durations.seconds, color: '#f59e0b', format: (n: number) => fmtSecs(n) },
@@ -255,7 +263,7 @@ export function PaneTrends({ els, snap, columns }: { els: Els; snap: Snapshot; c
         const expanded = trend.values.length > 0 && trend.values.length < plotWidth
           ? Array.from({ length: plotWidth }, (_, i) => trend.values[Math.min(trend.values.length - 1, Math.floor(i * trend.values.length / plotWidth))] ?? null)
           : trend.values
-        const line = trend.max === null ? ' '.repeat(Math.max(0, plotWidth)) : sparkline(expanded, plotWidth)
+        const line = sparkline(expanded, plotWidth)
         return (
           <Box key={`trend:${trend.key}`} flexDirection="column">
             {plotWidth < 4 ? <Text dimColor wrap="wrap">{`${trend.label}: ${trend.summary}`}</Text> : (
@@ -296,7 +304,7 @@ export function SparklineBlock({ els, surface, label, values, columns, rows, col
   )
 }
 
-type Stack = { name: string; values: number[]; color: number }
+type Stack = { name: string; values: (number | null)[]; color: number }
 
 type StackedProps = {
   els: Els
@@ -318,7 +326,7 @@ export function StackedBlock({ els, surface, label, stacks, columns, rows, key }
   const Raster = rasterOf(els, surface)
   const cols = rasterColumns(columns)
   const n = Math.max(0, ...stacks.map(s => s.values.length))
-  const totals = Array.from({ length: n }, (_, i) => stacks.reduce((sum, s) => sum + Math.max(0, s.values[i] ?? 0), 0))
+  const totals = Array.from({ length: n }, (_, i) => sumMeasured(stacks.map(s => s.values[i])))
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={0}>
@@ -422,7 +430,7 @@ export function ToolBars({ els, byTool, width }: { els: Els; byTool: ToolRow[]; 
   // full tool names and counts in a wrapping list instead of clipping them.
   if (width < 40) return (
     <Box flexDirection="column">
-      {byTool.map(t => <Text wrap="wrap">{`${t.tool} · ${fmtInt(t.calls)} calls${t.errors ? ` · ${fmtInt(t.errors)} failed` : ''}`}</Text>)}
+      {byTool.map(t => <Text wrap="wrap">{`${t.tool} · ${fmtInt(t.calls)} calls${t.errors !== 0 || t.unknown ? ` · ${failureSummary(t.errors, t.unknown)}` : ''}`}</Text>)}
     </Box>
   )
   const name = Math.min(14, Math.max(...byTool.map(t => t.tool.length)))
@@ -435,7 +443,8 @@ export function ToolBars({ els, byTool, width }: { els: Els; byTool: ToolRow[]; 
           <Text>{clip(t.tool, name).padEnd(name)}</Text>
           <Text color="claude">{bar(t.calls, max, barWidth)}</Text>
           <Text dimColor>{fmtInt(t.calls).padStart(5)}</Text>
-          {t.errors > 0 ? <Text color="error">{`${fmtInt(t.errors)} err`}</Text> : null}
+          {t.errors !== null && t.errors > 0 ? <Text color="error">{`${fmtInt(t.errors)} err`}</Text> : null}
+          {t.unknown ? <Text dimColor>{`${fmtInt(t.unknown)} unknown`}</Text> : t.errors === null ? <Text dimColor>outcomes unknown</Text> : null}
         </Box>
       ))}
     </Box>
@@ -568,10 +577,10 @@ function stepsText(steps: number[]): string {
 }
 
 /** The top `limit` issues, each its title with its steps, its evidence and, dim, its `why`. */
-export function IssuesList({ els, issues, limit, total = issues.length, summary = false }: { els: Els; issues: Issue[]; limit: number; total?: number; summary?: boolean }): RenderElement {
+export function IssuesList({ els, issues, limit, total = issues.length, summary = false, emptyText = 'No observed issues.' }: { els: Els; issues: Issue[]; limit: number; total?: number; summary?: boolean; emptyText?: string }): RenderElement {
   const { Box, Text } = els
   const shown = issues.slice(0, Math.max(0, limit))
-  if (shown.length === 0) return <Text dimColor>No issues found.</Text>
+  if (shown.length === 0) return <Text dimColor>{emptyText}</Text>
   return (
     <Box flexDirection="column">
       {shown.map((issue, i) => (
@@ -600,7 +609,7 @@ export function WarningsLine({ els, warnings }: { els: Els; warnings: string[] }
 
 /** A cell's text: numbers and strings as they are, null and undefined empty, anything else as JSON; `|` escaped. */
 function cellText(v: unknown): string {
-  if (v === null || v === undefined) return ''
+  if (v === null || v === undefined) return '—'
   const s = typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ? String(v) : JSON.stringify(v)
   return s.replace(/\|/g, '\\|').replace(/\n/g, ' ')
 }
@@ -660,6 +669,8 @@ const COLUMN_LABELS: Readonly<Record<string, string>> = {
   label: 'Agent', type: 'Type', step: 'Step', role: 'Role', category: 'Category', agent: 'Agent',
   steps: 'Steps', tokens: 'Tokens', tool_calls: 'Tool calls', errors: 'Errors', duration_s: 'Duration',
   cache_pct: 'Cache', file: 'File', reads: 'Reads', writes: 'Writes', preview: 'Preview',
+  unknown_outcomes: 'Unknown outcomes',
+  observed_errors: 'Observed errors',
 }
 
 const columnLabel = (key: string): string => COLUMN_LABELS[key] ?? key.replace(/_/g, ' ')

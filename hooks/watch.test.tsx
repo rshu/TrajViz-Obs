@@ -9,7 +9,7 @@ const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
 const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
+const STATE_JSON = JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.3.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.3.1', createdAt: 1 })
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 24 }, rateLimits: [] }
 const NOW = 1_761_150_000_000
@@ -77,7 +77,7 @@ type Host = {
  * `turn.complete` beneath. With `delayMs` set, the stat and the snapshot
  * answer that much later on the clock, so a run is in flight meanwhile.
  */
-function host(on: On, snapshots: unknown[]): Host {
+function host(on: On, snapshots: unknown[], selectedPath?: string): Host {
   const clock = mock.clock(on, { now: NOW })
   const h: Host = { clock, ran: [], statuses: [], toasts: [], panes: [], stat: { size: 1_000, mtimeMs: NOW - 60_000 }, statMissing: false, snapshots: 0, delayMs: 0, usageBlock: null }
   on('command.register', () => ({ value: { command: 'obs' } }))
@@ -93,9 +93,9 @@ function host(on: On, snapshots: unknown[]): Host {
   })
   mock.env(on, { HOME })
   on('fs.read', (_, e) => (e.path === STATE_PATH ? { value: STATE_JSON } : { deny: `ENOENT: ${e.path}` }))
-  on('fs.exists', (_, e) => ({ value: e.path === VENV_PY || e.path === DERIVED }))
+  on('fs.exists', (_, e) => ({ value: e.path === VENV_PY || e.path === DERIVED || e.path === selectedPath }))
   on('fs.stat', async (_, e) => {
-    if (e.path !== DERIVED || h.statMissing) return { deny: `ENOENT: ${e.path}` }
+    if ((e.path !== DERIVED && e.path !== selectedPath) || h.statMissing) return { deny: `ENOENT: ${e.path}` }
     if (h.delayMs > 0) await clock.sleep(h.delayMs)
     return { value: { kind: 'file', ...h.stat, isLink: false } }
   })
@@ -114,6 +114,7 @@ function host(on: On, snapshots: unknown[]): Host {
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('process.run', async (_, e) => {
     h.ran.push([...e.argv])
+    if (e.argv[3] === 'resolve' && selectedPath) return { value: { exitCode: 0, stdout: JSON.stringify({ path: selectedPath, session_id: 'capture', kind: 'file' }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[3] === 'json') return { value: { exitCode: 0, stdout: JSON.stringify({ path: `${CACHE}/sessions/abc/views`, bytes: 900, files: ['index.json'] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[3] !== 'snapshot') return { deny: `cannot start ${e.argv[0]}` }
     if (h.delayMs > 0) await clock.sleep(h.delayMs)
@@ -125,6 +126,22 @@ function host(on: On, snapshots: unknown[]): Host {
 
 const obs = ($: Engine, args: string): Promise<string> =>
   $.command.run({ command: 'obs', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never).then(r => r.text ?? '')
+
+for (const suffix of ['.jsonl', '.jsonl.zst', '.jsonl.zstd', '.manifest.txt', '.json', '.zip']) test(`selected ${suffix} imports use manual refresh rather than trusting unchanged parent metadata`, async ($, on) => {
+  const source = `/captures/session${suffix}`
+  const snapshot = { ...SNAPSHOT, transcript: { ...SNAPSHOT.transcript, path: source } }
+  const h = host(on, [snapshot], source)
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, `--session ${source}`)
+  h.panes = [OBS_PANE]
+  h.ran.length = 0
+  await turnEnds($, h)
+  expect(h.ran).toEqual([])
+  expect(h.toasts).toContain('obs: imported sessions use manual refresh; press r in the pane after updating the capture.')
+  await obs($, `--session ${source}`)
+  expect(h.ran.filter(argv => argv[3] === 'snapshot')).toHaveLength(1)
+  expect(h.ran.find(argv => argv[3] === 'snapshot')).toContain(source)
+})
 
 /** Delays just the next usage read and exposes when it is actually waiting. */
 function blockUsage(h: Host, usage = USAGE): { started: Promise<void>; release: () => void } {

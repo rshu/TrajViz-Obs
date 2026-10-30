@@ -7,7 +7,8 @@
 // of the file it wrote. Every helper taking `$` is a function declaration
 // (validate follows `$` into one); state is reached only through state.ts.
 import type { EngineInterface, PluginOptions, ToolCallResult, ToolSpec } from 'claude-code'
-import { runBridge } from './bridge'
+import { BridgeError, runBridge } from './bridge'
+import { publicationGeneration } from './publication'
 import { fmtBytes, fmtInt } from './format'
 import { captureSnapshot, ensureReady, isEmpty, sessionArgv } from './snapshot'
 import { readLatest, readSession } from './state'
@@ -79,7 +80,7 @@ function optionArgv(options: unknown): string[] | null {
 /** The text over 64 KB: where the whole view is, since its data is not inlined. */
 function pathText(p: ViewPayload): string {
   return (
-    `TrajViz view ${p.view.id} (${p.view.kind}, ${fmtInt(p.rows_total)} rows; file ${fmtBytes(p.bytes)}). ` +
+    `${p.notice ? `${p.notice} ` : ''}TrajViz view ${p.view.id} (${p.view.kind}, ${fmtInt(p.rows_total)} rows; file ${fmtBytes(p.bytes)}). ` +
     `Its full response exceeds the 64 KB this tool answers inline; the whole view is in ${p.path}.`
   )
 }
@@ -90,52 +91,58 @@ function viewAnswer(p: ViewPayload, limit: number): ObsResult {
   const data = p.inline.data
   const top = Array.isArray(data) ? data.slice(0, limit) : data
   const text = data === undefined ? `${viewText(p)}\nFull view: ${p.path}`
-    : JSON.stringify({ view: p.view, rows_total: p.rows_total, data: top, path: p.path }, null, 2)
+    : JSON.stringify({ view: p.view, rows_total: p.rows_total, data: top, path: p.path, ...(p.availability ? { availability: p.availability } : {}), ...(p.notice ? { notice: p.notice } : {}) }, null, 2)
   return answer(new TextEncoder().encode(text).length <= INLINE_MAX_BYTES ? text : pathText(p))
 }
 
-/** The session the tool reads: the one `--session` selected, else the current one. */
-async function selectedSpec($: EngineInterface): Promise<string | undefined> {
-  return (await readSession($)).selected?.path ?? undefined
+type Selection = { spec?: string; captureSessionId?: string; generation: number }
+
+function checkSelection(selection: Selection): void {
+  if (selection.generation !== publicationGeneration()) throw new BridgeError('session_changed', 'The selected session changed during analysis; run /obs again.')
 }
 
 /** `issues` or `health`: the top `limit` rows of the latest snapshot, one taken and kept when none is stored. */
-async function snapshotRows($: EngineInterface, options: PluginOptions, what: 'issues' | 'health', limit: number, spec: string | undefined): Promise<ObsResult> {
+async function snapshotRows($: EngineInterface, options: PluginOptions, what: 'issues' | 'health', limit: number, selection: Selection): Promise<ObsResult> {
   let snap = await readLatest($)
   const selected = await readSession($)
   const expectedPath = selected.selected?.path ?? selected.transcriptPath
-  let stale = snap === null || (expectedPath !== null && snap.transcript.path !== expectedPath)
+  let stale = selected.selected !== null || snap === null || (expectedPath !== null && snap.transcript.path !== expectedPath) || (snap !== null && snap.transcript.capture_session_id !== selection.captureSessionId)
   if (!stale && snap !== null) {
     try {
       const stat = await $.fs.stat(expectedPath ?? snap.transcript.path)
-      stale = stat.size !== snap.transcript.size || Math.floor(stat.mtimeMs) !== snap.transcript.mtime_ms
+      stale = stat.kind === 'dir' || stat.size !== snap.transcript.size || Math.floor(stat.mtimeMs) !== snap.transcript.mtime_ms
     } catch { /* A host without stat can still serve the recorded snapshot. */ }
   }
   if (stale) {
-    ;({ snap } = await captureSnapshot($, options, spec))
+    ;({ snap } = await captureSnapshot($, options, selection.spec, selection.generation, selection.captureSessionId))
   }
+  checkSelection(selection)
   if (snap === null) return answer(EMPTY_TEXT)
   if (isEmpty(snap)) return answer(EMPTY_TEXT)
   const rows: unknown[] = snap[what]
-  return answer(JSON.stringify({ [what]: rows.slice(0, limit), total: what === 'issues' ? (snap.counts.issues ?? rows.length) : rows.length }, null, 2))
+  return answer(JSON.stringify({ [what]: rows.slice(0, limit), total: what === 'issues' ? (snap.counts.issues ?? rows.length) : rows.length,
+    ...(snap.availability?.[what] ? { availability: snap.availability[what] } : {}), ...(snap.data_quality ? { data_quality: snap.data_quality } : {}),
+  }, null, 2))
 }
 
 /** The bridge's `brief` of the session. */
-async function briefOf($: EngineInterface, options: PluginOptions, spec: string | undefined): Promise<ObsResult> {
+async function briefOf($: EngineInterface, options: PluginOptions, selection: Selection): Promise<ObsResult> {
   await ensureReady($, options)
-  const { argv } = await sessionArgv($, spec)
+  const { argv } = await sessionArgv($, selection.spec, selection.generation, selection.captureSessionId)
   const doc = await runBridge<{ brief: string } | { empty: true; reason: string }>($, ['brief', ...argv], { timeoutMs: BRIEF_TIMEOUT_MS })
+  checkSelection(selection)
   return 'brief' in doc ? answer(doc.brief) : answer(EMPTY_TEXT)
 }
 
 /** The bridge's `view --json` of `id` (the catalog when none). */
-async function viewOf($: EngineInterface, options: PluginOptions, id: string | undefined, viewOptions: string[], limit: number, spec: string | undefined): Promise<ObsResult> {
+async function viewOf($: EngineInterface, options: PluginOptions, id: string | undefined, viewOptions: string[], limit: number, selection: Selection): Promise<ObsResult> {
   await ensureReady($, options)
-  const { argv } = await sessionArgv($, spec)
+  const { argv } = await sessionArgv($, selection.spec, selection.generation, selection.captureSessionId)
   const call = ['view', ...argv]
   if (id !== undefined) call.push(id)
   call.push(...viewOptions, '--limit', String(limit), '--json')
   const doc = await runBridge<{ empty: true; reason: string } | { views: CatalogEntry[] } | ViewPayload>($, call, { timeoutMs: VIEW_TIMEOUT_MS })
+  checkSelection(selection)
   if ('empty' in doc) return answer(EMPTY_TEXT)
   if ('views' in doc) return answer(catalogText(doc.views))
   return viewAnswer(doc, limit)
@@ -157,10 +164,13 @@ export async function serveTool($: EngineInterface, options: PluginOptions, inpu
   if (viewOptions === null) return answer(OPTIONS_TEXT)
   let spec: string | undefined
   try {
-    spec = await selectedSpec($)
-    if (what === 'brief') return await briefOf($, options, spec)
-    if (what === 'view') return await viewOf($, options, viewId || undefined, viewOptions, limit, spec)
-    return await snapshotRows($, options, what as 'issues' | 'health', limit, spec)
+    const generation = publicationGeneration()
+    const selected = (await readSession($)).selected
+    spec = selected?.path
+    const selection = { spec, captureSessionId: selected?.captureSessionId, generation }
+    if (what === 'brief') return await briefOf($, options, selection)
+    if (what === 'view') return await viewOf($, options, viewId || undefined, viewOptions, limit, selection)
+    return await snapshotRows($, options, what as 'issues' | 'health', limit, selection)
   } catch (e) {
     return answer(errorRow(e, spec))
   }

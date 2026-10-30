@@ -9,7 +9,7 @@ const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
 const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
+const STATE_JSON = JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.3.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.3.1', createdAt: 1 })
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const ARTIFACTS = `${CACHE}/sessions/abc`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 12 }, rateLimits: [] }
@@ -151,6 +151,20 @@ const planOf = (feature: PromptPlan['feature'], calls: number, extra: Partial<Pr
   path: `${ARTIFACTS}/prompts-${feature}.json`,
   bytes: 1_234,
   ...extra,
+})
+
+for (const suffix of ['.jsonl.zst', '.jsonl.zstd']) test(`compressed ${suffix} source remains intact across Claude model planning and apply`, async ($, on) => {
+  const source = `/captures/session${suffix}`
+  const { ran, completions } = host(on, { bridge: {
+    resolve: json({ path: source, session_id: 'capture', kind: 'file' }),
+    'llm-prompt': json(planOf('analyze', 1)), 'llm-apply': json({ reply: 'Controlled analysis', history_path: null }),
+  } })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  expect((await obs($, `analyze --session ${source}`)).text).toContain('Controlled analysis')
+  const calls = bridgeCalls(ran).filter(argv => ['llm-prompt', 'llm-apply'].includes(argv[0]!))
+  expect(calls).toHaveLength(2)
+  for (const argv of calls) expect(argv[argv.indexOf('--transcript') + 1]).toBe(source)
+  expect(completions).toHaveLength(1)
 })
 
 const EMPTY_TEXT = 'Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.'

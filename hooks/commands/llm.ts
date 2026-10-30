@@ -1,5 +1,5 @@
 import type { CommandRunResult, EngineInterface, PluginOptions } from 'claude-code'
-import { tokenize } from '../lib/args'
+import { analyzeSelection } from '../lib/args'
 import { runBridge, spawnBridge } from '../lib/bridge'
 import { ASK_ABOVE, SESSION_DELAY_TEXT, confirmCalls, planLine, resolveModel, runPlan, usageLine, type Feature, type PromptPlan } from '../lib/llm'
 import { artifactsDir } from '../lib/paths'
@@ -7,7 +7,7 @@ import { ensureReady, sessionArgv } from '../lib/snapshot'
 import { readFlags } from '../lib/state'
 import { outFlag, outputError } from './exports'
 import type { CommandContext } from './index'
-import { EMPTY_TEXT, errorRow, sessionSpec, SESSION_USAGE } from './overview'
+import { EMPTY_TEXT, captureSessionSpec, errorRow, sessionSpec, SESSION_USAGE } from './overview'
 
 /** Planning loads the session and builds the prompts; applying may write a sidecar and its views. */
 const PROMPT_TIMEOUT_MS = 120_000
@@ -32,22 +32,15 @@ type LabelDoc = { path: string; summary: unknown; text: string; errors: string[]
 type ResultDoc = Empty | AnalyzeDoc | FixesDoc | LabelDoc
 
 /** What the person asked for, by feature: the bridge flags shared by `llm-prompt`, `llm-apply` and the direct subcommand. */
-type Request = { feature: Feature; spec: string | undefined; argv: string[]; out?: string; model?: string }
+type Request = { feature: Feature; spec: string | undefined; captureSessionId?: string; argv: string[]; out?: string; model?: string }
 
 /**
  * `analyze [question] [--session S]` read off the raw text after the
  * subcommand, so apostrophes survive (the tokenizer opens a quote on one).
  * `--session S` (or `--session=S`) anywhere in it is lifted out.
  */
-export function analyzeArgs(args: string): { question: string | undefined; session: string | undefined } {
-  let rest = args.trimStart().replace(/^analyze(?=\s|$)/, '')
-  let session: string | undefined
-  rest = rest.replace(/(^|\s)--?session(?:=|\s+)("(?:\\.|[^"\\])*"|'[^']*'|[^\s]+)(?=\s|$)/g, (_m, lead: string, value: string) => {
-    session = tokenize(value)[0]
-    return lead
-  })
-  const question = rest.trim()
-  return { question: question || undefined, session: session || undefined }
+export function analyzeArgs(args: string): { question: string | undefined; session: string | undefined; captureSessionId?: string } {
+  return analyzeSelection(args)
 }
 
 /** A whole number from `flags[name]` within `[min, max]`; null when unset; undefined when refused. */
@@ -102,13 +95,13 @@ function parseRequest(ctx: CommandContext, interactive: boolean): Request | stri
   switch (ctx.parsed.sub) {
     case 'analyze': {
       const a = analyzeArgs(ctx.args)
-      if (/(^|\s)--?session(?=\s|=|$)/.test(ctx.args) && (!a.session || a.session.startsWith('-'))) return SESSION_USAGE
-      return { feature: 'analyze', spec: a.session ?? spec, argv: a.question ? ['--question', a.question] : [] }
+      if (/(^|\s)--?session(?=\s|=|$)/.test(ctx.args) && !a.session) return SESSION_USAGE
+      return { feature: 'analyze', spec: a.session ?? spec, captureSessionId: a.captureSessionId, argv: a.question ? ['--question', a.question] : [] }
     }
     case 'fixes': {
       const limit = wholeFlag(ctx, 'limit', 1, FIXES_CAP)
       if (limit === undefined) return LIMIT_TEXT
-      return { feature: 'fixes', spec, argv: limit === null ? [] : ['--limit', String(limit)] }
+      return { feature: 'fixes', spec, captureSessionId: captureSessionSpec(ctx), argv: limit === null ? [] : ['--limit', String(limit)] }
     }
     default: {
       const invalidOutput = outputError(ctx)
@@ -124,7 +117,7 @@ function parseRequest(ctx: CommandContext, interactive: boolean): Request | stri
       const extra = extraLabelArgs(ctx)
       if (typeof extra === 'string') return extra
       argv.push(...extra)
-      return { feature: 'label', spec, argv, out: outFlag(ctx), model: typeof model === 'string' ? model.trim() : undefined }
+      return { feature: 'label', spec, captureSessionId: captureSessionSpec(ctx), argv, out: outFlag(ctx), model: typeof model === 'string' ? model.trim() : undefined }
     }
   }
 }
@@ -177,7 +170,8 @@ async function viaSession($: EngineInterface, ctx: CommandContext, req: Request,
   const cap = req.feature === 'label' && !interactive ? labelMaxSteps(ctx.options) : Number.POSITIVE_INFINITY
   const run = await runPlan($, plan, model, { confirm: interactive, cap })
   if (run === null) return `${line}\n${CANCELLED_TEXT}`
-  const repliesPath = `${await artifactsDir($, sessionId)}/replies-${req.feature}-${await $.clock.now()}-${++repliesSequence}.json`
+  const artifactsAt = session.indexOf('--artifacts')
+  const repliesPath = `${artifactsAt >= 0 ? session[artifactsAt + 1]! : await artifactsDir($, sessionId)}/replies-${req.feature}-${await $.clock.now()}-${++repliesSequence}.json`
   await $.fs.write(repliesPath, JSON.stringify({ hash: plan.hash, replies: run.replies }))
   const apply = ['llm-apply', ...session, '--feature', req.feature, '--replies', repliesPath, ...req.argv]
   if (req.feature === 'label') apply.push(...labelArgv(req, model))
@@ -198,7 +192,7 @@ export async function llm($: EngineInterface, ctx: CommandContext): Promise<Comm
   if (typeof req === 'string') return { text: req }
   try {
     await ensureReady($, ctx.options)
-    const { transcript, argv } = await sessionArgv($, req.spec)
+    const { transcript, argv } = await sessionArgv($, req.spec, undefined, req.captureSessionId)
     const plan = await runBridge<PromptPlan | Empty>($, ['llm-prompt', ...argv, '--feature', req.feature, ...req.argv,
       ...(req.out ? ['--out', req.out] : [])], { timeoutMs: PROMPT_TIMEOUT_MS })
     if ('empty' in plan) return { text: EMPTY_TEXT }

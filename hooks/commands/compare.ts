@@ -5,7 +5,7 @@ import { artifactsDir } from '../lib/paths'
 import { resolveTranscript } from '../lib/session'
 import { ensureReady, sessionArgv } from '../lib/snapshot'
 import type { CommandContext } from './index'
-import { EMPTY_TEXT, errorRow, sessionSpec } from './overview'
+import { EMPTY_TEXT, errorRow, captureSessionSpec, sessionSpec } from './overview'
 
 /** A comparison loads every run whole, and the converge CLI may run a batch: the plan's 600 s. */
 const COMPARE_TIMEOUT_MS = 600_000
@@ -49,7 +49,7 @@ async function compareRuns($: EngineInterface, ctx: CommandContext, spec: string
   const patch = flags['anchor-patch']
   if (other === undefined || positional.length > 1 || patch === true) return COMPARE_USAGE
   await ensureReady($, ctx.options)
-  const { argv } = await sessionArgv($, spec)
+  const { argv } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
   const resolved = await otherPaths($, [other])
   if ('row' in resolved) return resolved.row
   const call = ['compare', ...argv, '--other', ...resolved.paths]
@@ -72,7 +72,7 @@ async function scorecard($: EngineInterface, ctx: CommandContext, spec: string |
   const labels = flags['labels']
   if (positional.length === 0 || labels === true) return SCORECARD_USAGE
   await ensureReady($, ctx.options)
-  const { argv } = await sessionArgv($, spec)
+  const { argv } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
   const resolved = await otherPaths($, positional)
   if ('row' in resolved) return resolved.row
   const call = ['scorecard', ...argv, '--others', ...resolved.paths]

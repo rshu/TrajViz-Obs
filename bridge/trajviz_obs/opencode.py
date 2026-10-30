@@ -1,7 +1,9 @@
 """OpenCode 2 session materializations at the shared TrajViz loading boundary.
 
 The native source stays in the converted document. Only work messages become
-trajectory steps; UI/control records remain available in raw exports.
+trajectory steps; UI/control records remain available in raw exports. The
+capture adapter retains confirmed session families and whole-step timing,
+which the upstream single-export parser does not consume.
 """
 
 from __future__ import annotations
@@ -91,7 +93,14 @@ def _list(value: Any) -> list:
 
 
 def _number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    try:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _count(value: Any) -> bool:
+    return _number(value) and value >= 0 and (isinstance(value, int) or value.is_integer())
 
 
 def is_native(payload: Any) -> bool:
@@ -116,7 +125,7 @@ def _tokens(value: Any) -> dict:
     values = [tokens.get("input"), tokens.get("output"), tokens.get("reasoning"),
               cache.get("read"), cache.get("write")]
     # V2 defines these as disjoint components. Missing usage remains missing.
-    if all(_number(v) for v in values):
+    if all(_count(v) for v in values):
         tokens["total"] = sum(values)
     return tokens
 
@@ -126,6 +135,31 @@ def _content_text(content: Any) -> str:
         return content if isinstance(content, str) else ""
     return "\n".join(p["text"] if isinstance(p, dict) and isinstance(p.get("text"), str)
                      else json.dumps(p, ensure_ascii=False) for p in content)
+
+
+def _error_text(value: Any) -> str:
+    message = value if isinstance(value, str) else _dict(value).get("message")
+    return message if isinstance(message, str) else ""
+
+
+def _lifecycle(messages: list) -> tuple[str | None, list[str]]:
+    """The current root outcome and observed failure history, as in TrajViz 0.3.1."""
+    terminal = None
+    history = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        kind = message.get("type")
+        error = _error_text(message.get("error"))
+        if kind in {"user", "assistant", "shell", "compaction"}:
+            terminal = error or None
+        if kind == "idle":
+            terminal = (error or f"Session turn {message['outcome']}.") if message.get("outcome") in {
+                "failed", "interrupted"} else None
+            error = terminal or ""
+        if error:
+            history.append(error)
+    return terminal, history
 
 
 def _tool(part: dict, sid: str, mid: str) -> dict:
@@ -172,6 +206,8 @@ def _message(message: dict, session: dict, *, parent: str, depth: int) -> dict |
             "tokens": _tokens(message.get("tokens")), "isSubAgent": depth > 0,
             "parentSessionID": parent, "sessionDepth": depth, "sessionTitle": session.get("title", ""),
             "agent": message.get("agent") or session.get("agent") or "build"}
+    if kind == "assistant" and message.get("error"):
+        info.setdefault("finish", "error")
     if kind in {"user", "skill"}:
         # These are prompt records, rather than synthetic or tool-output rows.
         info["tokens"] = {"total": 0, "input": 0, "output": 0, "reasoning": 0,
@@ -195,7 +231,7 @@ def _message(message: dict, session: dict, *, parent: str, depth: int) -> dict |
 
 
 def normalize(payload: Any) -> Any:
-    """Return an OpenCode envelope TrajViz 0.2 reads, without mutating native input."""
+    """Return the shared OpenCode analysis envelope without mutating native input."""
     if not is_native(payload):
         return payload
     if payload.get("source_format") == "opencode_v2" and payload.get("schema_version") != 1:
@@ -205,6 +241,8 @@ def normalize(payload: Any) -> Any:
         raise ValueError("OpenCode 2 materialization needs a session id and messages array.")
     sources: dict[str, dict] = {}
     warnings = [w for w in _list(payload.get("warnings")) if isinstance(w, str)]
+    terminal_error, _ = _lifecycle(_list(payload.get("messages")))
+    history_errors: list[str] = []
 
     def index(doc: dict, depth: int) -> None:
         session = _session(doc)
@@ -232,6 +270,8 @@ def normalize(payload: Any) -> Any:
             warnings.append(f"Fork {sid} was retained in native data, not counted as a subagent.")
             return
         manifest.append({"info": copy.deepcopy(session), "depth": depth, "parent_session_id": parent})
+        _, errors = _lifecycle(_list(doc.get("messages")))
+        history_errors.extend(errors)
         children: set[str] = set()
         agent = next((m["agent"] for m in _list(doc.get("messages"))
                       if isinstance(m, dict) and m.get("type") == "assistant" and m.get("agent")),
@@ -270,8 +310,12 @@ def normalize(payload: Any) -> Any:
     location = _dict(root.get("location"))
     info["directory"] = payload.get("directory") or location.get("directory") or ""
     info["version"] = payload.get("host_version", "2")
+    history_errors = list(dict.fromkeys(history_errors))
+    warnings.extend(f"OpenCode model/session error: {error}" for error in history_errors)
     return {"info": info, "messages": messages, "session_manifest": manifest,
-            "_load_warnings": warnings, NATIVE_KEY: copy.deepcopy(payload),
+            "_load_warnings": list(dict.fromkeys(warnings)), NATIVE_KEY: copy.deepcopy(payload),
+            "_opencode_v2_errors": [terminal_error] if terminal_error else [],
+            "_opencode_v2_history_errors": history_errors,
             "_trajviz_obs_normalizer_version": NORMALIZER_VERSION}
 
 
@@ -315,8 +359,19 @@ def install() -> None:
         if NATIVE_KEY not in raw:
             fill_duration(steps, raw)
         else:
+            messages = _list(raw.get("messages"))
             for step in steps:
                 step[NATIVE_KEY] = True
+                position = step.get("raw_index", -1)
+                message = _dict(messages[position]) if 0 <= position < len(messages) else {}
+                tokens = _dict(_dict(message.get("info")).get("tokens"))
+                for key, label in {"total": "Total Tokens", "input": "Input Tokens", "output": "Output Tokens",
+                                   "reasoning": "Reasoning Tokens", "cache_read": "Cache Read",
+                                   "cache_write": "Cache Write"}.items():
+                    value = _dict(tokens.get("cache")).get(key.removeprefix("cache_")) if key.startswith(
+                        "cache_") else tokens.get(key)
+                    if not _count(value) and label not in step["_metrics_unavailable_fields"]:
+                        step["_metrics_unavailable_fields"].append(label)
 
     parser._fill_missing_last_step_duration = fill_missing_duration
     zip_loader = loaders._load_zip_trajectory

@@ -17,7 +17,7 @@ from trajviz_obs.views_cmd import export
 CONTRACT_KEYS = {
     "schema_version", "generated_at", "duration_ms", "transcript", "trajviz", "title", "task", "counts", "tokens",
     "timing", "tools", "health", "issues", "bottlenecks", "context", "series", "phases", "agents", "swimlane",
-    "patterns", "timeline", "diagnostics", "files", "plan", "skills", "artifacts", "text",
+    "patterns", "timeline", "diagnostics", "files", "plan", "skills", "artifacts", "text", "data_quality", "availability",
 }
 
 
@@ -68,7 +68,7 @@ def test_snapshot_issue_evidence(fixture_session):
     issue = snap["issues"][0]
     assert issue["steps"] == [4]
     assert issue["evidence"] == "Read: /home/user/workdirs/django__django-11477/claude_code/tests/i18n/patterns/urls"
-    assert snap["tools"]["by_tool"][0] == {"tool": "Grep", "calls": 6, "errors": 0}
+    assert snap["tools"]["by_tool"][0] == {"tool": "Grep", "calls": 6, "errors": 0, "unknown": 0}
     assert snap["context"]["window_source"] == "model" and snap["context"]["current_pct"] is not None
     assert snap["counts"]["issues"] == len(load_run(str(fixture_session)).view("issues").data)
 
@@ -97,7 +97,9 @@ def test_snapshot_bounds_megabyte_failed_command_previews_without_changing_full_
     assert snap["counts"]["assistant_steps"] == summary["assistant_steps"] == 6
     assert snap["counts"]["tool_calls"] == summary["tool_calls"] == 6
     assert snap["tools"]["failed"] == metrics["tool_fail"] == 6
-    assert snap["tokens"] == {key: summary["tokens"].get(key) for key in snap["tokens"]}
+    assert {key: value for key, value in snap["tokens"].items() if key != "reasoning"} == {
+        key: summary["tokens"].get(key) for key in snap["tokens"] if key != "reasoning"}
+    assert snap["tokens"]["reasoning"] is None  # This fixture never reports reasoning usage.
     assert any("Snapshot preview text clipped" in warning and "/obs json" in warning
                for warning in snap["trajviz"]["warnings"])
     assert all(len(row["tool"]) <= 512 for row in snap["tools"]["by_tool"])

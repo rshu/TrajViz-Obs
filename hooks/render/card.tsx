@@ -10,6 +10,7 @@ import { runSnapshotCommand } from '../lib/actions'
 import { fmtInt } from '../lib/format'
 import {
   DimLine,
+  DataQualityNote,
   HealthChips,
   IssuesList,
   KpiRow,
@@ -111,6 +112,7 @@ export function renderCard($: EngineInterface, e: CardEvent, snap: Snapshot, opt
       )}
       {HealthChips({ els, health: snap.health })}
       {KpiRow({ els, snap, usage: usage ?? undefined, columns, summary: !full })}
+      {DataQualityNote({ els, snap })}
       <Box flexDirection="column">
         <Text weight="semibold">Top issues</Text>
         {IssuesList({ els, issues: snap.issues, limit: full ? ISSUES_SHOWN : ISSUES_SHOWN_MINIMAL, total: snap.counts.issues, summary: !full })}

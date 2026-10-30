@@ -76,7 +76,7 @@ def validate_coding(events: list[dict], work: Path) -> dict:
 
 def validate_export(directory: Path, session_id: str) -> dict:
     index = json_object(directory / 'index.json')
-    require(index.get('schema_version') == 1 and isinstance(index.get('views'), list), 'Invalid view index')
+    require(index.get('schema_version') == 2 and isinstance(index.get('views'), list), 'Invalid view index')
     require(str(index.get('generator', '')).startswith('agent-trajviz '), 'Export is not from TrajViz')
     require({'health', 'issues', 'tool_usage', 'summary'} <= {row.get('id') for row in index['views']},
             'Export is missing diagnostic views')

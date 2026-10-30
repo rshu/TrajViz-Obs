@@ -31,6 +31,8 @@ The panel has Overview, Tools, Issues, Patterns, Agents, Context, and Timeline t
 
 Use `/obs help` for all commands. Diagnostics, exports, comparisons, analysis, fixes, step labeling, and optional attribution follow the [shared usage guide](https://github.com/rshu/TrajViz-Obs#use). `/obs sessions` lists this project's saved sessions; session commands accept `--session <id|prefix|path>`.
 
+For a saved OTLP capture, use `/obs sessions --session /path/to/capture`, then `/obs --session /path/to/capture --session-id <id>`. Each selected session has separate artifacts and model history. Refresh imported sessions manually after their inputs change. TrajViz **0.3.1** provides all **36 views**, including `/obs view data_quality`; view JSON uses schema version **2**.
+
 ## Options
 
 Set options on the plugin entry:

@@ -6,7 +6,7 @@
     {
       "name": "trajviz-obs",
       "source": "./",
-      "version": "0.1.16",
+      "version": "0.2.0",
       "description": "Visualize and diagnose running Claude Code sessions with TrajViz",
       "author": { "name": "Rui Shu" },
       "homepage": "https://github.com/rshu/TrajViz-Obs#readme",

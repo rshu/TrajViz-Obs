@@ -1,13 +1,8 @@
 import type { CommandPresentation, CommandRunResult, EngineInterface, PluginOptions } from 'claude-code'
 import { dispatch } from '../commands/index'
-import { parseArgs } from './args'
+import { parseArgs, quoteOption } from './args'
 import { derivedTranscriptPath, selectSession } from './session'
 import { readSession } from './state'
-
-/** Quote one argument for the plugin's tokenizer, preserving quotes, spaces and backslashes. */
-function quoteArgument(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
-}
 
 export type ActionContext = {
   options: PluginOptions
@@ -38,19 +33,19 @@ async function runAction($: EngineInterface, args: string, ctx: ActionContext): 
  * session keeps a plain command so its live engine context window is used;
  * another session, including a card retained across /clear, names its path.
  */
-export async function runSnapshotCommand($: EngineInterface, snap: { transcript: { path: string } }, command: string, ctx: ActionContext): Promise<CommandRunResult> {
+export async function runSnapshotCommand($: EngineInterface, snap: { transcript: { path: string; capture_session_id?: string } }, command: string, ctx: ActionContext): Promise<CommandRunResult> {
   const session = await readSession($)
   const current = session.transcriptPath ?? await derivedTranscriptPath($, await $.session.cwd(), await $.session.id())
-  const isCurrent = snap.transcript.path === current
+  const isCurrent = snap.transcript.capture_session_id === undefined && snap.transcript.path === current
   // /obs pane otherwise keeps a previously selected saved session when it
   // already has a latest snapshot. A current card explicitly returns to current.
   if (isCurrent && session.selected !== null) await selectSession($, null)
-  const args = isCurrent ? command : `${command} --session ${quoteArgument(snap.transcript.path)}`
+  const args = isCurrent ? command : `${command} ${quoteOption('session', snap.transcript.path)}${snap.transcript.capture_session_id === undefined ? '' : ` ${quoteOption('session-id', snap.transcript.capture_session_id)}`}`
   return runAction($, args, ctx)
 }
 
 /** A pane awaiting its first snapshot still applies actions to its selected session. */
 export async function runSelectedCommand($: EngineInterface, command: string, ctx: ActionContext): Promise<CommandRunResult> {
   const selected = (await readSession($)).selected
-  return runAction($, selected ? `${command} --session ${quoteArgument(selected.path)}` : command, ctx)
+  return runAction($, selected ? `${command} ${quoteOption('session', selected.path)}${selected.captureSessionId === undefined ? '' : ` ${quoteOption('session-id', selected.captureSessionId)}`}` : command, ctx)
 }

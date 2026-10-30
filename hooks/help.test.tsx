@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { parseArgs, suggest, tokenize } from './lib/args'
+import { analyzeSelection, argvValue, parseArgs, quoteOption, selectionError, suggest, tokenize, valueArgv } from './lib/args'
 
 test('parseArgs splits sub, flags, k=v and passthrough', async () => {
   expect(parseArgs('view tool_usage agent=main --limit 10 --json -- --x')).toEqual({
@@ -20,6 +20,30 @@ test('parseArgs splits sub, flags, k=v and passthrough', async () => {
   expect(tokenize(`a 'b c' d\\ e`)).toEqual(['a', 'b c', 'd e'])
   expect(suggest('isues')).toBe('issues')
   expect(suggest('zzzzzz')).toBeUndefined()
+})
+
+test('analysis selection preserves apostrophes, quoted questions and literal flag text after --', () => {
+  expect(analyzeSelection(`analyze what's slow --session "/capture folder/manifest.json" --session-id "user's A"`)).toEqual({
+    question: "what's slow", session: '/capture folder/manifest.json', captureSessionId: "user's A",
+  })
+  expect(analyzeSelection('analyze --session capture --session-id A -- Why did --session-id fail?')).toEqual({
+    question: 'Why did --session-id fail?', session: 'capture', captureSessionId: 'A',
+  })
+  const literal = 'analyze -- Why did --session-id and --model fail?'
+  expect(analyzeSelection(literal)).toEqual({ question: 'Why did --session-id and --model fail?', session: undefined })
+  expect(selectionError(parseArgs(literal).flags, literal)).toBeUndefined()
+  expect(analyzeSelection('analyze "Why did --session-id fail?" --session capture')).toEqual({
+    question: '"Why did --session-id fail?"', session: 'capture',
+  })
+})
+
+test('action arguments roundtrip exact captured IDs including real whitespace and quotes', () => {
+  for (const id of ['A\nB', 'A\tB', 'A"B', 'A\\B', "user's A", '用户 A', '-A', '--A\nB']) {
+    expect(parseArgs(`dashboard --session source ${quoteOption('session-id', id)}`).flags['session-id']).toBe(id)
+    expect(argvValue(valueArgv('session-id', id), 'session-id')).toBe(id)
+    expect(analyzeSelection(`analyze What's missing --session source ${quoteOption('session-id', id)}`).captureSessionId).toBe(id)
+  }
+  expect(valueArgv('session-id', '-A')).toEqual(['--session-id=-A'])
 })
 
 test('/obs help answers the grouped table', async ($, on) => {
@@ -58,7 +82,9 @@ test('extra arguments and unsupported session selectors fail before any external
     const result = await $.command.run({ command: 'obs', args } as never)
     expect(result.text).toContain('Unexpected arguments')
   }
-  for (const sub of ['help', 'doctor', 'setup', 'schemas', 'converge', 'labels', 'sessions', 'watch', 'statusline']) {
+  expect((await $.command.run({ command: 'obs', args: 'overview --session-id A' } as never)).text).toBe('--session-id requires --session <capture path>.')
+  expect((await $.command.run({ command: 'obs', args: 'overview --session x --session-id' } as never)).text).toBe('--session-id needs an exact session id inside the capture.')
+  for (const sub of ['help', 'doctor', 'setup', 'schemas', 'converge', 'labels', 'watch', 'statusline']) {
     expect((await $.command.run({ command: 'obs', args: `${sub} --session other` } as never)).text).toBe(`--session is not supported by /obs ${sub}.`)
   }
 })

@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { RenderElement, RenderSurface } from 'claude-code'
 import {
   DimLine,
+  DataQualityNote,
   HealthChips,
   IssuesList,
   KpiRow,
@@ -20,6 +21,9 @@ import {
   type Els,
 } from './render/widgets'
 import { SNAPSHOT } from './testdata/snapshot'
+import { PARTIAL_SNAPSHOT, UNKNOWN_SNAPSHOT, ZERO_SNAPSHOT } from './testdata/quality'
+import { DEFAULT_COLOR, encodeCells, stackedRaster } from './lib/raster'
+import { fmtCompact, fmtInt, fmtPct, fmtSecs, qualitySummary, sumMeasured } from './lib/format'
 
 const SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 24 }, rateLimits: [], cost: { usd: 1.25 } }
@@ -173,11 +177,74 @@ test('pane trends distinguish unavailable samples from zero and unknown context 
   for (const key of ['tokens', 'durations', 'context']) expect(treeText(await ui.find({ key: `trend:${key}` }))).toMatch(/n\/a$/)
   expect(await ui.find({ type: 'Text', text: /max 0/ })).toBeUndefined()
   await ui.unmount()
-  snap = { ...snap, series: { ...snap.series, tokens: { ...snap.series.tokens, fresh: [0] }, context: { turns: [1], occupancy: [500], compactions: [] } } }
+  snap = { ...snap, series: { ...snap.series, tokens: { steps: [1], fresh: [0], cache_read: [0], cache_write: [0], output: [0] }, context: { turns: [1], occupancy: [500], compactions: [] } } }
   ui = await $.ui.mount({ ...pane(40), surface: 'terminal' })
   expect(treeText(await ui.find({ key: 'trend:tokens' }))).toMatch(/max 0$/)
   expect(treeText(await ui.find({ key: 'trend:context' }))).toMatch(/max 500 tok$/)
   await ui.unmount()
+})
+
+test('missing measurements stay unknown while observed zeros remain visible', async ($, on) => {
+  expect(fmtInt(null)).toBe('?')
+  expect(fmtCompact(null)).toBe('?')
+  expect(fmtSecs(null)).toBe('?')
+  expect(fmtPct(null)).toBe('?')
+  expect(fmtInt(0)).toBe('0')
+  expect(sumMeasured([7, null, 0])).toBe(null)
+  expect(sumMeasured([0, 0, 0])).toBe(0)
+  expect(cacheEfficiency(PARTIAL_SNAPSHOT.tokens)).toBe(null)
+  let snap = UNKNOWN_SNAPSHOT
+  on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) => {
+    const els = $.ui.resolve(e)
+    const { Box } = els
+    return <Box flexDirection="column">
+      {KpiRow({ els, snap, columns: e.props.bodyColumns })}
+      {HealthChips({ els, health: snap.health })}
+      {DataQualityNote({ els, snap })}
+      {PaneTrends({ els, snap, columns: e.props.bodyColumns })}
+      {ToolBars({ els, byTool: snap.tools.by_tool, width: e.props.bodyColumns })}
+    </Box>
+  })
+  for (const surface of SURFACES) for (const columns of [32, 80, 120]) {
+    const ui = await $.ui.mount({ ...pane(columns), surface })
+    expect(await ui.find({ type: 'Text', text: /0 observed failures · 1 unknown outcome/ })).toBeDefined()
+    const health = await ui.find({ type: 'Text', text: /○ Tool Success unavailable/ })
+    expect(health?.props['dimColor']).toBe(true)
+    expect(health?.props['color']).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /Data quality: usage incomplete/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /\/obs view data_quality/ })).toBeDefined()
+    expect(treeText(await ui.find({ key: 'trend:tokens' }))).not.toMatch(/max 0$/)
+    await ui.unmount()
+  }
+  snap = ZERO_SNAPSHOT
+  const ui = await $.ui.mount({ ...pane(80), surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: '0' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /100% ok · 0 failed/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /capture completeness unknown/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /fields unavailable|usage incomplete/ })).toBeUndefined()
+  expect(treeText(await ui.find({ key: 'trend:tokens' }))).toMatch(/max 0$/)
+  await ui.unmount()
+})
+
+test('evidence summaries qualify issue claims and use singular and plural field counts', () => {
+  expect(qualitySummary(PARTIAL_SNAPSHOT)).toBe('Data quality: usage incomplete · 1 unknown tool outcome · 1 field unavailable · 1 field unknown · 1 field partial')
+  const plural = { ...PARTIAL_SNAPSHOT, tools: { ...PARTIAL_SNAPSHOT.tools, unknown: 2 }, data_quality: { ...PARTIAL_SNAPSHOT.data_quality!, fields: { ...PARTIAL_SNAPSHOT.data_quality!.fields, 'tokens.output': { status: 'unavailable' as const }, duration: { status: 'partial' as const }, text: { status: 'unknown' as const } } } }
+  expect(qualitySummary(plural)).toBe('Data quality: usage incomplete · 2 unknown tool outcomes · 2 fields unavailable · 2 fields unknown · 2 fields partial')
+})
+
+test('stacked charts keep missing component gaps, measured zeros, and actual bucket compositions', () => {
+  const color = 0x112233
+  const chart = stackedRaster([
+    { values: [null, 0, 7], fg: color },
+    { values: [null, 0, null], fg: 0x445566 },
+  ], 3, 1)
+  expect(chart.cells).toBe(encodeCells([
+    { cp: 0xb7, fg: DEFAULT_COLOR, bg: DEFAULT_COLOR },
+    { cp: 0x2581, fg: color, bg: DEFAULT_COLOR },
+    { cp: 0xb7, fg: DEFAULT_COLOR, bg: DEFAULT_COLOR },
+  ]))
+  const bucket = stackedRaster([{ values: [10, 0], fg: color }, { values: [0, 10], fg: 0x445566 }], 1, 1)
+  expect(bucket.cells).toBe(encodeCells([{ cp: 0x2588, fg: color, bg: DEFAULT_COLOR }]))
 })
 
 test('the widgets draw on every surface; Rasters only on the terminal', async ($, on) => {
@@ -454,7 +521,7 @@ test('status colours, cache efficiency and the empty cases', async ($, on) => {
   })
   const ui = await $.ui.mount({ ...pane(80), surface: 'desktop' })
   expect(await ui.findAll({ type: 'Text', text: /warning/i })).toHaveLength(0)
-  expect(await ui.find({ type: 'Text', text: /No issues/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'No observed issues.' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /No tool calls/ })).toBeDefined()
   expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /No rows/ })).toBeDefined()

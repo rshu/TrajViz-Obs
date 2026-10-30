@@ -4,17 +4,17 @@ import { useTerminalDimensions } from '@opentui/solid'
 import type { ScrollBoxRenderable } from '@opentui/core'
 import { captureSession } from './collect.js'
 import { Obs, type CommandResult } from './rpc.js'
-import { parseArgs, passArgs, tokenize } from './shared/args.js'
+import { analyzeSelection, parseArgs, passArgs, quoteOption } from './shared/args.js'
 import { validateArguments } from './command-args.js'
 import { TABS, commandText, metrics, safeText, sections, statusText } from './tui-model.js'
 import type { EmptySnapshot, Snapshot } from './types.js'
 
 type SnapshotDoc = Snapshot | EmptySnapshot
-type Job = { args: string; sessionID: string; text: string; pending: boolean; url?: string; path?: string }
+type Job = { args: string; sessionID: string; targetID?: string; text: string; pending: boolean; url?: string; path?: string }
 type UIState = {
   tab: number
   selected: Record<string, string>
-  files: Record<string, { origin: string; selector: string }>
+  files: Record<string, { origin: string; selector: string; captureSessionID?: string }>
   snapshots: Record<string, SnapshotDoc>
   errors: Record<string, string>
   jobs: Record<string, Job>
@@ -84,7 +84,7 @@ export function setup(context: Plugin.Context): () => void {
       const file = state.files[id]
       if (!file) await sync(id, controller.signal)
       const origin = file?.origin ?? id
-      const snapshot = await rpc().snapshot({ sessionID: origin, useSynced: true, ...(file ? { selector: file.selector } : {}) }, { location: location(origin), signal: controller.signal })
+      const snapshot = await rpc().snapshot({ sessionID: origin, useSynced: true, ...(file ? { selector: file.selector, ...(file.captureSessionID ? { captureSessionID: file.captureSessionID } : {}) } : {}) }, { location: location(origin), signal: controller.signal })
       if (!disposed && generations.get(id) === generation) update(draft => { draft.snapshots[id] = snapshot; delete draft.errors[id] })
     } catch (error) {
       if (!disposed && !controller.signal.aborted && generations.get(id) === generation) update(draft => { draft.errors[id] = errorText(error) })
@@ -166,7 +166,12 @@ export function setup(context: Plugin.Context): () => void {
     const job = () => state.jobs[props.runID]
     const terminal = useTerminalDimensions()
     let scroll: ScrollBoxRenderable | undefined
-    const livePane = () => { context.ui.dialog.clear(); void command('pane') }
+    const livePane = () => {
+      const current = job()
+      const base = active() ?? current?.sessionID
+      if (current?.targetID && base) update(draft => { draft.selected[base] = current.targetID! })
+      context.ui.dialog.clear(); void command('pane')
+    }
     const browser = () => { const url = job()?.url; if (url) void openURL(url) }
     context.keymap.layer(() => ({ mode: 'global', commands: [
       { bind: 'c', title: 'Cancel obs command', enabled: () => !!job()?.pending, run: () => cancel(job()?.sessionID) },
@@ -212,14 +217,15 @@ export function setup(context: Plugin.Context): () => void {
       const parsed = parseArgs(args)
       if (!SESSIONLESS.has(parsed.sub)) {
         // Questions preserve apostrophes; the generic shell lexer can treat one as an open quote.
-        const analyzeSelectors = parsed.sub === 'analyze' ? [...args.matchAll(/(?:^|\s)--session(?:=|\s+)("(?:\\.|[^"\\])*"|'[^']*'|[^\s]+)/g)] : []
-        const selector = analyzeSelectors.length ? tokenize(analyzeSelectors.at(-1)![1]!)[0] : parsed.flags.session
+        const analyze = parsed.sub === 'analyze' ? analyzeSelection(args) : undefined
+        const selector = analyze ? analyze.session : parsed.flags.session
+        const captureSessionID = analyze ? analyze.captureSessionId : parsed.flags['session-id']
         if (base === 'home' && typeof selector !== 'string') throw new Error('Open a session before using this command, or select a saved session with --session. /obs help and /obs doctor are available here.')
         if (typeof selector === 'string') {
-          const resolved = await rpc().resolve({ sessionID: base, selector }, { location: location(base), signal: controller.signal })
+          const resolved = await rpc().resolve({ sessionID: base, selector, ...(typeof captureSessionID === 'string' ? { captureSessionID } : {}) }, { location: location(base), signal: controller.signal })
           target = resolved.sessionID
           generation = claim(target)
-          if (resolved.path) update(draft => { draft.files[target] = { origin: base, selector: resolved.path! } })
+          if (resolved.path) update(draft => { draft.files[target] = { origin: base, selector: resolved.path!, ...(typeof captureSessionID === 'string' ? { captureSessionID } : {}) } })
           else await sync(target, controller.signal)
         } else { generation = claim(target); await sync(target, controller.signal) }
         if (parsed.sub === 'compare' || parsed.sub === 'scorecard') for (const other of parsed.positional) {
@@ -253,7 +259,7 @@ export function setup(context: Plugin.Context): () => void {
       update(draft => {
         if (base !== 'home' && !SESSIONLESS.has(parsed.sub)) draft.selected[base] = target
         if (result.snapshot && generations.get(target) === generation) { draft.snapshots[target] = result.snapshot; delete draft.errors[target] }
-        draft.jobs[runID] = { args, sessionID: base, text: displayResult(commandText(result)), pending: false, url: result.url, path: result.path }
+        draft.jobs[runID] = { args, sessionID: base, ...(!SESSIONLESS.has(parsed.sub) ? { targetID: target } : {}), text: displayResult(commandText(result)), pending: false, url: result.url, path: result.path }
         if (result.tab) { const tab = TABS.findIndex(name => name.toLowerCase() === result.tab?.toLowerCase()); if (tab >= 0) draft.tab = tab }
       })
       if (presentation === 'pane' && !result.snapshot) await refresh(target)
@@ -279,12 +285,18 @@ export function setup(context: Plugin.Context): () => void {
     }
   }
 
-  async function command(raw = ''): Promise<void> {
-    const args = raw.trim().replace(/^\/obs(?:\s+|$)/, '')
+  async function command(raw = '', followSelection = false): Promise<void> {
+    let args = raw.trim().replace(/^\/obs(?:\s+|$)/, '')
+    const base = active() ?? 'home'
+    if (followSelection) {
+      const target = selected(base)
+      const file = state.files[target]
+      if (file) args += ` ${quoteOption('session', file.selector)}${file.captureSessionID ? ` ${quoteOption('session-id', file.captureSessionID)}` : ''}`
+      else if (target !== base) args += ` ${quoteOption('session', target)}`
+    }
     const invalid = validateArguments(args)
     if (invalid) { notice(invalid, true); return }
     const parsed = parseArgs(args)
-    const base = active() ?? 'home'
     if (parsed.sub === 'cancel') { await cancel(base); return }
     if (parsed.sub === 'watch' || parsed.sub === 'statusline') {
       const option = parsed.positional[0]
@@ -321,7 +333,7 @@ export function setup(context: Plugin.Context): () => void {
         ...TABS.map((name, index) => ({ bind: String(index + 1), title: name, run: () => { update(draft => { draft.tab = index }) } })),
         { bind: 'r', title: 'Refresh', run: () => refresh(id()) },
         { bind: 'w', title: 'Toggle watch', run: () => command('watch') },
-        { bind: 'd', title: 'Dashboard', run: () => command('dashboard') },
+        { bind: 'd', title: 'Dashboard', run: () => command('dashboard', true) },
         { bind: 'f', title: 'Toggle fullscreen', run: () => props.panel.toggleFullscreen() },
         { bind: 'x', title: 'Close pane', run: () => props.panel.close() },
       ],
@@ -333,10 +345,10 @@ export function setup(context: Plugin.Context): () => void {
       <box flexDirection="row" flexWrap="wrap" gap={2}>
         <Action label="r Refresh" run={() => { void refresh(id()) }} />
         <Action label={`w Watch ${settings.watch ? 'on' : 'off'}`} run={() => { void command('watch') }} />
-        <Action label="d Dashboard" run={() => { void command('dashboard') }} />
+        <Action label="d Dashboard" run={() => { void command('dashboard', true) }} />
         <Action label="x Close" run={() => props.panel.close()} />
       </box>
-      <Text muted>{`${id() === props.panel.sessionID ? 'Current session' : 'Saved session'}${snapshot() && !snapshot()!.empty && (snapshot() as Snapshot).title ? ` · ${(snapshot() as Snapshot).title}` : ''}`}</Text>
+      <Text muted>{`${id() === props.panel.sessionID ? 'Current session' : 'Saved session'}${state.files[id()]?.captureSessionID ? ` · ${state.files[id()]!.captureSessionID}` : ''}${snapshot() && !snapshot()!.empty && (snapshot() as Snapshot).title ? ` · ${(snapshot() as Snapshot).title}` : ''}`}</Text>
       <scrollbox flexGrow={1} minHeight={0} scrollX={false} contentOptions={{ gap: 1 }}>
         <Show when={state.errors[id()]}><Text>{`Unable to refresh: ${state.errors[id()]}. Press r to retry.`}</Text></Show>
         <Show when={state.tab === 0 && snapshot() && !snapshot()!.empty}>

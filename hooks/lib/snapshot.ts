@@ -7,7 +7,8 @@
 import type { EngineInterface, PluginOptions } from 'claude-code'
 import type { EmptySnapshot, Snapshot } from '../../types'
 import { BridgeError, runBridge } from './bridge'
-import { clip, fmtInt } from './format'
+import { valueArgv } from './args'
+import { clip, displayText, fmtInt } from './format'
 import { artifactsDir } from './paths'
 import { lockPublication, publicationGeneration } from './publication'
 import { SETUP_TIMEOUT_MS, ensureEnv, ensureExtra, needsSetup, readEnvState, type Extra } from './python'
@@ -60,6 +61,7 @@ export function provenanceLine(id: string, snap: Snapshot | EmptySnapshot, at: D
   const window = isEmpty(snap) ? null : snap.context.window
   const warnings = isEmpty(snap) ? [] : snap.trajviz.warnings
   let line = `${PREFIX}${id} · ${time} · ${fmtInt(steps)} assistant steps · window ${window === null ? '?' : fmtInt(window)}`
+  if (snap.transcript.capture_session_id !== undefined) line += ` · session ${clip(displayText(snap.transcript.capture_session_id).replace(/\s+/g, ' '), 80)}`
   if (warnings.length) line += ` · warnings: ${warnings.join('; ')}`
   return line
 }
@@ -198,15 +200,16 @@ export async function ensureReady($: EngineInterface, options: PluginOptions, ex
  * context window when it reports one, the artifacts folder, and `--kind
  * current|other`.
  */
-export async function sessionArgv($: EngineInterface, spec?: string, resolvingGeneration = publicationGeneration()): Promise<{ transcript: Transcript; argv: string[]; generation: number }> {
+export async function sessionArgv($: EngineInterface, spec?: string, resolvingGeneration = publicationGeneration(), captureSessionId?: string): Promise<{ transcript: Transcript; argv: string[]; generation: number }> {
   if (resolvingGeneration !== publicationGeneration()) throw new BridgeError('session_changed', 'The selected session changed during analysis; run /obs again.')
-  const transcript = await resolveTranscript($, spec)
-  const generation = await selectSession($, spec ? { path: transcript.path, id: transcript.sessionId, label: transcript.sessionId } : null, resolvingGeneration)
+  const transcript = await resolveTranscript($, spec, captureSessionId)
+  const generation = await selectSession($, spec ? { path: transcript.path, id: transcript.sessionId, label: captureSessionId ?? transcript.sessionId, ...(captureSessionId === undefined ? {} : { captureSessionId }) } : null, resolvingGeneration)
   const argv = ['--transcript', transcript.path]
   // The current engine cannot report another session's context window.
   const window = spec ? null : await contextWindow($)
   if (window !== null) argv.push('--window', String(window))
-  argv.push('--artifacts', await artifactsDir($, transcript.sessionId), '--kind', spec ? 'other' : 'current')
+  if (captureSessionId !== undefined) argv.push(...valueArgv('session-id', captureSessionId))
+  argv.push('--artifacts', await artifactsDir($, transcript.sessionId, captureSessionId, transcript.path), '--kind', spec ? 'other' : 'current')
   if (generation !== publicationGeneration()) throw new BridgeError('session_changed', 'The selected session changed during analysis; run /obs again.')
   return { transcript, argv, generation }
 }
@@ -219,20 +222,20 @@ export async function sessionArgv($: EngineInterface, spec?: string, resolvingGe
  * `BridgeError('busy')` and starts nothing, unless the hold is older than
  * `BUSY_STALE_MS` (a cut run's, never released) and is taken over.
  */
-export async function takeSnapshot($: EngineInterface, options: PluginOptions, spec?: string): Promise<Snapshot | EmptySnapshot> {
+export async function takeSnapshot($: EngineInterface, options: PluginOptions, spec?: string, captureSessionId?: string): Promise<Snapshot | EmptySnapshot> {
   const claim = await claimRefresh($, BUSY_STALE_MS)
   if (claim === null) throw new BridgeError('busy', BUSY_TEXT)
   try {
-    return (await computeSnapshot($, options, spec)).snap
+    return (await computeSnapshot($, options, spec, undefined, captureSessionId)).snap
   } finally {
     await releaseRefresh($, claim)
   }
 }
 
 /** Computes once; callers hold the refresh claim until they finish publishing. */
-async function computeSnapshot($: EngineInterface, options: PluginOptions, spec?: string, resolvingGeneration = publicationGeneration()): Promise<{ snap: Snapshot | EmptySnapshot; generation: number }> {
+async function computeSnapshot($: EngineInterface, options: PluginOptions, spec?: string, resolvingGeneration = publicationGeneration(), captureSessionId?: string): Promise<{ snap: Snapshot | EmptySnapshot; generation: number }> {
   await setUp($, options)
-  const { argv, generation } = await sessionArgv($, spec, resolvingGeneration)
+  const { argv, generation } = await sessionArgv($, spec, resolvingGeneration, captureSessionId)
   const snap = await runBridge<Snapshot | EmptySnapshot>($, ['snapshot', ...argv], { timeoutMs: SNAPSHOT_TIMEOUT_MS })
   if (!spec && !isEmpty(snap)) {
     try { snap.engine_usage = await $.session.usage() } catch { /* The host may not expose usage. */ }
@@ -247,11 +250,11 @@ async function computeSnapshot($: EngineInterface, options: PluginOptions, spec?
  * never overwrite the new session's live data. Empty results replace the
  * previous snapshot too, while historical cards keep their own members.
  */
-export async function captureSnapshot($: EngineInterface, options: PluginOptions, spec?: string, resolvingGeneration = publicationGeneration()): Promise<{ snap: Snapshot | EmptySnapshot; id: string; generation: number }> {
+export async function captureSnapshot($: EngineInterface, options: PluginOptions, spec?: string, resolvingGeneration = publicationGeneration(), captureSessionId?: string): Promise<{ snap: Snapshot | EmptySnapshot; id: string; generation: number }> {
   const claim = await claimRefresh($, BUSY_STALE_MS)
   if (claim === null) throw new BridgeError('busy', BUSY_TEXT)
   try {
-    const { snap, generation } = await computeSnapshot($, options, spec, resolvingGeneration)
+    const { snap, generation } = await computeSnapshot($, options, spec, resolvingGeneration, captureSessionId)
     const id = await storeSnapshot($, snap, generation)
     return { snap, id, generation }
   } finally { await releaseRefresh($, claim) }

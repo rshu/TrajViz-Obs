@@ -2,6 +2,7 @@ import { expect, mock, test, type Engine, type MockClock } from 'claude-code/tes
 import type { On, PaneOpenArgs, RenderSurface, UiOpenResult } from 'claude-code'
 import { parseArgs } from './lib/args'
 import { SNAPSHOT } from './testdata/snapshot'
+import { PARTIAL_SNAPSHOT } from './testdata/quality'
 import { PANE_USAGE_TIMEOUT_MS } from './render/pane'
 
 const HOME = '/Users/me'
@@ -9,7 +10,7 @@ const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
 const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
+const STATE_JSON = JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.3.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.3.1', createdAt: 1 })
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 24 }, rateLimits: [], cost: { usd: 1.25 } }
 const BREAKDOWN = {
@@ -277,6 +278,35 @@ async function openTab($: Engine, n: number, bodyColumns = 80) {
   expect((await ui.find({ key: `tab:${n}` }))?.props['variant']).toBe('primary')
   return ui
 }
+
+test('partial captured evidence remains explicit across compact pane tabs', async ($, on) => {
+  const original = JSON.stringify(PARTIAL_SNAPSHOT)
+  host(on, [PARTIAL_SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, '--session /saved/partial.json')
+  for (const columns of [32, 56, 80]) {
+    let ui = await openTab($, 1, columns)
+    expect(await ui.find({ type: 'Text', text: /Data quality: usage incomplete/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /\/obs view data_quality/ })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /○ Tool Success unavailable/ }))?.props['color']).toBeUndefined()
+    await ui.unmount()
+    ui = await openTab($, 2, columns)
+    expect(await ui.find({ type: 'Text', text: /0 observed failures · 1 unknown outcome/ })).toBeDefined()
+    await ui.unmount()
+    ui = await openTab($, 4, columns)
+    expect(await ui.find({ type: 'Text', text: /Patterns unavailable: required evidence was not recorded/ })).toBeDefined()
+    await ui.unmount()
+    ui = await openTab($, 5, columns)
+    expect(await ui.find({ type: 'Text', text: /Activity by step/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Unknown outcomes/ })).toBeDefined()
+    await ui.unmount()
+    ui = await openTab($, 7, columns)
+    expect(await ui.find({ type: 'Text', text: /Unknown outcomes/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Tokens:/ })).toBeDefined()
+    await ui.unmount()
+  }
+  expect(JSON.stringify(PARTIAL_SNAPSHOT)).toBe(original)
+})
 
 test('the hotkeys switch tabs, and each tab draws its own rows', async ($, on) => {
   host(on, [SNAPSHOT])

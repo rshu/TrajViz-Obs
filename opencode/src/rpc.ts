@@ -27,12 +27,12 @@ export const Obs = Rpc.define({
   id: 'trajviz-obs',
   methods: {
     sync: { input: z.object({ source: z.custom<NativeSource>(v => { try { validateSource(v); return true } catch { return false } }) }), output: z.object({ sessionID }) },
-    resolve: { input: z.object({ sessionID, selector: z.string().optional() }), output: z.object({ sessionID, path: z.string().optional() }) },
+    resolve: { input: z.object({ sessionID, selector: z.string().optional(), captureSessionID: z.string().min(1).max(4096).optional() }), output: z.object({ sessionID, path: z.string().optional() }) },
     run: {
       input: z.object({ sessionID, args: z.string().max(32768), runID: z.string().min(1).max(256), useSynced: z.boolean().optional(), confirmationID: z.string().optional(), model: z.object({ providerID: z.string(), id: z.string(), variant: z.string().optional() }).optional() }),
       output: result,
     },
-    snapshot: { input: z.object({ sessionID, selector: z.string().optional(), useSynced: z.boolean().optional() }), output: snapshot },
+    snapshot: { input: z.object({ sessionID, selector: z.string().optional(), captureSessionID: z.string().min(1).max(4096).optional(), useSynced: z.boolean().optional() }), output: snapshot },
     cancel: { input: z.object({ runID: z.string() }), output: z.object({ cancelled: z.boolean() }) },
   },
   events: { changed: { schema: z.object({ sessionID }) }, progress: { schema: z.object({ runID: z.string(), text: z.string() }) } },

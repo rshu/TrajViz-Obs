@@ -1,7 +1,7 @@
 import type { Plugin } from '@opencode/plugin'
 import { OpenCode, type OpenCodeClient } from '@opencode/client'
 import { Service } from '@opencode/client/service'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -10,10 +10,15 @@ import { Runtime, exists, stopChild, type Options } from './runtime.js'
 import { Revisions } from './revisions.js'
 import type { EmptySnapshot, Snapshot } from './types.js'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
+import { inspectSource } from './source-info.js'
+import { argvValue, valueArgv } from './shared/args.js'
 
-export type SourceRef = { sessionID: string; transcript: string; artifacts: string; argv: string[]; native?: NativeSource }
+export type SourceRef = { sessionID: string; transcript: string; artifacts: string; argv: string[]; native?: NativeSource; captureSessionID?: string }
 type Server = { child: ChildProcessWithoutNullStreams; url: string; signature: string; preloaded?: boolean }
-const hash = (text: string) => createHash('sha256').update(text).digest('hex')
+const hash = (text: string | Uint8Array) => createHash('sha256').update(text).digest('hex')
+const sourceIdentity = (file: string, captureSessionID?: string): string => {
+  return captureSessionID === undefined ? file : JSON.stringify([file, captureSessionID])
+}
 
 export class Backend {
   readonly runtime: Runtime
@@ -48,13 +53,15 @@ export class Backend {
     const page = await this.ctx.session.list({ directory: this.ctx.location.directory, limit } as Parameters<Plugin.Context['session']['list']>[0])
     return page.data.map(record)
   }
-  async resolve(currentID: string, selector?: string): Promise<{ sessionID: string; path?: string }> {
+  async resolve(currentID: string, selector?: string, captureSessionID?: string): Promise<{ sessionID: string; path?: string }> {
+    if (captureSessionID !== undefined && (!captureSessionID.trim() || captureSessionID.length > 4096 || captureSessionID.includes('\u0000') || !selector)) throw new Error('--session-id requires --session <capture path> and an exact nonempty captured session id up to 4096 characters, without NUL.')
     if (!selector) {
       if (!currentID || currentID === 'home') throw new Error('Open a session first, then run /obs.')
       return { sessionID: currentID }
     }
     const file = path.resolve(this.ctx.location.directory, selector.replace(/^~(?=[/\\])/, process.env.HOME ?? ''))
-    if (await exists(file)) return { sessionID: hash(file).slice(0, 24), path: file }
+    if (await exists(file)) return { sessionID: hash(sourceIdentity(file, captureSessionID)).slice(0, 24), path: file }
+    if (captureSessionID !== undefined) throw new Error('--session-id requires an existing capture path in --session.')
     const found: string[] = []
     let cursor: string | undefined
     const cursors = new Set<string>()
@@ -144,19 +151,19 @@ export class Backend {
     if (captured.window) argv.push('--window', String(captured.window))
     return { sessionID, transcript, artifacts, argv, native: captured }
   }
-  async session(currentID: string, selector?: string, signal?: AbortSignal): Promise<SourceRef> {
-    const target = await this.resolve(currentID, selector)
+  async session(currentID: string, selector?: string, signal?: AbortSignal, captureSessionID?: string): Promise<SourceRef> {
+    const target = await this.resolve(currentID, selector, captureSessionID)
     if (target.path) {
-      this.targets.set(target.sessionID, target.path)
-      const artifacts = path.join(this.root, hash(target.path).slice(0, 32))
-      return { sessionID: target.sessionID, transcript: target.path, artifacts, argv: ['--transcript', target.path, '--artifacts', artifacts] }
+      this.targets.set(target.sessionID, sourceIdentity(target.path, captureSessionID))
+      const artifacts = path.join(this.root, hash(sourceIdentity(target.path, captureSessionID)).slice(0, 32))
+      return { sessionID: target.sessionID, transcript: target.path, artifacts, ...(captureSessionID === undefined ? {} : { captureSessionID }), argv: ['--transcript', target.path, '--artifacts', artifacts, ...(captureSessionID === undefined ? [] : valueArgv('session-id', captureSessionID))] }
     }
     const source = await this.materialize(await this.capture(target.sessionID, signal))
     if (!selector) source.argv.push('--kind', 'current')
     return source
   }
-  async snapshot(sessionID: string, signal?: AbortSignal, selector?: string): Promise<Snapshot | EmptySnapshot> {
-    const source = await this.session(sessionID, selector, signal)
+  async snapshot(sessionID: string, signal?: AbortSignal, selector?: string, captureSessionID?: string): Promise<Snapshot | EmptySnapshot> {
+    const source = await this.session(sessionID, selector, signal, captureSessionID)
     const snapshot = await this.runtime.run<Snapshot | EmptySnapshot>(['snapshot', ...source.argv], signal)
     if (!snapshot.empty) {
       const native = source.native
@@ -171,18 +178,22 @@ export class Backend {
     }
     return snapshot
   }
-  async serve(kind: 'dashboard' | 'converge', argv: string[], signal?: AbortSignal): Promise<{ url: string; preloaded?: boolean }> {
+  async serve(kind: 'dashboard' | 'converge', argv: string[], signal?: AbortSignal, ownerID?: string): Promise<{ url: string; preloaded?: boolean }> {
     const at = argv.indexOf('--transcript'), labelsAt = argv.indexOf('--labels')
     const identity = at >= 0 ? argv[at + 1]! : argv[argv.indexOf('--data-root') + 1]!
-    const canonical = /^source-[a-f0-9]{64}\.json$/.test(path.basename(identity)) ? path.dirname(identity) : identity
-    const key = `${kind}:${canonical}`
-    const revision = at >= 0 ? hash(await readFile(identity, 'utf8')) : ''
+    const captureSessionID = argvValue(argv, 'session-id')
+    const canonical = captureSessionID !== undefined ? sourceIdentity(identity, captureSessionID) : /^source-[a-f0-9]{64}\.json$/.test(path.basename(identity)) ? path.dirname(identity) : identity
+    const key = ownerID ? `${kind}:target:${ownerID}` : `${kind}:${canonical}`
+    const inspected = at >= 0 ? await inspectSource(identity) : undefined
+    // Parent-file metadata cannot prove a directory/manifest/JSONL family's
+    // children unchanged. An explicit reopen must reload those companions.
+    const revision = inspected ? inspected.compound ? randomUUID() : hash(inspected.bytes!) : ''
     const labelRevision = labelsAt >= 0 ? hash(await readFile(argv[labelsAt + 1]!, 'utf8')) : ''
     const signature = JSON.stringify([argv, revision, labelRevision])
     const live = this.servers.get(key)
     if (live?.signature === signature && live.child.exitCode === null && live.child.signalCode === null) return live
     const pending = this.starting.get(key)
-    if (pending) { await pending.promise; return this.serve(kind, argv, signal) }
+    if (pending) { await pending.promise; return this.serve(kind, argv, signal, ownerID) }
     const controller = new AbortController()
     const startupSignal = AbortSignal.any([controller.signal, ...(signal ? [signal] : [])])
     const next = (async () => {
@@ -221,7 +232,7 @@ export class Backend {
   async stop(kind: string, sessionID?: string): Promise<boolean> {
     const target = sessionID ? this.targets.get(sessionID) ?? path.join(this.root, hash(sessionID).slice(0, 32), 'source.json') : undefined
     const canonical = target && /^source-[a-f0-9]{64}\.json$/.test(path.basename(target)) ? path.dirname(target) : target
-    const keys = [...new Set([...this.servers.keys(), ...this.starting.keys()])].filter(key => key.startsWith(`${kind}:`) && (!canonical || key === `${kind}:${canonical}`))
+    const keys = [...new Set([...this.servers.keys(), ...this.starting.keys()])].filter(key => key.startsWith(`${kind}:`) && (!canonical || key === `${kind}:${canonical}` || key === `${kind}:target:${sessionID}`))
     for (const key of keys) {
       const starting = this.starting.get(key)
       starting?.controller.abort()

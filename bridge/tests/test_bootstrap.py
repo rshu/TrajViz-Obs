@@ -73,7 +73,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(Path(first["python"]).read_text(), "ready")
         again = b.setup(request(self.cache), builder=fake_builder)
         self.assertEqual(again["python"], second["python"])
-        self.assertEqual(again["extras"], ["llm", "charts", "app"])
+        self.assertEqual(again["extras"], ["llm", "charts", "zstd", "app"])
         self.assertEqual(len((self.cache / "builds").read_text().splitlines()), 3)
 
     def test_failed_install_preserves_prior_environment_and_metadata(self):

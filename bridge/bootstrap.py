@@ -21,8 +21,8 @@ import time
 import uuid
 from pathlib import Path
 
-REVISION = 4
-BASE_EXTRAS = ("llm", "charts")
+REVISION = 5
+BASE_EXTRAS = ("llm", "charts", "zstd")
 LOCK_WAIT_S = 180
 _active: subprocess.Popen | None = None
 _job = None

@@ -12,6 +12,7 @@ import argparse
 import math
 import os
 import time
+import zipfile
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,8 +21,8 @@ from typing import Any
 from agent_trajviz import Trajectory
 
 from .cli import register
-from .compat import TRAJVIZ_VERSION, EmptySession, input_path, load_run, window_info
-from .sessions import _positive_int
+from .compat import TRAJVIZ_VERSION, EmptySession, input_path, load_run, project_view, window_info
+from .sessions import _positive_int, capture_session_id
 from .sidecars import AgentMeta, TranscriptFacts, agent_meta, scan_transcript
 from .text import render_overview
 
@@ -29,7 +30,7 @@ SCHEMA_VERSION = 1
 
 #: The TrajViz views the snapshot draws from; nothing else is computed.
 VIEWS = (
-    "summary", "session", "metrics", "health", "issues", "bottlenecks", "context_pressure", "token_usage",
+    "summary", "data_quality", "session", "metrics", "health", "issues", "bottlenecks", "context_pressure", "token_usage",
     "step_durations", "phases", "agents", "agent_swimlane", "tool_outcomes", "workflow", "diagnostics",
     "file_interactions", "plan", "skill_calls", "tool_sequences", "failure_patterns", "error_clusters",
     "failure_chains", "fruitless_streaks", "tool_selection", "edit_thrash", "repeated_searches",
@@ -202,7 +203,8 @@ def _context(run: Trajectory, pressure: dict, n: int) -> tuple[dict, dict]:
                        and s.get("role") in {"assistant", "compaction"}), None)
         # Compaction usage bills the summary request, not its resulting window.
         # An interrupted response may likewise leave no measured prompt usage.
-        if latest and (latest.get("role") == "compaction" or latest.get("_metrics_unavailable_fields")):
+        missing = set(latest.get("_metrics_unavailable_fields") or []) if latest else set()
+        if latest and (latest.get("role") == "compaction" or missing & {"Input Tokens", "Cache Read"}):
             current = None
         window["window_note"] = ((window.get("window_note") or "") + " Latest logged model request; "
                                  "post-compaction occupancy is unknown until another measured response.").strip()
@@ -219,11 +221,13 @@ def _context(run: Trajectory, pressure: dict, n: int) -> tuple[dict, dict]:
 def _by_tool(calls: list[dict]) -> list[dict]:
     counts: Counter[str] = Counter()
     errors: Counter[str] = Counter()
+    unknown: Counter[str] = Counter()
     for call in calls:
         counts[call["tool"]] += 1
-        errors[call["tool"]] += not call.get("ok", True)
+        errors[call["tool"]] += call.get("ok") is False
+        unknown[call["tool"]] += not isinstance(call.get("ok"), bool)
     ranked = sorted(counts, key=lambda tool: (-counts[tool], tool))[:TOP_TOOLS]
-    return [{"tool": tool, "calls": counts[tool], "errors": errors[tool]} for tool in ranked]
+    return [{"tool": tool, "calls": counts[tool], "errors": errors[tool], "unknown": unknown[tool]} for tool in ranked]
 
 
 def _files(data: dict) -> dict:
@@ -249,13 +253,16 @@ def _skills(links: list[dict]) -> list[dict]:
     return [{"skill": s, "calls": c} for s, c in sorted(calls.items(), key=lambda item: (-item[1], item[0]))]
 
 
-def _timeline(run: Trajectory, workflow: list[dict]) -> list[dict]:
+def _timeline(run: Trajectory, workflow: list[dict], calls: list[dict], tokens: list[dict]) -> list[dict]:
+    unknown = Counter(call["step"] for call in calls if not isinstance(call.get("ok"), bool))
+    visible_tokens = {row["step"]: row["total"] for row in tokens}
     rows = []
     for w in workflow[-TIMELINE_STEPS:]:
         step = run.steps[w["step"]] if 0 <= w["step"] < len(run.steps) else {}
         rows.append({"step": w["step"], "role": w["role"], "category": w["category"], "agent": w["agent"],
-                     "errors": step.get("error_count", 0), "tool_calls": w["tool_calls"],
-                     "duration_s": w["duration_s"], "tokens": w["tokens"],
+                     "errors": step.get("error_count", 0), "unknown_outcomes": unknown[w["step"]],
+                     "tool_calls": w["tool_calls"],
+                     "duration_s": w["duration_s"], "tokens": visible_tokens.get(w["step"], w["tokens"]),
                      "preview": _clip(" ".join(str(step.get("text_preview") or "").split()), PREVIEW_CHARS)})
     return rows
 
@@ -298,7 +305,8 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
     *duration_ms* is the time already spent (loading); the document's ``duration_ms`` adds this call's own.
     """
     started = time.monotonic()
-    views = {view_id: view.data for view_id, view in run.views(only=VIEWS).items()}
+    built = {view_id: project_view(run, view) for view_id, view in run.views(only=VIEWS).items()}
+    views = {view_id: view.data for view_id, view in built.items()}
     summary, session, metrics = views["summary"], views["session"], views["metrics"]
     pressure = views["context_pressure"]
     context, context_series = _context(run, pressure, max_points)
@@ -314,6 +322,9 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
         "transcript": _transcript(transcript_path, session.get("session_id"), run.sha256),
         "trajviz": {"version": TRAJVIZ_VERSION, "format": run.format, "format_label": run.format_label,
                     "warnings": list(run.warnings)},
+        "data_quality": views["data_quality"],
+        "availability": {view_id: dict(view.availability) for view_id, view in built.items()
+                         if view.availability is not None},
         "title": facts.title or session.get("title"),
         "task": facts.prompts[0] if facts.prompts else None,
         "counts": {"records": summary["steps"], "assistant_steps": summary["assistant_steps"],
@@ -328,7 +339,9 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
                    "output_tokens_per_sec": metrics.get("output_tokens_per_sec"),
                    "tool_wait_share": metrics.get("tool_wait_share")},
         "tools": {"success_rate": summary.get("tool_success_rate"), "calls": summary["tool_calls"],
-                  "failed": metrics.get("tool_fail"), "by_tool": _by_tool(views["tool_outcomes"]["calls"])},
+                  "failed": sum(call.get("ok") is False for call in views["tool_outcomes"]["calls"]),
+                  "unknown": sum(not isinstance(call.get("ok"), bool) for call in views["tool_outcomes"]["calls"]),
+                  "by_tool": _by_tool(views["tool_outcomes"]["calls"])},
         "health": [{k: h.get(k) for k in ("metric", "status", "label", "detail")} for h in views["health"]],
         "issues": [{"kind": i.get("kind"), "title": i.get("title"), "detail": i.get("detail"), "why": i.get("why"),
                     "steps": list(i.get("steps") or [])[:ROW_STEPS], "evidence": _evidence(
@@ -354,7 +367,8 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
                     "type": (m.agent_type or None) if (m := agents_meta.get(a["agent_id"])) else None,
                     "description": (m.description or None) if m else None,
                     "steps": a["step_count"], "tokens": a["total_tokens"], "tool_calls": a["tool_call_count"],
-                    "errors": a["error_count"], "duration_s": a["total_duration_s"],
+                    "errors": a["error_count"], "observed_errors": a.get("observed_errors", a["error_count"]),
+                    "unknown_outcomes": a.get("unknown_outcomes", 0), "duration_s": a["total_duration_s"],
                     "cache_pct": a["cache_efficiency_pct"], "gen_tps": a["output_tokens_per_sec"]}
                    for a in agents],
         "swimlane": {"total_steps": summary["steps"],
@@ -362,7 +376,7 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
                                 "segments": _merge_segments(lane["segments"], lane_cap)} for lane in lanes]},
         "patterns": {**{name: _top(views[name], TOP_PATTERNS) for name in PATTERN_VIEWS},
                      "hotspots": _top(views["hotspots"], TOP_HOTSPOTS)},
-        "timeline": _timeline(run, views["workflow"]["steps"]),
+        "timeline": _timeline(run, views["workflow"]["steps"], views["tool_outcomes"]["calls"], tokens),
         "diagnostics": views["diagnostics"],
         "files": _files(views["file_interactions"]),
         "plan": {"items": plan["total_items"], "done": sum(1 for i in plan["items"] if i.get("end_step") is not None),
@@ -371,6 +385,14 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
         "artifacts": _artifacts(artifacts),
         "text": "",
     }
+    if snap["availability"].get("context_pressure", {}).get("status") == "unavailable":
+        for key in ("current_occupancy", "current_pct", "peak_occupancy", "peak_pct", "compaction_count", "largest_drop"):
+            snap["context"][key] = None
+        snap["counts"]["compactions"] = None
+    if snap["availability"].get("file_interactions", {}).get("status") == "unavailable":
+        snap["files"] = {"unique": None, "reads": None, "writes": None, "searches": None, "top": []}
+    if snap["availability"].get("plan", {}).get("status") == "unavailable":
+        snap["plan"] = {"items": None, "done": None, "stalled": None}
     clipped: list[str] = []
     snap = _display_previews(snap, (), clipped)
     if clipped:
@@ -396,6 +418,8 @@ def _points_limit(text: str) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("snapshot", help="The snapshot document the overview card, pane and status line draw.")
     p.add_argument("--transcript", required=True, help="The session transcript (or session directory).")
+    p.add_argument("--session-id", type=capture_session_id, default=None,
+                   help="Select this exact session inside a saved OTLP capture.")
     p.add_argument("--window", type=_positive_int, default=None,
                    help="The real context window in tokens (default: TrajViz's own estimate).")
     p.add_argument("--artifacts", type=Path, default=None, help="The session's artifact folder (read, never created).")
@@ -409,19 +433,27 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
 def _snapshot(args: argparse.Namespace) -> dict:
     started = time.monotonic()
     try:
-        run = load_run(args.transcript, window_limit=args.window, current=args.kind == "current")
+        run = load_run(args.transcript, window_limit=args.window, current=args.kind == "current",
+                       session_id=getattr(args, "session_id", None))
     except EmptySession as exc:
         return empty_snapshot(exc.reason, args.transcript)
     source = input_path(run)
     is_file = source is not None and source.is_file()
-    if run.format == "claude_code" and is_file:
+    if run.format == "claude_code" and is_file and source.suffix.lower() == ".jsonl" and not zipfile.is_zipfile(source):
         facts, meta = scan_transcript(str(source)), agent_meta(str(source))
     else:
-        prompts = [str(step.get("text_preview") or "") for step in run.steps
-                   if step.get("role") == "user" and not step.get("is_sub_agent")]
+        roots = {agent["agent_id"] for agent in run.raw.get("_otel", {}).get("agents", [])
+                 if isinstance(agent, dict) and agent.get("agent_id") and not agent.get("parent_agent_id")}
+        users = [step for step in run.steps if step.get("role") == "user"
+                 and (not step.get("is_sub_agent") or run.format == "otlp" and step.get("agent") in roots)]
+        prompts = [text for step in users if (text := str(step.get("text_preview") or "")).strip()]
         metadata = run.raw.get("metadata", {})
-        facts = TranscriptFacts(metadata.get("title") or None, [p[:200] for p in prompts[:20]], len(prompts), 0)
+        facts = TranscriptFacts(metadata.get("title") or None, [p[:200] for p in prompts[:20]], len(users), 0)
         meta = {}
-    return build_snapshot(run, transcript_path=args.transcript, facts=facts, agents_meta=meta,
-                          artifacts=args.artifacts, max_points=args.max_points,
-                          duration_ms=int((time.monotonic() - started) * 1000))
+    snap = build_snapshot(run, transcript_path=args.transcript, facts=facts, agents_meta=meta,
+                         artifacts=args.artifacts, max_points=args.max_points,
+                         duration_ms=int((time.monotonic() - started) * 1000))
+    selection = getattr(args, "session_id", None)
+    if selection:
+        snap["transcript"]["capture_session_id"] = selection
+    return snap

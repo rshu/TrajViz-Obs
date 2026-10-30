@@ -14,6 +14,7 @@ import type { EngineInterface, ProcessSpawnChunk, ProcessSpawnResult, Timer } fr
 import type { Dashboards } from '../../types'
 import { publicationGeneration } from './publication'
 import { resetDashboards, setDashboard } from './state'
+import { argvValue } from './args'
 
 export type Kind = keyof Dashboards
 
@@ -104,6 +105,16 @@ export function running(kind: Kind, argv?: readonly string[], revision = ''): st
 /** Whether a dashboard process is running or still announcing its URL. */
 export function hasServer(kind: Kind): boolean {
   return servers.has(kind) || starts.has(kind)
+}
+
+/** Explicit stop selections cannot close a different captured session's dashboard. */
+export function serverSourceMatches(kind: Kind, path: string, captureSessionId?: string): boolean {
+  const identity = startIdentities.get(kind) ?? servers.get(kind)?.identity
+  if (!identity) return false
+  try {
+    const [argv] = JSON.parse(identity) as [string[]]
+    return argvValue(argv, 'transcript') === path && argvValue(argv, 'session-id') === captureSessionId
+  } catch { return false }
 }
 
 /** Ends `stream` (the engine kills the child); a stream already over or refusing is no error. */

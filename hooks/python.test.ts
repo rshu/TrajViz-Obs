@@ -11,8 +11,8 @@ const CACHE = `${HOME}/.cache/trajviz-obs`
 const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE = `${CACHE}/state.json`
 const BOOTSTRAP = '/plugin/bridge/bootstrap.py'
-const OPTIONS: PluginOptions = { trajvizSource: 'agent-trajviz>=0.2.0,<0.3', python: '' }
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1700000000000 })
+const OPTIONS: PluginOptions = { trajvizSource: 'agent-trajviz==0.3.1', python: '' }
+const STATE_JSON = JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.3.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.3.1', createdAt: 1700000000000 })
 
 function fake(world: FakeWorld): Fake {
   const files = { ...(world.files ?? {}) }, writes: Record<string, string> = {}
@@ -40,7 +40,7 @@ function fake(world: FakeWorld): Fake {
         let a = world.spawn?.(request.argv)
         if (!a) {
           const payload = JSON.parse(request.argv[request.argv.indexOf('--request') + 1] as string)
-          const doc = { revision: 4, python: VENV_PY, pythonOption: payload.pythonOption, trajviz: '0.2.1', extras: [...new Set(['llm', 'charts', ...payload.extras])], source: payload.source, createdAt: 1 }
+          const doc = { revision: 5, python: VENV_PY, pythonOption: payload.pythonOption, trajviz: '0.3.1', extras: [...new Set(['llm', 'charts', 'zstd', ...payload.extras])], source: payload.source, createdAt: 1 }
           files[STATE] = writes[STATE] = JSON.stringify(doc)
           pythonExists = true
           a = { chunks: [{ stream: 'stderr', text: 'Installing isolated environment\n' }, { stream: 'stdout', text: JSON.stringify(doc) }], code: 0 }
@@ -59,7 +59,7 @@ const payload = (argv: string[]) => JSON.parse(argv[argv.indexOf('--request') + 
 test('readEnvState parses state.json', async () => {
   const ok = fake({ files: { [STATE]: STATE_JSON } })
   const state = await readEnvState(ok.$)
-  expect(state).toEqual({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1700000000000 })
+  expect(state).toEqual({ revision: 5, python: VENV_PY, trajviz: '0.3.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.3.1', createdAt: 1700000000000 })
   expect(needsSetup(state, OPTIONS)).toBe(false)
   expect(needsSetup(state, { ...OPTIONS, trajvizSource: '/Users/me/TrajViz' })).toBe(true)
   expect(needsSetup(null, OPTIONS)).toBe(true)
@@ -86,7 +86,7 @@ test('findPython skips 3.9 and takes 3.12', async () => {
 })
 
 test('withExtras puts the extras before the version specifier', () => {
-  expect(withExtras('agent-trajviz>=0.2.0,<0.3', ['llm'])).toBe('agent-trajviz[llm]>=0.2.0,<0.3')
+  expect(withExtras('agent-trajviz==0.3.1', ['llm'])).toBe('agent-trajviz[llm]==0.3.1')
   expect(withExtras('agent-trajviz', ['llm', 'charts'])).toBe('agent-trajviz[llm,charts]')
   expect(withExtras('agent-trajviz[charts]>=0.2', ['llm'])).toBe('agent-trajviz[charts,llm]>=0.2')
   expect(withExtras('agent-trajviz[llm]', ['llm'])).toBe('agent-trajviz[llm]')
@@ -113,14 +113,14 @@ test('withExtras puts the extras before the version specifier', () => {
   for (const path of ['/Users/me/TrajViz', './trajviz', '../trajviz', '~/src/TrajViz', '/home/a/my~repo', 'C:\\src\\TrajViz', 'C:/src/TrajViz', 'src/TrajViz']) {
     expect(isLocalPath(path)).toBe(true)
   }
-  for (const req of ['agent-trajviz', 'agent-trajviz>=0.2.0,<0.3', 'agent-trajviz[llm]', 'agent-trajviz@git+https://x/y.git', 'git+https://x/y.git', 'https://x/a.whl', 'file:///x/y']) {
+  for (const req of ['agent-trajviz', 'agent-trajviz==0.3.1', 'agent-trajviz[llm]', 'agent-trajviz@git+https://x/y.git', 'git+https://x/y.git', 'https://x/a.whl', 'file:///x/y']) {
     expect(isLocalPath(req)).toBe(false)
   }
 })
 
 test('requirementArgv installs a local checkout editable with ~ expanded', async () => {
   const $ = fake({}).$
-  expect(await requirementArgv($, 'agent-trajviz>=0.2.0,<0.3', ['llm'])).toEqual(['agent-trajviz[llm]>=0.2.0,<0.3'])
+  expect(await requirementArgv($, 'agent-trajviz==0.3.1', ['llm'])).toEqual(['agent-trajviz[llm]==0.3.1'])
   expect(await requirementArgv($, '/Users/me/TrajViz', ['llm'])).toEqual(['-e', '/Users/me/TrajViz[llm]'])
   expect(await requirementArgv($, '~/src/TrajViz', ['llm', 'charts'])).toEqual(['-e', `${HOME}/src/TrajViz[llm,charts]`])
   expect(await requirementArgv($, 'git+https://x/y.git', ['llm'])).toEqual(['agent-trajviz[llm] @ git+https://x/y.git'])
@@ -131,8 +131,8 @@ test('uv runs the stdlib bootstrap and a warm environment spawns nothing', async
   const progress: string[] = []
   const state = await ensureEnv(w.$, OPTIONS, line => progress.push(line))
   expect(w.spawned[0]?.slice(0, -1)).toEqual(['uv', 'run', '--no-project', '--python', '>=3.11', '--', 'python', '-I', BOOTSTRAP, '--request'])
-  expect(payload(w.spawned[0]!)).toMatchObject({ cache: CACHE, source: OPTIONS['trajvizSource'], extras: ['llm', 'charts'], local: false, uv: 'uv' })
-  expect(state.extras).toEqual(['llm', 'charts'])
+  expect(payload(w.spawned[0]!)).toMatchObject({ cache: CACHE, source: OPTIONS['trajvizSource'], extras: ['llm', 'charts', 'zstd'], local: false, uv: 'uv' })
+  expect(state.extras).toEqual(['llm', 'charts', 'zstd'])
   expect(progress).toEqual(['Installing isolated environment'])
   const ran = w.ran.length
   expect(await ensureEnv(w.$, OPTIONS, () => {})).toEqual(state)
@@ -199,7 +199,7 @@ test('changed source, Python override, old revision and deleted interpreter use 
   const old = { ...JSON.parse(STATE_JSON), revision: 3 }
   expect(needsSetup(old, OPTIONS)).toBe(true)
   const w = fake({ files: { [STATE]: JSON.stringify(old) }, run: versions({ uv: 'uv 0.9.0' }) })
-  expect((await ensureEnv(w.$, OPTIONS, () => {})).revision).toBe(4)
+  expect((await ensureEnv(w.$, OPTIONS, () => {})).revision).toBe(5)
   expect(await readEnvState(fake({ files: { [STATE]: STATE_JSON }, pythonExists: false }).$)).toBeNull()
 })
 
@@ -228,8 +228,8 @@ test('no compatible host interpreter reports what was tried and starts no worker
 test('extras request a new generation and an installed extra remains a warm no-op', async () => {
   const w = fake({ files: { [STATE]: STATE_JSON }, run: versions({ uv: 'uv 0.9.0' }) })
   await ensureExtra(w.$, OPTIONS, 'app', () => {})
-  expect(payload(w.spawned[0]!)).toMatchObject({ extras: ['llm', 'charts', 'llm', 'charts', 'app'] })
-  expect((await readEnvState(w.$))?.extras).toEqual(['llm', 'charts', 'app'])
+  expect(payload(w.spawned[0]!)).toMatchObject({ extras: ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app'] })
+  expect((await readEnvState(w.$))?.extras).toEqual(['llm', 'charts', 'zstd', 'app'])
   await ensureExtra(w.$, OPTIONS, 'app', () => {})
   expect(w.spawned).toHaveLength(1)
 })

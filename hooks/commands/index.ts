@@ -1,5 +1,5 @@
 import type { CommandPresentation, CommandRunResult, EngineInterface, HookFailure, PluginOptions } from 'claude-code'
-import { BOOLEAN_FLAGS, parseArgs, suggest, type Parsed } from '../lib/args'
+import { BOOLEAN_FLAGS, parseArgs, selectionError, suggest, type Parsed } from '../lib/args'
 import { browser } from './browser'
 import { compare } from './compare'
 import { exportCmd } from './exports'
@@ -44,7 +44,7 @@ const COMMAND_FLAGS: Record<string, readonly string[]> = {
 }
 
 const NO_POSITIONALS = ['overview', 'help', 'doctor', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline']
-const SESSION_COMMANDS = ['overview', 'pane', 'view', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution']
+const SESSION_COMMANDS = ['overview', 'pane', 'view', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution', 'sessions']
 
 /** Reject grammar that would otherwise be ignored, before setup or external work. */
 function argumentError(ctx: CommandContext): string | undefined {
@@ -52,6 +52,7 @@ function argumentError(ctx: CommandContext): string | undefined {
   if (sub === 'analyze' || sub === 'collect' || sub === 'converge-cli') return undefined
   if (!COMMAND_FLAGS[sub]) return undefined
   if (flags['session'] !== undefined && !SESSION_COMMANDS.includes(sub)) return `--session is not supported by /obs ${sub}.`
+  if (flags['session-id'] !== undefined && (!SESSION_COMMANDS.includes(sub) || sub === 'sessions')) return `--session-id is not supported by /obs ${sub}.`
   let invalid = passthrough.length > 0 || (NO_POSITIONALS.includes(sub) && positional.length > 0)
   if (sub === 'pane') invalid ||= positional.length > 1 || (positional.length === 1 && positional[0] !== 'close')
   if (sub === 'schemas') invalid ||= positional.length > 1
@@ -70,6 +71,10 @@ function argumentError(ctx: CommandContext): string | undefined {
 export async function dispatch($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
   const { sub } = ctx.parsed
   const session = ctx.parsed.flags['session']
+  if (sub !== 'collect' && sub !== 'converge-cli') {
+    const invalidSelection = selectionError(ctx.parsed.flags, sub === 'analyze' ? ctx.args : undefined)
+    if (invalidSelection) return { text: invalidSelection }
+  }
   // The two CLI passthroughs own their flags; analyze reads its question raw.
   if (sub !== 'collect' && sub !== 'converge-cli' && sub !== 'analyze' && (session === true || (typeof session === 'string' && !session.trim()))) {
     return { text: SESSION_USAGE }
@@ -79,7 +84,7 @@ export async function dispatch($: EngineInterface, ctx: CommandContext): Promise
   const allowed = COMMAND_FLAGS[sub]
   if (allowed) {
     for (const [flag, value] of Object.entries(ctx.parsed.flags)) {
-      if (flag !== 'session' && !allowed.includes(flag)) return { text: `Unknown option '--${flag}' for /obs ${sub}. /obs help lists the supported options.` }
+      if (flag !== 'session' && flag !== 'session-id' && !allowed.includes(flag)) return { text: `Unknown option '--${flag}' for /obs ${sub}. /obs help lists the supported options.` }
       if (BOOLEAN_FLAGS.includes(flag) && value !== true) return { text: `--${flag} does not take a value.` }
     }
   }

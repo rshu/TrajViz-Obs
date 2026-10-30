@@ -16,7 +16,7 @@ const NOW = 1_761_150_000_000
 
 /** `state.json` with the given extras installed. */
 const stateJson = (extras: string[]): string =>
-  JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras, source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
+  JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.3.1', extras, source: 'agent-trajviz==0.3.1', createdAt: 1 })
 
 /** The argv every session-bound bridge subcommand gets for the current session. */
 const SESSION_ARGV = ['--transcript', DERIVED, '--window', '1000000', '--artifacts', ARTIFACTS, '--kind', 'current']
@@ -57,7 +57,7 @@ function host(on: On, world: World = {}): Host {
   const rows: string[] = []
   const timeline: string[] = []
   const files: Record<string, string> = {}
-  if (world.extras !== null) files[STATE_PATH] = stateJson(world.extras ?? ['llm', 'charts'])
+  if (world.extras !== null) files[STATE_PATH] = stateJson(world.extras ?? ['llm', 'charts', 'zstd'])
   const answers = answerOf(world.bridge ?? {}, world.commands ?? {})
   on('command.register', () => ({ value: { command: 'obs' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
@@ -94,7 +94,7 @@ function host(on: On, world: World = {}): Host {
     timeline.push('spawn')
     if (e.argv.some(a => a.endsWith('/bridge/bootstrap.py'))) {
       const req = JSON.parse(e.argv[e.argv.indexOf('--request') + 1] as string)
-      const state = { revision: 4, python: VENV_PY, pythonOption: req.pythonOption, trajviz: '0.2.1', extras: [...new Set(['llm', 'charts', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
+      const state = { revision: 5, python: VENV_PY, pythonOption: req.pythonOption, trajviz: '0.3.1', extras: [...new Set(['llm', 'charts', 'zstd', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
       files[STATE_PATH] = JSON.stringify(state)
 
       yield { stream: 'stderr' as const, text: 'Installed\n' }
@@ -189,7 +189,7 @@ test('an unknown view is the bridge message; an empty session is the spec row', 
 
 test('an empty session answers the spec row for view and the exports', async ($, on) => {
   const empty = json({ empty: true, reason: 'no_steps' })
-  host(on, { extras: ['llm', 'charts'], bridge: { view: empty, json: empty } })
+  host(on, { extras: ['llm', 'charts', 'zstd'], bridge: { view: empty, json: empty } })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const row = 'Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.'
   expect((await obs($, 'issues')).text).toBe(row)
@@ -210,7 +210,7 @@ test('json, bundle and schemas pass their flags and print what was written', asy
   expect(j.text).toBe(`3 files (20 KB) written to ${ARTIFACTS}/views.`)
   const b = await obs($, 'bundle')
   expect(bridgeCalls(ran)[1]).toEqual(['bundle', '--transcript', DERIVED, '--artifacts', ARTIFACTS])
-  expect(b.text).toBe(`Bundle of 2 files (3.0 MB) written to ${ARTIFACTS}/bundle.zip; upload it to a hosted TrajViz dashboard.`)
+  expect(b.text).toBe(`Bundle of 2 files (3.0 MB) written to ${ARTIFACTS}/bundle.zip.`)
   const s = await obs($, 'schemas /tmp/schemas')
   expect(bridgeCalls(ran)[2]).toEqual(['schemas', '--out', '/tmp/schemas'])
   expect(s.text).toBe(`JSON Schemas of 2 views (4.0 KB) written to ${CACHE}/schemas.`)
@@ -222,6 +222,15 @@ test('bundle counts all ZIP members when the bridge caps its member preview', as
   host(on, { bridge: { bundle: json({ path: `${ARTIFACTS}/bundle.zip`, bytes: 1_024, members: Array.from({ length: 200 }, (_, i) => `${i}.jsonl`), members_total: 321 }) } })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   expect((await obs($, 'bundle')).text).toContain('Bundle of 321 files')
+})
+
+test('bundle output preserves format-specific guidance without blanket hosted ZIP advice', async ($, on) => {
+  const note = 'Open this ZIP in /obs dashboard; for another TrajViz dashboard, extract and upload trajectory.json.'
+  host(on, { bridge: { bundle: json({ path: `${ARTIFACTS}/bundle.zip`, bytes: 1_024, members: ['trajectory.json'], members_total: 1, note }) } })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  const result = await obs($, 'bundle')
+  expect(result.text).toBe(`Bundle of 1 file (1.0 KB) written to ${ARTIFACTS}/bundle.zip.\n${note}`)
+  expect(result.text).not.toContain('hosted')
 })
 
 test('an output flag without a path is refused before exports run', async ($, on) => {
@@ -306,7 +315,7 @@ test('sessions with none, and the first run sets the environment up first', asyn
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   expect((await obs($, 'sessions')).text).toBe('No sessions for this project in /pd.')
   expect(setupRequests(spawned)).toHaveLength(1)
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz>=0.2.0,<0.3', extras: ['llm', 'charts'] })
+  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.3.1', extras: ['llm', 'charts', 'zstd'] })
   expect(STATE_PATH in files).toBe(true)
   expect(bridgeCalls(ran)).toEqual([['sessions', '--cwd', CWD, '--config-dir', `${HOME}/.claude`]])
 })

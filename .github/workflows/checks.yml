@@ -65,7 +65,7 @@ jobs:
       - name: Install only the managed runtime dependencies and test runner
         run: |
           uv venv bridge/.venv
-          uv pip install --python bridge/.venv/bin/python 'agent-trajviz[llm,charts]>=0.2.0,<0.3' 'pytest>=8'
+          uv pip install --python bridge/.venv/bin/python 'agent-trajviz[llm,charts,zstd]==0.3.1' 'pytest>=8'
       - name: Smoke every entrypoint without the app extra
         run: bridge/.venv/bin/python -m pytest bridge/tests/test_minimal_runtime.py -q
 

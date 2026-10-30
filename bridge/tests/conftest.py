@@ -18,6 +18,37 @@ pytest_plugins = ["pytester"]
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+
+@pytest.fixture
+def captured_sessions(tmp_path):
+    """Two saved OTLP sessions: measured usage in A, deliberately absent usage in B."""
+    def attributes(values):
+        return [{"key": key, "value": {
+            "boolValue" if isinstance(value, bool) else "intValue" if isinstance(value, int) else "stringValue": value
+        }} for key, value in values.items()]
+
+    def span(index, sid, name, **values):
+        return {"traceId": ("1" if sid == "A" else "2") * 32, "spanId": f"{index:016x}", "name": name,
+                "startTimeUnixNano": str(1790000000000000000 + index * 100000000),
+                "endTimeUnixNano": str(1790000000000000000 + index * 100000000 + 50000000),
+                "attributes": attributes({"session.id": sid, "agent_id": "main", **values})}
+
+    spans = [span(1, "A", "claude_code.interaction", user_prompt="Controlled A prompt"),
+             span(2, "A", "claude_code.llm_request", model="controlled", input_tokens=7, output_tokens=2,
+                  cache_read_tokens=0, cache_creation_tokens=0, reasoning_tokens=0,
+                  **{"response.model_output": "Controlled A answer"}),
+             span(3, "B", "claude_code.interaction", user_prompt="[REDACTED]"),
+             span(4, "B", "claude_code.llm_request", model="controlled", input_tokens=7,
+                  **{"response.model_output": "Partial controlled answer [TRUNCATED]"}),
+             span(5, "B", "claude_code.tool", tool_name="Bash", tool_use_id="pending",
+                  tool_input="[REDACTED]")]
+    spans[3].pop("endTimeUnixNano")
+    payload = {"resourceSpans": [{"resource": {"attributes": attributes({"service.name": "claude-code"})},
+                                  "scopeSpans": [{"scope": {"name": "claude-code"}, "spans": spans}]}]}
+    path = tmp_path / "capture.json"
+    path.write_text(json.dumps(payload))
+    return path
+
 #: Settings TrajViz's ``config_from_env`` reads (``ANALYZE_*``, with ``LABEL_*`` filling gaps).
 LLM_ENV = tuple(f"{prefix}_{key}" for prefix in ("ANALYZE", "LABEL") for key in ("BASE_URL", "API_KEY", "MODEL"))
 

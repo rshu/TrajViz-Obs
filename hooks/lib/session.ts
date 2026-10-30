@@ -6,12 +6,13 @@
 import type { EngineInterface } from 'claude-code'
 import type { SessionState } from '../../types'
 import { BridgeError, runBridge } from './bridge'
+import { valueArgv } from './args'
 import { configDir, projectSlug } from './paths'
 import { invalidatePublication, lockPublication, publicationGeneration } from './publication'
 import { readFlags, readSession, stampRefresh, updateSession, writeLatest } from './state'
 
 /** A transcript to analyze: its path and the session id it belongs to. */
-export type Transcript = { path: string; sessionId: string }
+export type Transcript = { path: string; sessionId: string; captureSessionId?: string }
 
 /** The bridge's `resolve` document (`sessions.Resolved`). */
 type Resolved = { path: string; session_id: string; project_dir?: string; kind?: 'file' | 'dir' }
@@ -39,8 +40,8 @@ async function resolveViaBridge($: EngineInterface, selector: string[]): Promise
  * hook stored, else the derived path when `$.fs.exists` says so, else the
  * bridge's scan of every project folder for `<id>.jsonl`.
  */
-export async function resolveTranscript($: EngineInterface, spec?: string): Promise<Transcript> {
-  if (spec) return resolveViaBridge($, ['--session', spec])
+export async function resolveTranscript($: EngineInterface, spec?: string, captureSessionId?: string): Promise<Transcript> {
+  if (spec) return { ...await resolveViaBridge($, valueArgv('session', spec)), ...(captureSessionId === undefined ? {} : { captureSessionId }) }
   const known = await readSession($)
   if (known.transcriptPath) return { path: known.transcriptPath, sessionId: known.sessionId ?? (await $.session.id()) }
   const id = await $.session.id()
@@ -59,7 +60,7 @@ export async function selectSession($: EngineInterface, sel: SessionState['selec
     if (generation !== undefined && generation !== publicationGeneration()) throw new BridgeError('session_changed', 'The selected session changed during analysis; run /obs again.')
     const previous = await readSession($)
     await updateSession($, s => ({ ...s, selected: sel }))
-    if (previous.selected?.path !== sel?.path) await invalidateSession($)
+    if (previous.selected?.path !== sel?.path || previous.selected?.captureSessionId !== sel?.captureSessionId) await invalidateSession($)
     return publicationGeneration()
   } finally { release() }
 }

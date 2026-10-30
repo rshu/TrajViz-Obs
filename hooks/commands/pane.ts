@@ -4,7 +4,7 @@ import { readLatest, readSession } from '../lib/state'
 import { syncStatusLine } from '../lib/watch'
 import { openPane, PANE_ID, placePane } from '../render/pane'
 import type { CommandContext } from './index'
-import { EMPTY_TEXT, errorRow, sessionSpec } from './overview'
+import { EMPTY_TEXT, captureSessionSpec, errorRow, sessionSpec } from './overview'
 
 /** The fullscreen width from which `/obs` docks the pane unasked. */
 export const AUTO_OPEN_COLUMNS = 140
@@ -31,12 +31,14 @@ export async function maybeOpenPane($: EngineInterface, ctx: CommandContext): Pr
  * Answers the row to show when nothing was stored (the error's, or the
  * empty state's), null when a snapshot was.
  */
-export async function refreshPane($: EngineInterface, options: PluginOptions, spec?: string): Promise<string | null> {
-  const target = spec ?? (await readSession($)).selected?.path ?? undefined
+export async function refreshPane($: EngineInterface, options: PluginOptions, spec?: string, captureSessionId?: string): Promise<string | null> {
+  const selected = (await readSession($)).selected
+  const target = spec ?? selected?.path ?? undefined
+  const capture = captureSessionId ?? (spec === undefined ? selected?.captureSessionId : undefined)
   let snap
   let generation
   try {
-    ;({ snap, generation } = await captureSnapshot($, options, target))
+    ;({ snap, generation } = await captureSnapshot($, options, target, undefined, capture))
   } catch (e) {
     return errorRow(e, target)
   }
@@ -59,7 +61,7 @@ export async function pane($: EngineInterface, ctx: CommandContext): Promise<Com
   let text = placed.isPlaced ? PANE_OPENED_TEXT : `obs pane is open but not drawn: ${placed.reason}`
   const spec = sessionSpec(ctx)
   if (spec !== undefined || (await readLatest($)) === null) {
-    const row = await refreshPane($, ctx.options, spec)
+    const row = await refreshPane($, ctx.options, spec, captureSessionSpec(ctx))
     if (row !== null) text += `\n${row}`
   }
   return { text }

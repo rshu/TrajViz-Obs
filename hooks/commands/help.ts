@@ -5,6 +5,7 @@ import type { CommandContext } from './index'
 export const HELP_TEXT = [
   '/obs [subcommand] [options]  TrajViz observability; session commands take --session <id|prefix|path>',
   'Start here: /obs for a quick summary; /obs dashboard for the full interactive view.',
+  'Captured sessions: sessions --session PATH lists IDs; add --session-id ID to a session command.',
   'Look',
   '  overview (default)   health, KPIs, sparklines, top issues    pane | pane close   open/close the live pane',
   '  issues | health | patterns | agents | context | timeline   diagnostic shortcuts (same options as view)',

@@ -4,7 +4,7 @@ import { runBridge } from '../lib/bridge'
 import { fmtBytes, fmtInt } from '../lib/format'
 import { ensureReady, sessionArgv } from '../lib/snapshot'
 import type { CommandContext } from './index'
-import { EMPTY_TEXT, errorRow, sessionSpec } from './overview'
+import { EMPTY_TEXT, errorRow, captureSessionSpec, sessionSpec } from './overview'
 
 const VIEW_TIMEOUT_MS = 120_000
 
@@ -34,6 +34,8 @@ export type ViewPayload = {
   bytes: number
   rows_total: number
   inline: { table?: string; series?: string; data?: unknown }
+  availability?: { status: string; basis?: string }
+  notice?: string
 }
 
 type ViewDoc = { empty: true; reason: string } | { views: CatalogEntry[] } | ViewPayload
@@ -71,7 +73,7 @@ export function catalogText(views: CatalogEntry[]): string {
 export function viewText(p: ViewPayload): string {
   const head = `obs view ${p.view.id} · ${p.view.title} · ${fmtInt(p.rows_total)} rows`
   const body = p.inline.data !== undefined ? JSON.stringify(p.inline.data, null, 2) : (p.inline.table ?? p.inline.series ?? '')
-  return `${head}\n${body}`
+  return `${head}${p.notice ? `\n${p.notice}` : ''}\n${body}`
 }
 
 /** The hidden note after a view: where the whole of it is, and how the model gets top-N without a file read. */
@@ -95,7 +97,7 @@ export async function inline($: EngineInterface, ctx: CommandContext): Promise<C
   const spec = sessionSpec(ctx)
   try {
     await ensureReady($, ctx.options)
-    const { argv } = await sessionArgv($, spec)
+    const { argv } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
     const call = ['view', ...argv]
     if (id !== undefined) call.push(id)
     for (const option of options) call.push('--option', option)

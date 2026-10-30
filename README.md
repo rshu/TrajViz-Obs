@@ -53,6 +53,10 @@ In the dashboard, start with **Overview → Summary** for health and issues. Cli
 
 Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path>` to a session command. Run `/obs` without a selector to return to the current session.
 
+Saved OTLP captures can contain several sessions. List them with `/obs sessions --session /path/to/capture`, then select one with `/obs --session /path/to/capture --session-id <id>`. JSON, JSONL, bundle manifests, directories, and ZIP captures are supported. This imports saved telemetry; it does not enable live telemetry collection.
+
+Both plugins use TrajViz **0.3.1**, including all **36 views**, data-quality reporting, and Codex, Pi, and compressed DeepSeek session imports. `/obs view data_quality` explains missing or partial evidence; unavailable measurements appear as unknown. JSON view exports use schema version **2**. Bundles preserve a complete OTLP capture; use `/obs json --with-trajectory` to export only the selected session. Other imported formats may bundle a portable `trajectory.json` that can also be loaded separately.
+
 Watch refreshes an open pane after turns. `/obs statusline on` pins a summary under the prompt. Use `/obs watch off` and `/obs statusline off` to stop automatic refreshes.
 
 ## Demo
@@ -99,7 +103,7 @@ Reference data must include requirements, patch, canonical trajectory, and a fai
 
 Overview, diagnostic views, and exports run locally without model calls. `/obs analyze`, `/obs fixes`, and `/obs label` send redacted prompts to a model and may incur usage charges. They show the planned calls and model first; interactive sessions ask before more than four calls. Labeling defaults to at most 50 steps.
 
-The dashboard's AI sidebar and fix button always use the environment provider, independently of `llm`. Opening the sidebar starts model analysis; follow-up questions and fixes also send trajectory excerpts.
+The dashboard's AI sidebar and fix button use the connection selected in **Settings**, independently of `llm`. Environment values provide defaults. API keys stay in the current dashboard session; remembered browser settings exclude keys. Opening the sidebar starts model analysis; follow-up questions and fixes also send trajectory excerpts.
 
 Exports and cached analysis contain session data and stay on the host unless shared. Dashboards bind to `127.0.0.1` and stop on request or plugin unload.
 
@@ -108,7 +112,8 @@ Exports and cached analysis contain session data and stay on the host unless sha
 Run `/obs doctor` to check setup or `/obs setup` to install dependencies. If `/obs` is missing, check the Claude Code debug log for disabled function hooks or an API mismatch. If the dashboard is empty, export `/obs bundle` and load its ZIP manually. Over SSH, forward the displayed port; set `openBrowser=false` to disable browser opening.
 
 - Timing is estimated from transcripts; workflow-spawned work and subagent finish times may be incomplete.
-- Claude Code files above **32 MiB** require manual refresh; OpenCode has [live-capture limits](opencode/README.md#options). Insight analyzes at most the first **2,000 steps**; `/obs json --with-trajectory` retains the full parsed trajectory.
+- Operation-based OTLP captures support observed metrics and diagnostics; transcript alignment and capability attribution require supported native transcripts.
+- Imported sessions require manual refresh after their inputs change. Claude Code files above **32 MiB** also require manual refresh; OpenCode has [live-capture limits](opencode/README.md#options). Insight analyzes at most the first **2,000 steps**; `/obs json --with-trajectory` retains the full parsed trajectory.
 - Real-session validation covers **macOS**. Linux and Windows still need platform-specific end-to-end testing.
 
 ## Development

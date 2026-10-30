@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { SNAPSHOT } from '../../hooks/testdata/snapshot.js'
+import { PARTIAL_SNAPSHOT, UNKNOWN_SNAPSHOT, ZERO_SNAPSHOT } from '../../hooks/testdata/quality.js'
 import { TABS, commandText, compact, duration, metrics, percent, safeText, sections, statusText, trend } from '../src/tui-model.js'
 
 describe('native pane data', () => {
@@ -35,6 +36,53 @@ describe('native pane data', () => {
     expect(metrics(snapshot).some(row => row.label === 'Cost')).toBe(false)
     expect(statusText(snapshot)).toContain('ctx —')
     expect(statusText({ schema_version: 1, empty: true, reason: 'Not yet', transcript: { path: '' } })).toContain('waiting')
+  })
+
+  test('partial evidence keeps unknown tool outcomes separate from zero observed failures in every view', () => {
+    const original = JSON.stringify(PARTIAL_SNAPSHOT)
+    const values = metrics(PARTIAL_SNAPSHOT)
+    expect(values.find(row => row.label === 'Tokens')?.value).toBe('—')
+    expect(values.find(row => row.label === 'Tools')?.detail).toContain('0 observed failures · 1 unknown outcome')
+    expect(values.find(row => row.label === 'Cache read')?.value).toBe('—')
+    expect(statusText(PARTIAL_SNAPSHOT)).toContain('0 observed failures · 1 unknown outcome')
+    for (let tab = 0; tab < TABS.length; tab++) {
+      const text = sections(PARTIAL_SNAPSHOT, tab, 32).flatMap(section => section.lines).join('\n')
+      expect(text).not.toMatch(/\b(?:null|undefined|NaN)\b/)
+    }
+    const overview = sections(PARTIAL_SNAPSHOT, 0, 80)
+    expect(overview.find(section => section.title === 'Health')?.lines.join('\n')).toContain('Tool Success unavailable')
+    expect(overview.find(section => section.title === 'Data quality')?.lines.join('\n')).toContain('/obs view data_quality')
+    expect(overview.find(section => section.title.startsWith('Trends'))?.lines[0]).toBe('Tokens/step ·▁·')
+    expect(sections(PARTIAL_SNAPSHOT, 3, 32).some(section => section.lines.some(line => line.startsWith('Unavailable:')))).toBe(true)
+    expect(sections(PARTIAL_SNAPSHOT, 4, 32)[0]?.lines.join('\n')).toContain('0 observed failures · 1 unknown outcome')
+    expect(sections(PARTIAL_SNAPSHOT, 6, 32)[0]?.lines.join('\n')).toContain('— tokens')
+    expect(JSON.stringify(PARTIAL_SNAPSHOT)).toBe(original)
+  })
+
+  test('all-unknown measurements and measured zeros produce different metrics and trend glyphs', () => {
+    expect(metrics(UNKNOWN_SNAPSHOT).find(row => row.label === 'Tokens')?.value).toBe('—')
+    expect(sections(UNKNOWN_SNAPSHOT, 0, 80).find(section => section.title.startsWith('Trends'))?.lines[0]).toBe('Tokens/step ·')
+    expect(metrics(ZERO_SNAPSHOT).find(row => row.label === 'Tokens')?.value).toBe('0')
+    expect(metrics(ZERO_SNAPSHOT).find(row => row.label === 'Tools')?.detail).toBe('100% success · 0 failed')
+    expect(sections(ZERO_SNAPSHOT, 0, 80).find(section => section.title.startsWith('Trends'))?.lines[0]).toBe('Tokens/step ▁')
+    const quality = sections(ZERO_SNAPSHOT, 0, 80).find(section => section.title === 'Data quality')?.lines.join('\n')
+    expect(quality).toContain('Capture completeness unknown')
+    expect(quality).not.toContain('unavailable')
+  })
+
+  test('partial evidence qualifies empty issue results and uses singular and plural counts', () => {
+    const overview = sections(PARTIAL_SNAPSHOT, 0, 80)
+    expect(overview.find(section => section.title === 'Top issues')?.lines).toEqual(['No observed issues.'])
+    expect(sections(PARTIAL_SNAPSHOT, 2, 80)[0]?.lines).toEqual(['No observed issues.'])
+    expect(overview.find(section => section.title === 'Data quality')?.lines[0]).toBe('Usage incomplete · 1 unknown tool outcome · 1 field unavailable · 1 field unknown · 1 field partial')
+    const plural = { ...PARTIAL_SNAPSHOT, tools: { ...PARTIAL_SNAPSHOT.tools, unknown: 2 }, data_quality: { ...PARTIAL_SNAPSHOT.data_quality!, fields: { ...PARTIAL_SNAPSHOT.data_quality!.fields, 'tokens.output': { status: 'unavailable' as const }, duration: { status: 'partial' as const }, text: { status: 'unknown' as const } } } }
+    expect(sections(plural, 0, 80).find(section => section.title === 'Data quality')?.lines[0]).toBe('Usage incomplete · 2 unknown tool outcomes · 2 fields unavailable · 2 fields unknown · 2 fields partial')
+  })
+
+  test('normal empty sessions explain how to get started while retaining specific error reasons', () => {
+    const snapshot = { schema_version: 1 as const, empty: true as const, reason: 'no trajectory steps found (detected format: opencode)', transcript: { path: '' } }
+    expect(sections(snapshot, 0, 80)[0]?.lines).toEqual(['Nothing to analyze yet. Start a turn or choose a captured session with /obs sessions.'])
+    expect(sections({ ...snapshot, reason: 'Capture was removed.' }, 0, 80)[0]?.lines).toEqual(['Capture was removed.'])
   })
 
   test('sanitizes previews, labels, notes and empty reasons without mutating source', () => {

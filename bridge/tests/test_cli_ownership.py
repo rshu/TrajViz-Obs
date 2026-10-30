@@ -40,7 +40,7 @@ def test_owned_launcher_strips_private_flag_before_the_real_cli():
     proc = subprocess.run([sys.executable, "-I", str(LAUNCHER), "--host-parent", str(os.getpid()), "doctor"],
                           capture_output=True, text=True, timeout=30, start_new_session=True, check=False)
     assert proc.returncode == 0, proc.stderr
-    assert json.loads(proc.stdout)["trajviz"]["version"].startswith("0.2")
+    assert json.loads(proc.stdout)["trajviz"]["version"].startswith("0.3")
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Native POSIX process group ownership")

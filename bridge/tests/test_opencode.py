@@ -180,6 +180,36 @@ def test_incomplete_assistant_keeps_usage_and_timing_unknown(tmp_path):
     assert "Total Tokens" in step["_metrics_unavailable_fields"]
 
 
+@pytest.mark.parametrize("status", ["pending", "running", "streaming"])
+def test_unfinished_native_tool_outcome_stays_unknown_in_upstream_nullable_views(tmp_path, status):
+    message = assistant(completed=None, content=[{
+        "type": "tool", "id": "active", "name": "shell", "time": {"created": BASE, "ran": BASE + 10},
+        "state": {"status": status, "input": {"command": "echo controlled"}}}])
+    message.pop("tokens")
+    path = tmp_path / "unfinished-native.json"
+    path.write_text(json.dumps(native(messages=[message])))
+    run = load_run(str(path))
+    step = run.steps[0]
+    assert "Total Tokens" in step["_metrics_unavailable_fields"] and step["duration"] is None
+    assert run.metrics["tool_success_rate"] is None
+    assert run.metrics["tool_unknown_outcomes"] == 1 and run.metrics["tool_fail"] == 0
+    assert run.view("tool_outcomes").data["calls"][0]["ok"] is None
+    tool_health = next(row for row in run.view("health").data if row["metric"] == "Tool Success")
+    assert tool_health["status"] == "unavailable"
+
+
+def test_completed_native_zero_exit_is_observed_success_not_missing(tmp_path):
+    call = {"type": "tool", "id": "zero", "name": "shell", "time": {"created": BASE,
+            "ran": BASE + 10, "completed": BASE + 10}, "state": {"status": "completed",
+            "input": {"command": "true"}, "metadata": {"exit": 0}}}
+    path = tmp_path / "zero-native.json"
+    path.write_text(json.dumps(native(messages=[assistant(content=[call])])))
+    run = load_run(str(path))
+    assert run.view("tool_outcomes").data["calls"][0]["ok"] is True
+    assert run.metrics["tool_success_rate"] == 100 and run.metrics["tool_fail"] == 0
+    assert run.steps[0]["tool_calls"][0]["metadata"]["exit"] == 0
+
+
 def test_empty_current_materialization_reports_empty_session(tmp_path):
     path = tmp_path / "empty.json"
     path.write_text(json.dumps(native(messages=[])))
@@ -302,6 +332,60 @@ def test_compaction_request_usage_is_not_reported_as_the_resulting_window(tmp_pa
     assert snapshot["context"]["current_occupancy"] is None
     assert snapshot["context"]["current_pct"] is None
     assert snapshot["context"]["peak_occupancy"] == 62
+
+
+def test_native_model_and_terminal_failure_are_reported_without_control_steps(tmp_path):
+    error = {"type": "model.error", "message": "Controlled provider failure"}
+    message = assistant(error=error)
+    raw = native(messages=[message, {"id": "idle", "type": "idle", "outcome": "failed", "error": error,
+                                    "time": {"created": BASE + 1600}}])
+    path = tmp_path / "native-failure.json"
+    path.write_text(json.dumps(raw))
+    before = path.read_bytes()
+    run = load_run(str(path))
+    assert len(run.steps) == 1 and run.steps[0]["finish"] == "error"
+    assert run.raw["output"]["error"] == "Controlled provider failure"
+    assert run.raw["_opencode_v2_history_errors"] == ["Controlled provider failure"]
+    assert run.warnings.count("OpenCode model/session error: Controlled provider failure") == 1
+    assert run.raw[NATIVE_KEY] == raw and path.read_bytes() == before
+
+
+def test_native_recovery_clears_terminal_failure_but_preserves_history(tmp_path):
+    error = {"message": "Controlled interrupted turn"}
+    raw = native(messages=[assistant(error=error), {"id": "idle-a", "type": "idle", "outcome": "interrupted",
+        "error": error}, {"id": "resumed", "type": "user", "text": "Try again", "time": {"created": BASE + 1700}},
+        assistant("recovered", created=1800, completed=2200), {"id": "idle-b", "type": "idle",
+        "outcome": "succeeded", "time": {"created": BASE + 2300}}])
+    path = tmp_path / "native-recovery.json"
+    path.write_text(json.dumps(raw))
+    run = load_run(str(path))
+    assert [step["role"] for step in run.steps] == ["assistant", "user", "assistant"]
+    assert run.raw["output"]["error"] is None and run.raw["_opencode_v2_errors"] == []
+    assert run.raw["_opencode_v2_history_errors"] == ["Controlled interrupted turn"]
+    assert "OpenCode model/session error: Controlled interrupted turn" in run.warnings
+
+
+def test_native_child_model_failure_cannot_replace_the_parent_outcome(source):
+    path, raw = source
+    raw["children"][0]["messages"].append({"id": "child-idle", "type": "idle", "outcome": "failed",
+                                         "error": {"message": "Controlled child failure"}})
+    path.write_text(json.dumps(raw))
+    run = load_run(str(path))
+    assert run.raw["output"]["error"] is None
+    assert "OpenCode model/session error: Controlled child failure" in run.warnings
+    assert sum(step["role"] == "assistant" for step in run.steps) == 3
+
+
+def test_native_zero_usage_and_successful_outcome_remain_observed(tmp_path):
+    raw = native(messages=[assistant(tokens=usage(0, 0, 0, 0, 0)),
+                           {"id": "idle", "type": "idle", "outcome": "succeeded"}])
+    path = tmp_path / "native-zero.json"
+    path.write_text(json.dumps(raw))
+    run = load_run(str(path))
+    assert not run.steps[0]["_metrics_unavailable_fields"]
+    assert run.metrics["tokens"]["total"] == 0
+    assert run.raw["output"]["error"] is None and not run.raw["_opencode_v2_history_errors"]
+    assert len(run.steps) == 1
 
 
 def test_context_view_main_alias_selects_the_native_parent_window(source, tmp_path, run_cli):

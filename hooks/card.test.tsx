@@ -2,13 +2,14 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On, PaneOpenArgs, RenderSurface, RenderViewport } from 'claude-code'
 import { parseArgs } from './lib/args'
 import { SNAPSHOT } from './testdata/snapshot'
+import { UNKNOWN_SNAPSHOT } from './testdata/quality'
 
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
 const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
+const STATE_JSON = JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.3.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.3.1', createdAt: 1 })
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 24 }, rateLimits: [], cost: { usd: 1.25 } }
 const NOW = 1_761_150_000_000
@@ -82,6 +83,22 @@ const row = (text: string, surface: RenderSurface, viewport: RenderViewport) =>
   ({ plugin: 'trajviz-obs', surface, component: 'CommandOutput', requestId: `row-${surface}-${viewport.columns}`, props: { command: 'obs', args: '', text, isErrored: false }, viewport }) as const
 
 const BUTTON_KEYS = ['dashboard', 'pane', 'json', 'fixes', 'analyze']
+
+test('the overview qualifies unknown measurements without inventing zero failures or usage', async ($, on) => {
+  host(on, [UNKNOWN_SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  const text = await obs($)
+  for (const columns of [56, 80, 120]) {
+    const ui = await $.ui.mount(row(text, 'terminal', { columns, rows: 40, isFullscreen: true }))
+    expect(await ui.find({ type: 'Text', text: /Data quality: usage incomplete/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /\/obs view data_quality/ })).toBeDefined()
+    const health = await ui.find({ type: 'Text', text: /○ Errors unavailable/ })
+    expect(health?.props['dimColor']).toBe(true)
+    expect(health?.props['color']).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^0 failed$/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
 
 test('terminal control text cannot discard the overview card or break its actions', async ($, on) => {
   const marked = { ...SNAPSHOT, issues: SNAPSHOT.issues.map((issue, i) => i === 0
@@ -248,6 +265,20 @@ test('saved-card actions quote its path and never follow a newer selected snapsh
     { sub: 'dashboard', positional: [], flags: { session: path }, passthrough: [] },
     { sub: 'analyze', positional: [], flags: { session: path }, passthrough: [] },
   ])
+  await ui.unmount()
+})
+
+test('historical captured-session cards preserve their exact ID when another session in the same file is selected', async ($, on) => {
+  const { runs } = host(on, [SNAPSHOT])
+  const saved = { ...SNAPSHOT, transcript: { ...SNAPSHOT.transcript, path: DERIVED, capture_session_id: 'A' } }
+  on('state.get', { plugin: 'trajviz-obs', key: 'snapshot', id: '41' }, () => ({ value: { value: saved, version: 1 } }))
+  on('state.get', { plugin: 'trajviz-obs', key: 'session' }, () => ({ value: {
+    value: { transcriptPath: DERIVED, sessionId: 'abc', selected: { path: DERIVED, id: 'abc', label: 'B', captureSessionId: 'B' } }, version: 1,
+  } }))
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount(row('obs snapshot 41 · captured A', 'desktop', { columns: 120, rows: 40 }))
+  await ui.press({ key: 'json' })
+  expect(parseArgs(runs[0]!)).toMatchObject({ sub: 'json', flags: { session: DERIVED, 'session-id': 'A' } })
   await ui.unmount()
 })
 

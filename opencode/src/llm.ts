@@ -5,8 +5,9 @@ import path from 'node:path'
 import type { Backend } from './backend.js'
 import { atomicJSON, atomicFile } from './runtime.js'
 import { record } from './collect.js'
-import { parseArgs, tokenize } from './shared/args.js'
+import { analyzeSelection, parseArgs, valueArgv } from './shared/args.js'
 import type { CommandResult, RunInput } from './rpc.js'
+import { inspectSource } from './source-info.js'
 
 type Prompt = { index: number; system: string; prompt: string; max_tokens: number; timeout_s: number; delay_s?: number }
 type Plan = { feature: string; hash: string; plan: {calls:number;approx_input_tokens:number}; prompts?: Prompt[]; path: string }
@@ -24,28 +25,13 @@ export function cancelModel(backend: Backend, runID?: string): boolean {
 async function request(backend: Backend, input: RunInput, signal: AbortSignal): Promise<Pending | CommandResult> {
   const parsed = parseArgs(input.args), {sub:feature,flags} = parsed
   if (!['analyze', 'fixes', 'label'].includes(feature)) throw new Error('Unknown model feature.')
-  let selector = typeof flags.session === 'string' ? flags.session : undefined
-  if (feature === 'analyze') {
-    const matches = [...input.args.matchAll(/(?:^|\s)--session(?:=|\s+)("(?:\\.|[^"\\])*"|'[^']*'|[^\s]+)/g)]
-    if (matches.length) selector = tokenize(matches[matches.length - 1]![1]!)[0]
-    if (/(?:^|\s)--session(?:=\s*$|\s*$)/.test(input.args)) throw new Error('--session needs a session id, prefix, or transcript path.')
-  }
-  const source = await backend.session(input.sessionID, selector, signal)
-  // Model replay always reads the exact source the person reviewed, even while the live session grows.
-  const contents = await readFile(source.transcript)
-  let frozen = path.join(source.artifacts, 'inputs', `${createHash('sha256').update(contents).digest('hex')}${path.extname(source.transcript) || '.json'}`)
-  if (path.extname(source.transcript).toLowerCase() === '.jsonl') {
-    // Claude JSONL families have sibling child logs; the shared bundle loader retains them.
-    frozen = path.join(source.artifacts, 'inputs', `${randomUUID()}.zip`)
-    const bundle = await backend.runtime.run<{path:string}>(['bundle', '--transcript', source.transcript, '--artifacts', source.artifacts, '--out', frozen], signal, 600_000)
-    frozen = bundle.path
-  } else await atomicFile(frozen, contents)
-  const argv = source.argv.map(v => v === source.transcript ? frozen : v)
+  const analyze = feature === 'analyze' ? analyzeSelection(input.args) : undefined
+  const selector = analyze ? analyze.session : typeof flags.session === 'string' ? flags.session : undefined
+  const captureSessionID = analyze ? analyze.captureSessionId : typeof flags['session-id'] === 'string' ? flags['session-id'] : undefined
+  const source = await backend.session(input.sessionID, selector, signal, captureSessionID)
   const extras: string[] = []
   if (feature === 'analyze') {
-    let question = input.args.trimStart().replace(/^analyze(?=\s|$)/, '')
-    question = question.replace(/(^|\s)--session(?:=|\s+)("(?:\\.|[^"\\])*"|'[^']*'|[^\s]+)/g, '$1').trim()
-    if (question) extras.push('--question', question)
+    if (analyze?.question) extras.push('--question', analyze.question)
   } else if (feature === 'fixes') {
     if (flags.limit !== undefined) extras.push('--limit', String(flags.limit))
   } else {
@@ -63,6 +49,19 @@ async function request(backend: Backend, input: RunInput, signal: AbortSignal): 
     // This keeps output aliases and hard links from overwriting a source or child log.
     await backend.runtime.run(['llm-prompt', ...source.argv, ...extras, '--feature', feature], signal)
   }
+  // Freeze imported captures through the bundle writer: a directory or manifest
+  // can reference companion traces/logs that a single-file copy would lose.
+  let frozen: string
+  const inspected = await inspectSource(source.transcript)
+  if (inspected.compound) {
+    frozen = path.join(source.artifacts, 'inputs', `${randomUUID()}.zip`)
+    const bundle = await backend.runtime.run<{path:string}>(['bundle', '--transcript', source.transcript, '--artifacts', source.artifacts, ...(source.captureSessionID === undefined ? [] : valueArgv('session-id', source.captureSessionID)), '--out', frozen], signal, 600_000)
+    frozen = bundle.path
+  } else {
+    frozen = path.join(source.artifacts, 'inputs', `${createHash('sha256').update(inspected.bytes!).digest('hex')}${path.extname(source.transcript) || '.json'}`)
+    await atomicFile(frozen, inspected.bytes!)
+  }
+  const argv = source.argv.map(value => value === source.transcript ? frozen : value)
   argv.push(...extras)
   const response = await backend.runtime.run<Plan | {empty:true;reason:string}>(['llm-prompt', ...argv, '--feature', feature], signal)
   if ('empty' in response) return { text: response.reason }

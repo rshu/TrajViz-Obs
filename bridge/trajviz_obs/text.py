@@ -75,7 +75,7 @@ def _context(snap: dict) -> str:
         line += f" ({_clip(ctx['window_note'], LINE_CHARS)})"
     if ctx.get("peak_pct") is not None:
         line += f" · peak {_num(ctx['peak_pct'])}%"
-    return line + f" · {_plural(ctx.get('compaction_count') or 0, 'compaction')}"
+    return line + f" · {_plural(ctx.get('compaction_count'), 'compaction')}"
 
 
 def _steps(steps: list) -> str:

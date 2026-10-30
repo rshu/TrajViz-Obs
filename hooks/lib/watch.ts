@@ -62,7 +62,7 @@ export function shouldRefresh(now: number, refresh: RefreshState, stat: { size: 
 export function statusLine(snap: Snapshot, usage: SessionUsage | null): string {
   const ctx = usage?.context.percent ?? snap.context.current_pct
   const issues = snap.counts.issues ?? snap.issues.length
-  return `obs · ctx ${fmtPct(ctx)} · ${fmtInt(snap.tools.calls)} tools ${fmtPct(snap.tools.success_rate)} · ${issues} issue${issues === 1 ? '' : 's'}`
+  return `obs · ctx ${fmtPct(ctx)} · ${fmtInt(snap.tools.calls)} tools ${fmtPct(snap.tools.success_rate)}${snap.tools.unknown ? ` · ${fmtInt(snap.tools.unknown)} unknown outcome${snap.tools.unknown === 1 ? '' : 's'}` : ''} · ${issues} issue${issues === 1 ? '' : 's'}`
 }
 
 /** A later draw supersedes an older one still waiting for live usage. */
@@ -143,6 +143,7 @@ async function statuslineOn($: EngineInterface): Promise<boolean> {
 
 /** Whether the large-session line was said already (per load: a reload says it again, harmlessly). */
 let saidLarge = false
+let saidCaptureFolder = false
 
 /** Says the session is too large to watch: on the status line when it is on (as it stands now), and as a toast once. */
 async function sayLarge($: EngineInterface): Promise<void> {
@@ -190,6 +191,16 @@ async function refreshAfterTurn($: EngineInterface, options: PluginOptions): Pro
   const beforeStat = publicationGeneration()
   const selected = (await readSession($)).selected
   const path = selected?.path ?? (await resolveTranscript($)).path
+  if (publicationGeneration() !== beforeStat) return
+  // Imported sources can reference arbitrary companion files; parent metadata
+  // cannot establish that their contents are unchanged.
+  if (selected) {
+    if (!saidCaptureFolder) {
+      saidCaptureFolder = true
+      $.ui.toast('obs: imported sessions use manual refresh; press r in the pane after updating the capture.')
+    }
+    return
+  }
   const stat = await $.fs.stat(path)
   if (publicationGeneration() !== beforeStat) return
   const startedAt = await $.clock.now()
@@ -203,7 +214,7 @@ async function refreshAfterTurn($: EngineInterface, options: PluginOptions): Pro
   let snap: Snapshot | EmptySnapshot | null = null
   let generation = beforeStat
   try {
-    ;({ snap, generation } = await captureSnapshot($, options, selected?.path, beforeStat))
+    ;({ snap, generation } = await captureSnapshot($, options, undefined, beforeStat))
   } catch (e) {
     if (e instanceof BridgeError && (e.code === 'busy' || e.code === 'session_changed')) return
     $.ui.log(`obs watch: ${e instanceof Error ? e.message : String(e)}`, { to: 'debug' })

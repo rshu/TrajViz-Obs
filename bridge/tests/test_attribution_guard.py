@@ -283,3 +283,54 @@ def test_legacy_opencode_exports_keep_their_existing_attribution_contract(seam, 
     args = request(fmt="opencode", source_path=str(path))
     assert native_attribution.diagnose(**args).available
     assert seam.native_calls == [args] and seam.calls == []
+
+
+@pytest.mark.parametrize("number", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("location", ["scorecard", "fault", "arbiter"])
+def test_nonfinite_attribution_evidence_never_becomes_a_capability_verdict(seam, monkeypatch, number, location):
+    from dataclasses import asdict
+
+    def diagnose(**kwargs):
+        result = native_attribution.AttributionResult(True, agent=kwargs["agent"],
+            instance_id=kwargs["instance_id"], primary={"capability": "tool_use"}, used_judge=True)
+        if location == "scorecard":
+            result.scorecard = [native_attribution.CapabilityScore("tool_use", True, True, number, None, None)]
+        elif location == "fault":
+            result.faults = [{"capability": "tool_use", "blame_weight": number}]
+        else:
+            result.arbiter = {"evidence": [{"confidence": number}]}
+        return result
+
+    monkeypatch.setattr(native_attribution, "diagnose", diagnose)
+    compat.install_attribution_guard()
+    result = native_attribution.diagnose(**request(fmt="codex"))
+    assert not result.available and "non-finite" in result.reason
+    assert result.primary is None and result.faults == result.scorecard == [] and not result.used_judge
+    assert result.agent == "claude_code" and result.instance_id == "case"
+    json.dumps(asdict(result), allow_nan=False)
+
+
+def test_finite_observed_zero_attribution_weight_remains_valid(seam, monkeypatch):
+    expected = native_attribution.AttributionResult(True, scorecard=[
+        native_attribution.CapabilityScore("tool_use", True, False, 0.0, None, None)])
+    monkeypatch.setattr(native_attribution, "diagnose", lambda **_: expected)
+    compat.install_attribution_guard()
+    assert native_attribution.diagnose(**request(fmt="codex")) is expected
+
+
+def test_branched_pi_cannot_receive_an_unverified_capability_grade(seam, tmp_path):
+    rows = [{"type": "session", "id": "pi", "version": 3, "timestamp": "2026-10-30T00:00:00Z"},
+            *[{"type": "message", "id": identity, "parentId": parent, "message": {"role": role,
+              "content": identity}} for identity, parent, role in [("u", None, "user"),
+              ("abandoned", "u", "assistant"), ("active", "u", "assistant")]]]
+    path = tmp_path / "pi.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    compat.install_attribution_guard()
+    result = native_attribution.diagnose(**request(agent="pi", fmt="pi", source_path=str(path)))
+    assert not result.available and "selected active branch" in result.reason
+    assert result.faults == result.scorecard == [] and result.primary is None and not result.used_judge
+    assert seam.native_calls == []
+    rows.pop(2)
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    assert native_attribution.diagnose(**request(agent="pi", fmt="pi", source_path=str(path))).available
+    assert len(seam.native_calls) == 1

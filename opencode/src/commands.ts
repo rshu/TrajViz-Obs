@@ -5,7 +5,7 @@ import type { Backend } from './backend.js'
 import type { CommandResult, RunInput } from './rpc.js'
 import type { EmptySnapshot } from './types.js'
 import { Runtime, atomicFile, exists } from './runtime.js'
-import { flagValues, parseArgs, passArgs } from './shared/args.js'
+import { flagValues, parseArgs, passArgs, quoteOption, valueArgv } from './shared/args.js'
 import { pageArguments, parseExtras, validateArguments } from './command-args.js'
 import { runModel } from './llm.js'
 
@@ -16,6 +16,7 @@ const TABS: Record<string, string> = { issues: 'issues', health: 'health', patte
 export const HELP_TEXT = [
   '/obs [subcommand] [options] · TrajViz for OpenCode 2',
   'Session commands accept --session <id|prefix|path>. Diagnostics run locally without model calls.',
+  'Captured sessions: sessions --session PATH lists IDs; add --session-id ID to a session command.',
   'Look',
   '  overview (default) · quick health summary    pane | pane close · live seven-tab panel',
   '  issues | health | patterns | agents | context | timeline · diagnostic views',
@@ -43,9 +44,9 @@ export const HELP_TEXT = [
 ].join('\n')
 
 type Doc = Record<string, unknown>
-type Written = { path: string; bytes?: number; files?: string[]; text?: string }
+type Written = { path: string; bytes?: number; files?: string[]; text?: string; note?: string }
 type Catalog = { views: { id: string; kind: string; title: string; options: Record<string, string> }[] }
-type View = { view: { id: string; title: string }; path: string; rows_total: number; inline: { table?: string; series?: string; data?: unknown } }
+type View = { view: { id: string; title: string }; path: string; rows_total: number; inline: { table?: string; series?: string; data?: unknown }; availability?: { status: string }; notice?: string }
 const string = (value: unknown) => typeof value === 'string' ? value : String(value ?? '')
 const json = (value: unknown) => JSON.stringify(value, null, 2)
 const empty = (doc: object): doc is EmptySnapshot => 'empty' in doc && doc.empty === true
@@ -115,24 +116,31 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
   if (invalid) return { text: invalid }
   signal.throwIfAborted()
   const selector = flag(flags.session)
+  const captureSessionID = flag(flags['session-id'])
   const output = flag(flags.o ?? flags.out)
-  const session = () => backend.session(input.sessionID, selector, signal)
+  const session = () => backend.session(input.sessionID, selector, signal, captureSessionID)
   const run = <T>(argv: string[], timeout = LONG_TIMEOUT) => backend.runtime.run<T>(argv, signal, timeout)
   const result = (doc: Written | EmptySnapshot, label = 'Written'): CommandResult => empty(doc)
-    ? { text: EMPTY } : { text: doc.text ?? `${label}: ${doc.path}${doc.bytes === undefined ? '' : ` (${doc.bytes.toLocaleString()} bytes)`}`, path: doc.path, data: doc }
+    ? { text: EMPTY } : { text: `${doc.text ?? `${label}: ${doc.path}${doc.bytes === undefined ? '' : ` (${doc.bytes.toLocaleString()} bytes)`}`}${doc.note ? `\n${doc.note}` : ''}`, path: doc.path, data: doc }
 
   if (sub === 'help') return { text: HELP_TEXT }
   if (sub === 'report') return { text: 'HTML reports have been removed. Run /obs dashboard for the full interactive view.' }
   if (sub === 'analyze' || sub === 'fixes' || sub === 'label') return runModel(backend, input, signal)
   if (sub === 'watch' || sub === 'statusline' || sub === 'cancel' || (sub === 'pane' && positional[0] === 'close')) return { text: `Use /obs ${sub}${positional.length ? ` ${positional.join(' ')}` : ''} in the OpenCode terminal UI.` }
   if (sub === 'overview' || sub === 'pane') {
-    const snapshot = await backend.snapshot(input.sessionID, signal, selector)
-    const target = await backend.resolve(input.sessionID, selector)
+    const snapshot = await backend.snapshot(input.sessionID, signal, selector, captureSessionID)
+    const target = await backend.resolve(input.sessionID, selector, captureSessionID)
     return { text: snapshot.empty ? EMPTY : snapshot.text, snapshot, sessionID: target.sessionID }
   }
   if (sub === 'sessions') {
     const count = positional[0] === undefined ? 20 : Number(positional[0])
     if (positional.length > 1 || (positional[0] !== undefined && !/^\d+$/.test(positional[0])) || !Number.isSafeInteger(count) || count < 1 || count > 500) return { text: 'Usage: /obs sessions [N] (N from 1 to 500).' }
+    if (selector) {
+      const target = await backend.resolve(input.sessionID, selector)
+      if (!target.path) return { text: 'Use --session <capture path> to list sessions inside an imported capture.' }
+      const doc = await run<{ text: string; sessions: unknown[] }>(['capture-sessions', '--transcript', target.path, '--limit', String(count)], 120_000)
+      return { text: doc.text, data: doc }
+    }
     const records = await backend.sessions(count)
     return { text: records.length ? ['OpenCode sessions, newest first:', ...records.map(row => `${row.id === input.sessionID ? '* ' : '  '}${string(row.id)} · ${string(row.title || 'Untitled')}`)].join('\n') : 'No saved OpenCode sessions for this project.', data: records }
   }
@@ -148,13 +156,13 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
     const doc = await run<EmptySnapshot | Catalog | View>(args, 120_000)
     if (empty(doc)) return { text: EMPTY, sessionID: source.sessionID }
     if ('views' in doc) return { text: [`${doc.views.length} TrajViz views; /obs view <id> inspects one:`, ...doc.views.map(v => `${v.id} · ${v.title}${Object.keys(v.options).length ? ` (${Object.keys(v.options).join(', ')})` : ''}`)].join('\n'), data: doc, sessionID: source.sessionID }
-    return { text: [`${doc.view.title} · ${doc.rows_total} rows`, doc.inline.data === undefined ? doc.inline.table ?? doc.inline.series ?? '' : json(doc.inline.data), `Full view: ${doc.path}`].join('\n'), path: doc.path, data: doc, sessionID: source.sessionID, tab: sub === 'view' || sub === 'health' ? undefined : sub }
+    return { text: [`${doc.view.title} · ${doc.rows_total} rows`, ...(doc.notice ? [doc.notice] : []), doc.inline.data === undefined ? doc.inline.table ?? doc.inline.series ?? '' : json(doc.inline.data), `Full view: ${doc.path}`].join('\n'), path: doc.path, data: doc, sessionID: source.sessionID, tab: sub === 'view' || sub === 'health' ? undefined : sub }
   }
   if (sub === 'json' || sub === 'bundle') {
     const views = sub === 'json' ? flagValues(input.args, 'view') : []
     if (views.some(v => v === true || !v.trim())) return { text: '--view needs a view id (/obs view lists them).' }
     const source = await session()
-    const args = sub === 'json' ? ['json', ...source.argv] : ['bundle', '--transcript', source.transcript, '--artifacts', source.artifacts]
+    const args = sub === 'json' ? ['json', ...source.argv] : ['bundle', '--transcript', source.transcript, '--artifacts', source.artifacts, ...(source.captureSessionID === undefined ? [] : valueArgv('session-id', source.captureSessionID))]
     if (output) args.push('--out', output)
     for (const id of views) args.push('--view', String(id))
     if (flags['with-trajectory'] !== undefined) args.push('--with-trajectory')
@@ -163,7 +171,7 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
   if (sub === 'schemas') return result(await run<Written>(['schemas', ...((output ?? positional[0]) ? ['--out', (output ?? positional[0])!] : [])]), 'View schemas written')
   if (sub === 'dashboard' || sub === 'converge') {
     if (positional.length === 1 && positional[0] === 'stop') {
-      const target = sub === 'dashboard' ? (await backend.resolve(input.sessionID, selector)).sessionID : undefined
+      const target = sub === 'dashboard' ? (await backend.resolve(input.sessionID, selector, captureSessionID)).sessionID : undefined
       return { text: await backend.stop(sub, target) ? `${sub === 'dashboard' ? 'Session' : 'Converge'} dashboard stopped.` : 'No matching dashboard is running.' }
     }
     const port = flags.port === undefined ? undefined : Number(flags.port)
@@ -173,6 +181,7 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
     if (sub === 'dashboard') {
       const source = await session(); target = source.sessionID
       args = ['dashboard', '--transcript', source.transcript]
+      if (source.captureSessionID !== undefined) args.push(...valueArgv('session-id', source.captureSessionID))
       const window = source.argv.indexOf('--window')
       if (window >= 0) args.push('--window', source.argv[window + 1]!)
       const labels = path.join(source.artifacts, 'labels.json')
@@ -183,8 +192,9 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
       args = ['converge', '--data-root', dataRoot]
     }
     if (port !== undefined) args.push('--port', String(port))
-    const server = await backend.serve(sub, args, signal)
-    return { text: `${sub === 'dashboard' ? 'Session' : 'Converge'} dashboard: ${server.url}${server.preloaded === false ? '\nSession preload was unavailable; upload /obs bundle in the dashboard.' : ''}\n/obs ${sub} stop closes it. For a remote server, forward this localhost port to your machine.`, url: server.url, sessionID: target }
+    const server = await backend.serve(sub, args, signal, target)
+    const stop = `/obs ${sub} stop${sub === 'dashboard' && selector ? ` ${quoteOption('session', selector)}${captureSessionID === undefined ? '' : ` ${quoteOption('session-id', captureSessionID)}`}` : ''}`
+    return { text: `${sub === 'dashboard' ? 'Session' : 'Converge'} dashboard: ${server.url}${server.preloaded === false ? '\nSession preload was unavailable; upload /obs bundle in the dashboard.' : ''}\n${stop} closes it. For a remote server, forward this localhost port to your machine.`, url: server.url, sessionID: target }
   }
   if (sub === 'compare' || sub === 'scorecard') {
     if (!positional.length || (sub === 'compare' && positional.length !== 1)) return { text: `Usage: /obs ${sub} <session|path>${sub === 'scorecard' ? ' [<session|path>...]' : ''}` }

@@ -10,7 +10,7 @@ import pytest
 from conftest import make_session
 
 from trajviz_obs import views_cmd
-from trajviz_obs.compat import load_run
+from trajviz_obs.compat import load_run, project_view
 from trajviz_obs.errors import BridgeError
 from trajviz_obs.views_cmd import catalog, coerce_options, export, view_payload, write_schemas
 
@@ -21,7 +21,7 @@ def synthetic_run(tmp_path):
     return load_run(make_session(tmp_path, steps=40, agents=1))
 
 
-def test_catalog_has_35_views(): assert len(catalog()) == 35
+def test_catalog_has_36_views(): assert len(catalog()) == 36 and "data_quality" in {v["id"] for v in catalog()}
 
 
 def test_coerce_snapshot_step_and_agent(fixture_run):
@@ -87,7 +87,7 @@ def test_unknown_view_is_bridge_error(fixture_run):
 def test_every_view_draws_inline(synthetic_run, tmp_artifacts, view_id):
     p = view_payload(synthetic_run, view_id, {}, limit=5, offset=0, out_dir=tmp_artifacts, inline_json=False)
     written = json.loads((tmp_artifacts / f"{view_id}.json").read_text())
-    assert written == synthetic_run.view(view_id).to_dict()
+    assert written == project_view(synthetic_run, synthetic_run.view(view_id)).to_dict()
     assert p["path"] == str(tmp_artifacts / f"{view_id}.json") and p["bytes"] == (tmp_artifacts / f"{view_id}.json").stat().st_size
     assert p["view"] == {k: written[k] for k in ("id", "title", "kind", "description")}
     (key, text), = p["inline"].items()
@@ -113,7 +113,7 @@ def test_chart_views_draw_series_and_bars(synthetic_run, tmp_artifacts):
 
 def test_view_payload_inline_json_and_size_cap(fixture_run, tmp_artifacts, monkeypatch):
     p = view_payload(fixture_run, "health", {}, limit=25, offset=0, out_dir=tmp_artifacts, inline_json=True)
-    assert p["inline"] == {"data": fixture_run.view("health").data}
+    assert p["inline"] == {"data": project_view(fixture_run, fixture_run.view("health")).data}
     monkeypatch.setattr(views_cmd, "INLINE_JSON_BYTES", 100)
     p = view_payload(fixture_run, "health", {}, limit=25, offset=0, out_dir=tmp_artifacts, inline_json=True)
     assert set(p["inline"]) == {"table"} and p["bytes"] > 100

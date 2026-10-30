@@ -33,7 +33,7 @@ type Fake = {
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
 const VENV_PY = `${HOME}/.cache/trajviz-obs/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
+const STATE_JSON = JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.3.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.3.1', createdAt: 1 })
 const LAUNCHER = '/plugin/bridge/trajviz_obs_cli.py'
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 

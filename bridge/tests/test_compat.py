@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import types
 import zipfile
 from pathlib import Path
 
@@ -11,7 +12,15 @@ import pytest
 from agent_trajviz import LoadError
 
 from trajviz_obs import compat
-from trajviz_obs.compat import EmptySession, labeler_chat, load_run, window_info
+from trajviz_obs.compat import (
+    EmptySession,
+    input_files,
+    input_path,
+    labeler_chat,
+    load_run,
+    protect_run_outputs,
+    window_info,
+)
 from trajviz_obs.errors import BridgeError
 
 
@@ -182,7 +191,7 @@ def test_window_override_reaches_pressure_stats(fixture_session):
 
 
 def test_window_override_reaches_brief(fixture_session):
-    # TrajViz 0.2.0's brief prints no window for this fixture (it names one only in a premature-compaction
+    # TrajViz's brief prints no window for this fixture (it names one only in a premature-compaction
     # issue), so assert on what the brief's analysis reads: the run-level pressure with no override argument.
     run = load_run(str(fixture_session), window_limit=1_000_000)
     assert run.context_pressure()["stats"]["window_limit"] == 1_000_000
@@ -207,12 +216,264 @@ def test_empty_session_is_signalled(tmp_path):
         load_run(str(p))
 
 
-@pytest.mark.parametrize("version", ["0.1.9", "0.3.0", "1.0.0", "unknown"])
+@pytest.mark.parametrize("version", ["0.1.9", "0.2.0", "0.3.0", "0.4.0", "1.0.0", "unknown"])
 def test_unsupported_trajviz_is_refused(monkeypatch, version):
     monkeypatch.setattr(compat, "TRAJVIZ_VERSION", version)
     with pytest.raises(BridgeError) as caught:
         compat.check_supported()
     assert caught.value.code == "unsupported_trajviz"
+
+
+@pytest.mark.parametrize("version", ["0.3.1", "0.3.2", "0.3.99"])
+def test_supported_published_minor_is_accepted(monkeypatch, version):
+    monkeypatch.setattr(compat, "TRAJVIZ_VERSION", version)
+    compat.check_supported()
+
+
+@pytest.fixture
+def otlp_capture(tmp_path):
+    """Two explicitly identified requests in a local saved-telemetry bundle."""
+    folder = tmp_path / "capture"
+    folder.mkdir()
+    members = []
+    for index, sid in enumerate(("session-a", "session-b"), 1):
+        attrs = [{"key": "session.id", "value": {"stringValue": sid}},
+                 *[{"key": key, "value": {"intValue": str(value)}} for key, value in (
+                     ("input_tokens", 6 + index), ("output_tokens", 2), ("reasoning_tokens", 0),
+                     ("cache_read_tokens", 0), ("cache_creation_tokens", 0))]]
+        request = {"resourceSpans": [{"resource": {"attributes": [{"key": "service.name",
+            "value": {"stringValue": "claude-code"}}]}, "scopeSpans": [{"spans": [{
+            "traceId": str(index) * 32, "spanId": str(index) * 16, "name": "claude_code.llm_request",
+            "startTimeUnixNano": "1790000000000000000", "endTimeUnixNano": "1790000001000000000",
+            "attributes": attrs}]}]}]}
+        member = folder / "traces" / f"{sid}.jsonl"
+        member.parent.mkdir(exist_ok=True)
+        member.write_text(json.dumps(request) + "\n")
+        members.append(member)
+    logs = folder / "events" / "logs.jsonl"
+    logs.parent.mkdir()
+    logs.write_text(json.dumps({"resourceLogs": []}) + "\n")
+    manifest = folder / "manifest.json"
+    manifest.write_text(json.dumps({"type": "agent-trajviz-otlp-bundle", "schema_version": 1,
+        "profile": "claude_code", "traces": [str(p.relative_to(folder)) for p in members],
+        "logs": [str(logs.relative_to(folder))]}))
+    # An unrelated root JSONL must not redirect input-path protection away
+    # from the explicit OTLP manifest selected by the public loader.
+    (folder / "native.jsonl").write_text('{"unrelated":true}\n')
+    archive = tmp_path / "capture.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        for member in [manifest, *members, logs]:
+            handle.write(member, member.relative_to(folder))
+    stream = tmp_path / "capture.jsonl"
+    stream.write_text("".join(member.read_text() for member in members))
+    return {"directory": folder, "manifest": manifest, "zip": archive, "stream": stream,
+            "members": [manifest, *members, logs]}
+
+
+@pytest.mark.parametrize("layout", ["directory", "manifest", "zip", "stream"])
+def test_saved_otlp_session_selection_preserves_capture_and_selected_identity(otlp_capture, layout):
+    source = otlp_capture[layout]
+    with pytest.raises(LoadError) as caught:
+        load_run(str(source))
+    assert caught.value.code == "ambiguous_session"
+    first = load_run(str(source), session_id="session-a")
+    second = load_run(str(source), session_id="session-b")
+    assert first.format == second.format == "otlp" and first.sha256 != second.sha256
+    assert first.raw["_otel"]["session_id"] == "session-a"
+    assert second.raw["_otel"]["session_id"] == "session-b"
+    assert {step["session_id"] for step in first.steps} == {"session-a"}
+    assert {span["trace_id"] for span in first.raw["_otel"]["spans"]} == {"1" * 32}
+    assert input_path(first) == source.absolute()
+    with pytest.raises(LoadError) as caught:
+        load_run(str(source), session_id="missing-session")
+    assert caught.value.code == "session_not_found"
+    original = first.view("metrics")
+    assert compat.project_view(first, original) is original
+    assert compat.project_analysis(first) is first._analysis
+
+
+def test_saved_session_selector_is_not_silently_ignored_for_native_inputs(fixture_session):
+    with pytest.raises(LoadError) as caught:
+        load_run(str(fixture_session), session_id="arbitrary-native-id")
+    assert caught.value.code == "unsupported_selection"
+
+
+@pytest.mark.parametrize("layout", ["directory", "manifest"])
+@pytest.mark.parametrize("alias", ["direct", "hardlink", "symlink"])
+def test_saved_otlp_protects_every_actual_member_including_other_selected_sessions(otlp_capture, tmp_path,
+                                                                                layout, alias):
+    source = otlp_capture[layout]
+    run = load_run(str(source), session_id="session-a")
+    assert set(otlp_capture["members"]) <= set(input_files(run))
+    assert len(input_files(run)) == len(set(input_files(run)))
+    for index, member in enumerate(otlp_capture["members"]):
+        destination = member
+        if alias != "direct":
+            destination = tmp_path / f"{layout}-{alias}-{index}.json"
+            if alias == "hardlink":
+                destination.hardlink_to(member)
+            else:
+                destination.symlink_to(member)
+        with pytest.raises(BridgeError) as caught:
+            protect_run_outputs(run, [destination])
+        assert caught.value.code == "bad_output"
+    with pytest.raises(BridgeError):
+        protect_run_outputs(run, [source])
+
+
+def test_otlp_zip_protection_uses_the_actual_archive_and_export_uses_its_own_input(otlp_capture, tmp_path):
+    source = otlp_capture["zip"]
+    run = load_run(str(source), session_id="session-a")
+    alias = tmp_path / "archive-alias.zip"
+    alias.hardlink_to(source)
+    with pytest.raises(BridgeError):
+        protect_run_outputs(run, [alias])
+    # ZIP provenance labels do not describe local files consumed on reload.
+    protect_run_outputs(run, otlp_capture["members"])
+    exported = tmp_path / "reloaded.json"
+    exported.write_text(json.dumps(run.to_dict(include_raw=True)))
+    reloaded = load_run(str(exported), session_id="session-a")
+    assert input_path(reloaded) == exported.absolute()
+    with pytest.raises(BridgeError):
+        protect_run_outputs(reloaded, [exported])
+    protect_run_outputs(reloaded, [source, *otlp_capture["members"]])
+
+
+def test_otlp_directory_fallback_never_follows_forged_external_or_symlinked_provenance(otlp_capture, tmp_path):
+    run = load_run(str(otlp_capture["directory"]), session_id="session-a")
+    compat._INPUT_FILES.pop(run)  # exercise directory-only fallback used by callers with an existing run
+    otlp_capture["manifest"].unlink()
+    external = tmp_path / "unrelated.json"
+    external.write_text("keep this file")
+    alias = otlp_capture["directory"] / "symlink.json"
+    alias.symlink_to(external)
+    run.raw["_otel"]["source"]["source_files"].extend([str(external), str(alias)])
+    files = input_files(run)
+    assert external not in files and alias not in files
+    assert set(otlp_capture["members"][1:]) <= set(files)
+    protect_run_outputs(run, [external])
+
+
+def _dashboard_callback_template(upload_obj, dark=False, selected_format="", session_id=None):
+    return do_load(upload_obj, dark, selected_format, session_id=session_id)  # noqa: F821
+
+
+def _dashboard_load_seam(monkeypatch):
+    from agent_trajviz.insight.ui import load as ui_load
+
+    calls = []
+
+    def native(path, format_hint="", *, session_id=None):
+        calls.append({"path": path, "format_hint": format_hint, "session_id": session_id})
+        return calls[-1]
+
+    def do_load(upload_obj, dark=False, selected_format="", *, session_id=None):
+        return load_session(upload_obj, format_hint=selected_format, session_id=session_id)  # noqa: F821
+
+    loading = types.FunctionType(do_load.__code__, {"load_session": native}, "do_load", do_load.__defaults__)
+    loading.__kwdefaults__ = do_load.__kwdefaults__
+    monkeypatch.setattr(ui_load, "load_session", native)
+    monkeypatch.setattr(ui_load, "do_load", loading)
+    callback = types.FunctionType(_dashboard_callback_template.__code__, {"do_load": loading}, "_do_load",
+                                  _dashboard_callback_template.__defaults__)
+    callback.__module__ = ui_load.__name__
+    return callback, calls
+
+
+@pytest.mark.parametrize("window", [None, 200000])
+def test_dashboard_defaults_apply_only_to_mapped_source_and_accept_new_session_selection(otlp_capture, tmp_path,
+                                                                                      monkeypatch, window):
+    callback, native_calls = _dashboard_load_seam(monkeypatch)
+    original = load_run
+    loaded = []
+
+    def load(path, **options):
+        loaded.append((path, options))
+        return original(path, **options)
+
+    monkeypatch.setattr(compat, "load_run", load)
+    directory = str(otlp_capture["directory"])
+    display = str(otlp_capture["manifest"])
+    wrapped = compat.dashboard_window_callback(callback, directory, window, session_id="session-a", display_path=display)
+    first = wrapped(display)
+    second = wrapped(display, session_id="session-b")
+    assert first.run.raw["_otel"]["session_id"] == "session-a"
+    assert second.run.raw["_otel"]["session_id"] == "session-b"
+    assert loaded == [(directory, {"window_limit": window, "session_id": "session-a"}),
+                      (directory, {"window_limit": window, "session_id": "session-b"})]
+    unrelated = str(tmp_path / "other-capture.json")
+    assert wrapped(unrelated, session_id="other-session") == {
+        "path": unrelated, "format_hint": "", "session_id": "other-session"}
+    assert wrapped(unrelated)["session_id"] is None
+    assert len(loaded) == 2 and len(native_calls) == 2
+
+
+def test_dashboard_keeps_upstream_selection_and_format_refusal_classification(otlp_capture, monkeypatch):
+    callback, native_calls = _dashboard_load_seam(monkeypatch)
+    directory = str(otlp_capture["directory"])
+    display = str(otlp_capture["manifest"])
+    wrapped = compat.dashboard_window_callback(callback, directory, None, session_id="session-a", display_path=display)
+    assert wrapped(display, session_id="missing")["session_id"] == "missing"
+    assert wrapped(display, selected_format="codex")["format_hint"] == "codex"
+    assert native_calls == [{"path": directory, "format_hint": "", "session_id": "missing"},
+                            {"path": directory, "format_hint": "codex", "session_id": "session-a"}]
+
+
+@pytest.fixture
+def dsh_family(tmp_path):
+    def events(sid, version, tokens, **fields):
+        return [{"type": "session", "id": sid, "version": version, "createdAt": 1790000000000, **fields},
+                {"type": "assistant/message", "time": 1790000000300, "seq": 1, "data": {
+                    "message": {"id": f"{sid}-a", "content": [{"type": "text", "text": "Controlled reply"}]},
+                    "usage": {"inputTokens": tokens, "outputTokens": 0, "cacheReadTokens": 0,
+                              "cacheWriteTokens": 0, "reasoningTokens": 0, "totalTokens": tokens}}}]
+
+    parent, child, unrelated = (tmp_path / name for name in ("parent", "child", "unrelated"))
+    for folder in (parent, child, unrelated):
+        folder.mkdir()
+    def write(path, rows):
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    stale = parent / "session.v3.jsonl"
+    write(stale, events("parent", 3, 9999))
+    selected = parent / "session.v4.jsonl"
+    write(selected, [*events("parent", 4, 15), {"type": "subagent/catalog", "time": 1790000000400,
+                                             "seq": 2, "data": {"childId": "child"}}])
+    child_file = child / "session.v4.jsonl"
+    write(child_file, events("child", 4, 5, parentSession="parent", origin="subagent"))
+    unrelated_file = unrelated / "session.v4.jsonl"
+    write(unrelated_file, events("unrelated", 4, 777, parentSession="parent", origin="subagent"))
+    return parent, selected, child_file, stale, unrelated_file
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+@pytest.mark.parametrize("directory", [False, True])
+def test_native_dsh_input_identity_and_protection_follow_only_the_consumed_generation(dsh_family, tmp_path,
+                                                                                    compressed, directory):
+    parent, selected, child, stale, unrelated = dsh_family
+    if compressed:
+        zstd = pytest.importorskip("zstandard")
+        target = selected.with_name(selected.name + ".zstd")
+        target.write_bytes(zstd.ZstdCompressor().compress(selected.read_bytes()))
+        selected.unlink()
+        selected = target
+    source = parent if directory else selected
+    before = {p: p.read_bytes() for p in (selected, child, stale, unrelated)}
+    run = load_run(str(source))
+    assert run.format == "dsh" and run.metrics["tokens"]["total"] == 20 and len(run.steps) == 2
+    assert input_path(run) == source.absolute() and compat.resolve_input_path(str(source)) == source.absolute()
+    files = input_files(run)
+    assert selected in files and child in files and stale not in files and unrelated not in files
+    alias = tmp_path / "child-alias.jsonl"
+    alias.hardlink_to(child)
+    with pytest.raises(BridgeError):
+        protect_run_outputs(run, [alias])
+    protect_run_outputs(run, [stale, unrelated])
+    exported = tmp_path / "export.json"
+    exported.write_text(json.dumps(run.to_dict(include_raw=True)))
+    restored = load_run(str(exported))
+    assert input_files(restored) == (exported,)
+    protect_run_outputs(restored, [selected, child])
+    assert {p: p.read_bytes() for p in before} == before
 
 
 def test_labeler_chat_injection(fixture_session, tmp_path):

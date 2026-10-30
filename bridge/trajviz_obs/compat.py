@@ -1,6 +1,6 @@
 """Version-checked compatibility shims for TrajViz internals.
 
-The plugin ships against the published ``agent-trajviz>=0.2.0,<0.3``. These integrations need internal seams:
+The plugin ships against the published ``agent-trajviz>=0.3.1,<0.4``. These integrations need internal seams:
 
 1. **The real context window everywhere.** ``context_pressure(window_limit=)`` and the ``context_*`` views take
    an override, but the issues, the brief and the export do not. :func:`load_run` writes the window
@@ -29,6 +29,7 @@ import copy
 import functools
 import inspect
 import json
+import math
 import os
 import re
 import sys
@@ -36,6 +37,7 @@ import tempfile
 import types
 import weakref
 from collections.abc import Callable, Iterable, Iterator
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -43,13 +45,14 @@ import agent_trajviz
 from agent_trajviz import LoadError, Trajectory
 
 from .errors import BridgeError
+from .native_quality import project_analysis, project_brief, project_view  # noqa: F401 - shared projection API
 from .native_records import normalize_native_records
 
 #: The installed TrajViz version.
 TRAJVIZ_VERSION: str = agent_trajviz.__version__
 
-#: Supported releases: ``>=0.2.0,<0.3`` as ``[lowest, first unsupported)``.
-_SUPPORTED = ((0, 2, 0), (0, 3, 0))
+#: Supported releases: ``>=0.3.1,<0.4`` as ``[lowest, first unsupported)``.
+_SUPPORTED = ((0, 3, 1), (0, 4, 0))
 
 #: ``LoadError`` codes that mean "no assistant step yet" for the session being written.
 _EMPTY_CODES = frozenset({"unknown_format", "no_steps"})
@@ -60,6 +63,8 @@ _OVERRIDES: weakref.WeakKeyDictionary[Trajectory, int] = weakref.WeakKeyDictiona
 # A reloadable export keeps its original provenance in ``run.source``. That value is content, not the
 # path opened by this process, so it must never decide which input an artifact writer may replace.
 _INPUT_PATHS: weakref.WeakKeyDictionary[Trajectory, Path] = weakref.WeakKeyDictionary()
+_INPUT_FILES: weakref.WeakKeyDictionary[Trajectory, tuple[Path, ...]] = weakref.WeakKeyDictionary()
+_CONSUMED_INPUTS: ContextVar[list[Path] | None] = ContextVar("trajviz_obs_consumed_inputs", default=None)
 
 
 class EmptySession(BridgeError):
@@ -79,12 +84,12 @@ def _release(version: str) -> tuple[int, int, int] | None:
 
 
 def check_supported() -> None:
-    """Refuse a TrajViz outside ``>=0.2.0,<0.3``, whose internals the shims were not written against."""
+    """Refuse a TrajViz outside ``>=0.3.1,<0.4``, whose internals the shims were not written against."""
     release = _release(TRAJVIZ_VERSION)
     if release is None or not _SUPPORTED[0] <= release < _SUPPORTED[1]:
         raise BridgeError("unsupported_trajviz",
-                          f"agent-trajviz {TRAJVIZ_VERSION} is installed; this bridge needs >=0.2.0,<0.3.",
-                          version=TRAJVIZ_VERSION, required=">=0.2.0,<0.3")
+                          f"agent-trajviz {TRAJVIZ_VERSION} is installed; this bridge needs >=0.3.1,<0.4.",
+                          version=TRAJVIZ_VERSION, required=">=0.3.1,<0.4")
 
 
 @functools.cache
@@ -111,7 +116,38 @@ def load_plugins() -> list[str]:
     from .opencode import install as install_opencode
 
     install_opencode()
+    _install_dsh_input_tracking()
+    from .pi import install as install_pi
+
+    install_pi()
+    from .archive import install as install_archive
+
+    install_archive()
     return list(loaded)
+
+
+def _install_dsh_input_tracking() -> None:
+    """Capture only files the native converter actually validated and merged."""
+    from agent_trajviz.insight import loaders
+
+    original = loaders._convert_dsh_to_internal
+    if getattr(original, "_trajviz_obs_input_tracking", False):
+        return
+    if not {"events", "source_path", "child_event_lists"} <= inspect.signature(original).parameters.keys():
+        raise BridgeError("unsupported_trajviz", "TrajViz's DeepSeek converter changed; update the plugin.")
+
+    @functools.wraps(original)
+    def convert(events, *, source_path=None, child_event_lists=None, child_warnings=None):
+        result = original(events, source_path=source_path, child_event_lists=child_event_lists,
+                          child_warnings=child_warnings)
+        consumed = _CONSUMED_INPUTS.get()
+        if consumed is not None and source_path:
+            consumed.append(Path(source_path).absolute())
+            consumed.extend(Path(path).absolute() for _, path in result.get("_dsh_merged_sources", []) if path)
+        return result
+
+    convert._trajviz_obs_input_tracking = True
+    loaders._convert_dsh_to_internal = convert
 
 
 def _install_native_record_filter() -> None:
@@ -156,7 +192,8 @@ def _install_native_record_filter() -> None:
     loaders.convert_claude_code_events = convert
 
 
-def load_run(path: str, *, window_limit: int | None = None, current: bool = False) -> Trajectory:
+def load_run(path: str, *, window_limit: int | None = None, current: bool = False,
+             session_id: str | None = None) -> Trajectory:
     """``agent_trajviz.load(path)`` with the engine's window (when given) set before anything is computed.
 
     The installed TrajViz plugins are loaded first (:func:`load_plugins`). With *current* (the session being
@@ -173,15 +210,24 @@ def load_run(path: str, *, window_limit: int | None = None, current: bool = Fals
             # Claude can invoke the first /obs command before creating this session's transcript.
             raise EmptySession("The current session transcript has not been created yet.", path=path) from exc
     selected = resolve_input_path(path)
+    captured = _CONSUMED_INPUTS.set([])
     try:
-        run = agent_trajviz.load(path)
-    except LoadError as exc:
-        if current and exc.code in _EMPTY_CODES:
-            raise EmptySession(str(exc), path=exc.path or path) from exc
-        raise
+        try:
+            run = agent_trajviz.load(path, **({"session_id": session_id} if session_id is not None else {}))
+        except LoadError as exc:
+            if current and exc.code in _EMPTY_CODES:
+                raise EmptySession(str(exc), path=exc.path or path) from exc
+            raise
+    finally:
+        consumed = tuple(_CONSUMED_INPUTS.get() or ())
+        _CONSUMED_INPUTS.reset(captured)
     if current and not any(step.get("role") == "assistant" for step in run.steps):
         raise EmptySession("The current session has no assistant step yet.", path=path)
-    _INPUT_PATHS[run] = selected
+    _INPUT_PATHS[run] = Path(path).absolute() if run.format == "dsh" and Path(path).is_dir() else selected
+    if run.format == "otlp":
+        _INPUT_FILES[run] = tuple(dict.fromkeys(_otlp_input_files(selected, run.raw)))
+    elif run.format == "dsh":
+        _INPUT_FILES[run] = tuple(dict.fromkeys([_INPUT_PATHS[run], *consumed]))
     if window_limit is not None:
         metadata = run.raw.get("metadata")
         if not isinstance(metadata, dict):
@@ -195,9 +241,61 @@ def resolve_input_path(path: str) -> Path:
     """Resolve a directory's selected input, even when its contents cannot be loaded as a trajectory."""
     check_supported()
     from agent_trajviz.insight.formats.claude_files import resolve_session_path
+    from agent_trajviz.insight.formats.dsh_native import resolve_native_dsh_path
+    from agent_trajviz.insight.formats.otlp_files import looks_like_otlp_source
 
+    if Path(path).is_dir() and looks_like_otlp_source(path):
+        return Path(path).absolute()
+    native = resolve_native_dsh_path(path)
+    if native:
+        if Path(native).name != "session.jsonl":
+            return Path(path).absolute()
+        try:
+            with open(native, "rb") as handle:
+                header = json.loads(handle.readline(4096).decode("utf-8-sig"))
+            from agent_trajviz.insight.loaders import detect_format
+
+            if detect_format([header]) == "dsh":
+                return Path(path).absolute()
+        except (OSError, ValueError, UnicodeError):
+            pass
     selected, _ = resolve_session_path(path)
     return Path(selected).absolute()
+
+
+def _otlp_input_files(source: Path, raw: dict) -> list[Path]:
+    """Actual capture inputs, excluding paths claimed by an exported trajectory."""
+    files = [source]
+    candidates = ([source / name for name in ("manifest.json", "otlp-manifest.json")
+                   if (source / name).is_file()] if source.is_dir() else [source])
+    if len(candidates) != 1 or candidates[0].suffix.lower() == ".zip":
+        return files
+    manifest_path = candidates[0]
+    try:
+        with manifest_path.open("rb") as handle:
+            data = handle.read(1024 * 1024 + 1)
+        if len(data) > 1024 * 1024:
+            return files
+        document = json.loads(data.decode("utf-8-sig"))
+    except (OSError, ValueError, UnicodeError):
+        return files
+    if not isinstance(document, dict) or document.get("type") != "agent-trajviz-otlp-bundle":
+        return files
+    files.append(manifest_path)
+    # Use the loaded manifest's member names, not absolute source_files labels.
+    # A normalized export can retain an unrelated capture's provenance, but
+    # its actual file above is not a manifest and never enters this branch.
+    manifest = raw.get("_otel", {}).get("source", {}).get("manifest", {})
+    if not isinstance(manifest, dict):
+        return files
+    for name in [*manifest.get("traces", []), *manifest.get("logs", [])]:
+        if not isinstance(name, str) or not name or any(char in name for char in ("\\", "\x00", ":")):
+            continue
+        member = Path(name)
+        if member.is_absolute() or any(part in {"", ".", ".."} for part in name.split("/")):
+            continue
+        files.append(manifest_path.parent / member)
+    return files
 
 
 def input_path(run: Trajectory) -> Path | None:
@@ -209,6 +307,47 @@ def input_path(run: Trajectory) -> Path | None:
     return _INPUT_PATHS.get(run) or (Path(run.source) if run.source else None)
 
 
+def input_files(run: Trajectory) -> tuple[Path, ...]:
+    """Actual protected inputs; exported provenance cannot name unrelated files."""
+    from .outputs import session_files
+
+    if run in _INPUT_FILES:
+        return _INPUT_FILES[run]
+    source = input_path(run)
+    if source is None:
+        return ()
+    actual = source.resolve()
+    if run.format == "otlp":
+        files = [source]
+        if source.is_dir():
+            # Some callers retain a validated directory capture after its
+            # manifest is removed. Only local regular members of that actual
+            # input directory can be recovered from loader-produced labels.
+            labels = run.raw.get("_otel", {}).get("source", {}).get("source_files", [])
+            for label in labels[:256] if isinstance(labels, list) else []:
+                if not isinstance(label, str):
+                    continue
+                member = Path(label)
+                if not member.is_absolute():
+                    member = source / member
+                if not member.is_relative_to(source) or not member.resolve().is_relative_to(actual):
+                    continue
+                relative = member.relative_to(source)
+                if any(source.joinpath(*relative.parts[:index]).is_symlink()
+                       for index in range(1, len(relative.parts) + 1)):
+                    continue
+                if member.is_file():
+                    files.append(member)
+        return tuple(dict.fromkeys(files))
+    metadata = run.raw.get("metadata")
+    session_id = metadata.get("session_id") if isinstance(metadata, dict) else None
+    files = [source, *session_files(actual, session_id=session_id if run.format == "claude_code" else None)]
+    if run.format == "claude_code" and not actual.name.startswith("agent-"):
+        files.extend(path for path in actual.parent.glob("agent-*.jsonl")
+                     if not path.is_symlink() and path.is_file())
+    return tuple(dict.fromkeys(files))
+
+
 def window_info(run: Trajectory) -> dict[str, Any]:
     """``{"window", "window_source", "window_note"}``: ``override`` when :func:`load_run` set it, else TrajViz's."""
     if run in _OVERRIDES:
@@ -218,10 +357,11 @@ def window_info(run: Trajectory) -> dict[str, Any]:
             "window_note": stats.get("window_note") or ""}
 
 
-def dashboard_window_callback(callback: Callable, transcript: str, window: int) -> Callable:
-    """Give one Insight load callback the host's window for its preloaded file only.
+def dashboard_window_callback(callback: Callable, transcript: str, window: int | None, *,
+                              session_id: str | None = None, display_path: str | None = None) -> Callable:
+    """Give one Insight load callback defaults for its preloaded source only.
 
-    TrajViz 0.2 does not expose a dashboard loader option. Clone the two small function objects that
+    TrajViz does not expose a dashboard loader option. Clone the two small function objects that
     dispatch loading, retaining their code and closures while replacing only their globals mappings.
     Other apps, library calls and files uploaded later keep TrajViz's original loader. Applying the
     metadata before ``session_from_run`` also gives issues and charts the same window as ``/obs``.
@@ -236,22 +376,26 @@ def dashboard_window_callback(callback: Callable, transcript: str, window: int) 
             or callback.__globals__.get("do_load") is not ui_load.do_load
             or ui_load.do_load.__globals__.get("load_session") is not ui_load.load_session):
         raise BridgeError("dashboard_incompatible", "TrajViz's dashboard loader changed; cannot preserve the "
-                          "Claude Code context window. Update the plugin or use /obs context.")
-    target = Path(transcript).resolve()
+                          "selected session context. Update the plugin or use /obs context.")
+    target = Path(display_path or transcript).resolve()
     native_load = ui_load.load_session
+    default_session_id = session_id
 
-    def load_selected(path: str, format_hint: str = ""):
+    def load_selected(path: str, format_hint: str = "", *, session_id: str | None = None):
         if not path or Path(path).resolve() != target:
-            return native_load(path, format_hint=format_hint)
+            return native_load(path, format_hint=format_hint, **({"session_id": session_id} if session_id else {}))
+        selected_session_id = session_id or default_session_id
         try:
-            run = load_run(path, window_limit=window)
+            run = load_run(transcript, window_limit=window, session_id=selected_session_id)
         except LoadError:
             # Keep TrajViz's format/read error classification and visible banners unchanged.
-            return native_load(path, format_hint=format_hint)
+            return native_load(transcript, format_hint=format_hint,
+                               **({"session_id": selected_session_id} if selected_session_id else {}))
         if format_hint in agent_trajviz.FORMATS and run.format != format_hint:
-            return native_load(path, format_hint=format_hint)
+            return native_load(transcript, format_hint=format_hint,
+                               **({"session_id": selected_session_id} if selected_session_id else {}))
         try:
-            return session_from_run(run, path)
+            return session_from_run(run, transcript)
         except Exception as exc:  # noqa: BLE001 - same visible failure contract as the native loader
             return SessionLoadError(code="analysis_error", message=(
                 f"The file loaded but could not be analysed ({type(exc).__name__}: {str(exc)[:160]})."))
@@ -366,6 +510,13 @@ def install_attribution_guard() -> None:
     @functools.wraps(native)
     def guarded(*, agent, instance_id, source_path=None, fmt=None, expected_sha=None, merged_sources=0,
                 reference_root=None):
+        if attribution.DECAF_AVAILABLE and fmt == "pi" and source_path is not None:
+            from .pi import excludes_branch
+
+            if excludes_branch(source_path):
+                return attribution.AttributionResult(False, mode="reference", agent=agent, instance_id=instance_id,
+                    reason="Attribution cannot currently verify the selected active branch of this Pi session. "
+                           "No capability verdict was issued.")
         if attribution.DECAF_AVAILABLE and fmt == "opencode" and source_path is not None:
             from .opencode import attribution_source, attribution_supported
 
@@ -405,6 +556,9 @@ def install_attribution_guard() -> None:
                            "Claude Code session transcripts.")
         result = native(agent=agent, instance_id=instance_id, source_path=source_path, fmt=fmt,
                         expected_sha=expected_sha, merged_sources=merged_sources, reference_root=reference_root)
+        if result.available and not _finite_attribution(result):
+            return attribution.AttributionResult(False, mode=result.mode, agent=agent, instance_id=instance_id,
+                reason="Attribution returned non-finite numeric evidence. No capability verdict was issued.")
         reason = attribution_message(result.reason)
         notes = [attribution_message(note) for note in result.notes]
         if reason != result.reason or notes != result.notes:
@@ -416,10 +570,26 @@ def install_attribution_guard() -> None:
     attribution.diagnose = guarded
 
 
+def _finite_attribution(result) -> bool:
+    """Invalid optional-backend numbers cannot become capability grades or JSON NaN."""
+    from dataclasses import asdict
+
+    def finite(value):
+        if isinstance(value, float):
+            return math.isfinite(value)
+        if isinstance(value, dict):
+            return all(finite(item) for item in value.values())
+        if isinstance(value, (list, tuple)):
+            return all(finite(item) for item in value)
+        return True
+
+    return finite(asdict(result))
+
+
 def llm_config_from_env(*, load_dotenv: bool = False) -> Any:
     """The LLM settings without importing the LLM's chart presenters.
 
-    TrajViz 0.2's public ``llm`` module imports the issue presenter, which imports Pygments even when only
+    TrajViz's public ``llm`` module imports the issue presenter, which imports Pygments even when only
     ``[llm]`` was installed. Doctor must still describe that minimal environment, so use the same lightweight
     configuration functions its public wrapper calls, without loading the rendering stack.
     """
@@ -448,20 +618,10 @@ def protect_run_outputs(run: Trajectory, destinations: Iterable[Path]) -> None:
     name unrelated files. Native Claude discovery also accepts the real session id's tree and old sibling
     agent logs, including when the parent transcript was renamed or reached through a symlink.
     """
-    from .outputs import protect_inputs, session_files
+    from .outputs import protect_inputs
 
     check_supported()
-    source = input_path(run)
-    if source is None:
-        return
-    actual = source.resolve()
-    metadata = run.raw.get("metadata")
-    session_id = metadata.get("session_id") if isinstance(metadata, dict) else None
-    files = [source, *session_files(actual, session_id=session_id if run.format == "claude_code" else None)]
-    if run.format == "claude_code" and not actual.name.startswith("agent-"):
-        files.extend(path for path in actual.parent.glob("agent-*.jsonl")
-                     if not path.is_symlink() and path.is_file())
-    protect_inputs(destinations, files)
+    protect_inputs(destinations, input_files(run))
 
 
 @contextlib.contextmanager
@@ -475,12 +635,24 @@ def labeler_run(run: Trajectory) -> Iterator[None]:
     check_supported()
     from agent_trajviz.labeling import labeler
 
-    original = labeler.load_all_steps
+    from .label_quality import annotate_label
+
+    original, serialize = labeler.load_all_steps, labeler._serialize_step
+    if set(inspect.signature(serialize).parameters) != {"step", "fallback_index", "label", "label_source"}:
+        raise BridgeError("unsupported_trajviz", "TrajViz's label serializer changed; update the plugin.")
+
+    @functools.wraps(serialize)
+    def serialize_step(step, *, fallback_index, label, label_source):
+        return annotate_label(step, serialize(step, fallback_index=fallback_index, label=label,
+                                              label_source=label_source))
+
     labeler.load_all_steps = lambda _path: copy.deepcopy(run.steps)
+    labeler._serialize_step = serialize_step
     try:
         yield
     finally:
         labeler.load_all_steps = original
+        labeler._serialize_step = serialize
 
 
 @contextlib.contextmanager

@@ -26,7 +26,7 @@ from agent_trajviz.collect import __main__ as collect_main
 from agent_trajviz.converge import cli as converge_cli
 
 from .cli import register
-from .compat import EmptySession, install_attribution_guard, load_plugins
+from .compat import EmptySession, install_attribution_guard, load_plugins, project_brief
 from .views_cmd import _load, _session_args
 
 #: Most bytes of a pass-through's stdout or stderr returned inline (UTF-8).
@@ -162,9 +162,7 @@ def attribution(run: Trajectory, *, reference_root: str | None, agent: str | Non
 
 def brief(run: Trajectory) -> dict:
     """``{"brief": llm.brief(run)}``: the statistics brief TrajViz's LLM features send (needs the llm extra)."""
-    from agent_trajviz import llm
-
-    return {"brief": llm.brief(run)}
+    return {"brief": project_brief(run)}
 
 
 def _passed_args(args: list[str]) -> list[str]:

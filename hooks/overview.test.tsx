@@ -4,7 +4,7 @@ import type { EmptySnapshot } from '../types'
 import { BridgeError } from './lib/bridge'
 import { BUSY_STALE_MS, captureSnapshot, mintId, parseSnapshotId, provenanceLine, storeSnapshot, takeSnapshot } from './lib/snapshot'
 import { claimRefresh, releaseRefresh } from './lib/state'
-import { rememberTranscript } from './lib/session'
+import { rememberTranscript, selectSession } from './lib/session'
 import { errorRow } from './commands/overview'
 import { maybeOpenPane } from './commands/pane'
 import { SNAPSHOT } from './testdata/snapshot'
@@ -14,7 +14,7 @@ const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
 const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
-const STATE_JSON = JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts'], source: 'agent-trajviz>=0.2.0,<0.3', createdAt: 1 })
+const STATE_JSON = JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.3.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.3.1', createdAt: 1 })
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const ARTIFACTS = `${CACHE}/sessions/abc`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 12 }, rateLimits: [] }
@@ -141,7 +141,7 @@ test('--session resolves through the bridge and snapshots as kind other', async 
   const { ran } = host(on, {
     bridge: {
       resolve: json({ path: '/p/bbb333.jsonl', session_id: 'bbb333', project_dir: '/p', kind: 'file' }),
-      snapshot: json({ ...SNAPSHOT, transcript: { ...SNAPSHOT.transcript, path: '/p/bbb333.jsonl', session_id: 'bbb333' } }),
+      snapshot: json({ ...SNAPSHOT, artifacts: { ...SNAPSHOT.artifacts, dir: `${CACHE}/sessions/bbb333` }, transcript: { ...SNAPSHOT.transcript, path: '/p/bbb333.jsonl', session_id: 'bbb333' } }),
     },
   })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
@@ -323,6 +323,32 @@ test('/clear while context usage is resolving cancels the old transcript before 
   expect(w.ran).toEqual([])
   expect(w.state.get('latest')?.value).toBeNull()
   expect(w.state.get('refresh')?.value).toMatchObject({ lastRunAt: 0, busy: false })
+})
+
+test('switching captured sessions in one file invalidates an older pending snapshot and isolates artifacts', async () => {
+  const path = '/source/capture.json'
+  const w = fake({ state: { session: { transcriptPath: DERIVED, sessionId: 'abc', selected: { path, id: 'capture', label: 'A', captureSessionId: 'A' } } },
+    bridge: { resolve: json({ path, session_id: 'capture' }) } })
+  const run = w.$.process.run.bind(w.$.process)
+  let began!: () => void, release!: () => void
+  const ready = new Promise<void>(resolve => { began = resolve })
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let call: readonly string[] = []
+  w.$.process.run = (async (argv: readonly string[], ...rest: unknown[]) => {
+    if (argv[3] !== 'snapshot') return run(argv as never, ...rest as [])
+    call = argv; began(); await gate
+    return { exitCode: 0, stdout: JSON.stringify({ ...SNAPSHOT, transcript: { ...SNAPSHOT.transcript, path, capture_session_id: 'A' } }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+  }) as typeof w.$.process.run
+  const pending = captureSnapshot(w.$, {}, path, undefined, 'A')
+  await ready
+  expect(call[call.indexOf('--session-id') + 1]).toBe('A')
+  expect(call[call.indexOf('--artifacts') + 1]).toMatch(/\/sessions\/captures\/[a-f0-9]{64}$/)
+  expect(call).not.toContain('--window')
+  await selectSession(w.$, { path, id: 'capture', label: 'B', captureSessionId: 'B' })
+  release()
+  await expect(pending).rejects.toMatchObject({ code: 'session_changed' })
+  expect(w.state.get('latest')?.value).toBeNull()
+  expect(w.state.get('session')?.value).toMatchObject({ selected: { captureSessionId: 'B' } })
 })
 
 test('provenance line and its id', () => {

@@ -41,8 +41,8 @@ export default Plugin.define({
     const rpc = await ctx.rpc.register(Obs, {
       run: (input, call) => track(run(input, call.signal)),
       sync: input => track(backend.sync(input.source)),
-      resolve: input => track(backend.resolve(input.sessionID, input.selector)),
-      snapshot: (input, call) => track(backend.withSources(input.useSynced, () => backend.snapshot(input.sessionID, AbortSignal.any([call.signal,lifetime.signal]), input.selector))),
+      resolve: input => track(backend.resolve(input.sessionID, input.selector, input.captureSessionID)),
+      snapshot: (input, call) => track(backend.withSources(input.useSynced, () => backend.snapshot(input.sessionID, AbortSignal.any([call.signal,lifetime.signal]), input.selector, input.captureSessionID))),
       cancel: async input => { const job = jobs.get(input.runID); job?.abort(); const plan = cancelModel(backend, input.runID); return {cancelled: Boolean(job) || plan} },
     })
     backend.progress = (runID, text) => rpc.events.emit('progress', {runID, text})

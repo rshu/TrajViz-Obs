@@ -102,6 +102,53 @@ describe('OpenCode command adapter', () => {
     } finally { h.cleanup() }
   })
 
+  test('capture session selection survives refresh and isolates late snapshots from another session in the same file', async () => {
+    const h = host()
+    const source = '/server/shared capture.json'
+    let started!: () => void
+    let finish!: (snapshot: typeof SNAPSHOT) => void
+    const ready = new Promise<void>(resolve => { started = resolve })
+    try {
+      h.rpc.resolve.mockResolvedValueOnce({ sessionID: 'capture_A', path: source })
+      h.rpc.run.mockResolvedValueOnce({ text: 'A', snapshot: structuredClone(SNAPSHOT), sessionID: 'capture_A' })
+      await h.command(`overview --session "${source}" --session-id A`)
+      expect(h.rpc.resolve.mock.calls.at(-1)?.[0]).toEqual({ sessionID: 'ses_current', selector: source, captureSessionID: 'A' })
+      h.rpc.snapshot.mockImplementationOnce(async () => { started(); return new Promise(resolve => { finish = resolve }) })
+      const oldRefresh = h.command('watch on')
+      await ready
+      expect(h.rpc.snapshot.mock.calls.at(-1)?.[0]).toEqual({ sessionID: 'ses_current', selector: source, captureSessionID: 'A', useSynced: true })
+      const newer = structuredClone(SNAPSHOT)
+      newer.counts.assistant_steps = 999
+      h.rpc.resolve.mockResolvedValueOnce({ sessionID: 'capture_B', path: source })
+      h.rpc.run.mockResolvedValueOnce({ text: 'B', snapshot: newer, sessionID: 'capture_B' })
+      await h.command(`overview --session "${source}" --session-id B`)
+      finish(structuredClone(SNAPSHOT))
+      await oldRefresh
+      const state = [...h.memory.values()][0] as {
+        selected: Record<string, string>
+        files: Record<string, { selector: string; captureSessionID?: string }>
+        snapshots: Record<string, typeof SNAPSHOT>
+      }
+      expect(state.selected.ses_current).toBe('capture_B')
+      expect(state.files.capture_A?.captureSessionID).toBe('A')
+      expect(state.files.capture_B?.captureSessionID).toBe('B')
+      expect(state.snapshots.capture_B?.counts.assistant_steps).toBe(999)
+      await h.command('pane')
+      expect(h.rpc.snapshot.mock.calls.at(-1)?.[0]).toEqual({ sessionID: 'ses_current', selector: source, captureSessionID: 'B', useSynced: true })
+      expect(h.sessionGet).toHaveBeenCalledTimes(0)
+    } finally { h.cleanup() }
+  })
+
+  test('analysis questions preserve an explicit capture session ID after an apostrophe', async () => {
+    const h = host()
+    try {
+      h.rpc.resolve.mockResolvedValueOnce({ sessionID: 'capture_A', path: '/server/capture.json' })
+      h.rpc.run.mockResolvedValueOnce({ text: 'A', snapshot: structuredClone(SNAPSHOT), sessionID: 'capture_A' })
+      await h.command("analyze what's missing --session /server/capture.json --session-id 'session A'")
+      expect(h.rpc.resolve.mock.calls[0]?.[0]).toEqual({ sessionID: 'ses_current', selector: '/server/capture.json', captureSessionID: 'session A' })
+    } finally { h.cleanup() }
+  })
+
   test('native collection works as the first command on a remote client without an active session', async () => {
     const h = host({}, false)
     try {

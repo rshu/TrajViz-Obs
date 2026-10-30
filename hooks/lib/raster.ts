@@ -81,21 +81,44 @@ export function sparklineRaster(values: (number | null)[], columns: number, rows
  * total fills `rows`. Each cell takes the colour of the segment that owns
  * its lowest filled eighth; the top of a column is a partial block.
  */
-export function stackedRaster(stacks: { values: number[]; fg: number }[], columns: number, rows: number): RasterCells {
+export function stackedRaster(stacks: { values: (number | null)[]; fg: number }[], columns: number, rows: number): RasterCells {
   columns = Math.max(1, Math.floor(columns))
   rows = Math.max(1, Math.floor(rows))
   const cells = grid(columns, rows)
-  const fitted = stacks.map(s => ({ fg: s.fg, values: fit(s.values, columns).map(v => Math.max(0, v ?? 0)) }))
-  const totals: number[] = []
-  for (let col = 0; col < columns; col++) totals.push(fitted.reduce((sum, s) => sum + (s.values[col] ?? 0), 0))
+  const length = Math.max(0, ...stacks.map(stack => stack.values.length))
+  const count = Math.min(columns, length)
+  // Keep one actual complete stack per bucket. Independent segment maxima
+  // can invent a total that was never observed, and null segments cannot be zero.
+  const fitted: (number[] | null)[] = []
+  for (let col = 0; col < count; col++) {
+    let selected: number[] | null = null
+    let largest = -1
+    for (let i = Math.floor(col * length / count); i < Math.floor((col + 1) * length / count); i++) {
+      const values = stacks.map(stack => stack.values[i])
+      if (values.some(value => typeof value !== 'number' || !Number.isFinite(value))) continue
+      const measured = (values as number[]).map(value => Math.max(0, value))
+      const total = measured.reduce((sum, value) => sum + value, 0)
+      if (total > largest) { largest = total; selected = measured }
+    }
+    fitted.push(selected)
+  }
+  const totals = fitted.map(values => values?.reduce((sum, value) => sum + value, 0) ?? null)
   const max = maxOf(totals)
-  if (max <= 0) return { columns, rows, cells: encodeCells(cells) }
-  for (let col = 0; col < columns; col++) {
+  for (let col = 0; col < count; col++) {
+    const values = fitted[col]
+    if (!values) {
+      cells[at(columns, col, rows - 1)] = { cp: MIDDLE_DOT, fg: DEFAULT_COLOR, bg: DEFAULT_COLOR }
+      continue
+    }
+    if (totals[col] === 0) {
+      cells[at(columns, col, rows - 1)] = { cp: LOWER[1]!, fg: stacks[0]?.fg ?? DEFAULT_COLOR, bg: DEFAULT_COLOR }
+      continue
+    }
     // The boundaries between segments, in eighths from the bottom.
     const tops: number[] = []
     let cum = 0
-    for (const s of fitted) {
-      cum += s.values[col] ?? 0
+    for (const value of values) {
+      cum += value
       tops.push(Math.round((cum / max) * rows * 8))
     }
     const total = tops[tops.length - 1] ?? 0
@@ -104,7 +127,7 @@ export function stackedRaster(stacks: { values: number[]; fg: number }[], column
       const filled = Math.min(8, total - base)
       if (filled <= 0) break
       const owner = tops.findIndex(t => t > base)
-      const fg = (fitted[owner] ?? fitted[fitted.length - 1])?.fg ?? DEFAULT_COLOR
+      const fg = (stacks[owner] ?? stacks[stacks.length - 1])?.fg ?? DEFAULT_COLOR
       cells[at(columns, col, rows - 1 - i)] = { cp: LOWER[filled] as number, fg, bg: DEFAULT_COLOR }
     }
   }

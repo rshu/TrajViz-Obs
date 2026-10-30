@@ -13,11 +13,11 @@ const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const ARTIFACTS = `${CACHE}/sessions/abc`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 12 }, rateLimits: [] }
 const NOW = 1_761_150_000_000
-const SOURCE = 'agent-trajviz>=0.2.0,<0.3'
+const SOURCE = 'agent-trajviz==0.3.1'
 
 /** `state.json` with the given extras installed. */
 const stateJson = (extras: string[]): string =>
-  JSON.stringify({ revision: 4, python: VENV_PY, trajviz: '0.2.1', extras, source: SOURCE, createdAt: NOW })
+  JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.3.1', extras, source: SOURCE, createdAt: NOW })
 
 /** The argv every session-bound bridge subcommand gets for the current session. */
 const SESSION_ARGV = ['--transcript', DERIVED, '--window', '1000000', '--artifacts', ARTIFACTS, '--kind', 'current']
@@ -59,7 +59,7 @@ function host(on: On, world: World = {}): Host {
   const statuses: (string | undefined)[] = []
   const toasts: string[] = []
   const files: Record<string, string> = {}
-  if (world.extras !== null) files[STATE_PATH] = stateJson(world.extras ?? ['llm', 'charts'])
+  if (world.extras !== null) files[STATE_PATH] = stateJson(world.extras ?? ['llm', 'charts', 'zstd'])
   const answers = answerOf(world.bridge ?? {}, world.commands ?? {})
   on('command.register', () => ({ value: { command: 'obs' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
@@ -94,7 +94,7 @@ function host(on: On, world: World = {}): Host {
     spawned.push([...e.argv])
     if (e.argv.some(a => a.endsWith('/bridge/bootstrap.py'))) {
       const req = JSON.parse(e.argv[e.argv.indexOf('--request') + 1] as string)
-      const state = { revision: 4, python: VENV_PY, pythonOption: req.pythonOption, trajviz: (world.commands?.[VENV_PY]?.stdout.trim() || '0.2.1'), extras: [...new Set(['llm', 'charts', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
+      const state = { revision: 5, python: VENV_PY, pythonOption: req.pythonOption, trajviz: (world.commands?.[VENV_PY]?.stdout.trim() || '0.3.1'), extras: [...new Set(['llm', 'charts', 'zstd', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
       files[STATE_PATH] = JSON.stringify(state)
 
       yield { stream: 'stderr' as const, text: 'Installed\n' }
@@ -122,6 +122,13 @@ const bridgeCalls = (ran: string[][]): string[][] => ran.filter(r => r[1] === '-
 
 /** A `resolve` answer for session `id` at `/x/<id>.jsonl`. */
 const resolved = (id: string): RunAnswer => json({ path: `/x/${id}.jsonl`, session_id: id, kind: 'file' })
+
+test('sessions --session lists captured IDs without selecting a model source', async ($, on) => {
+  const { ran } = host(on, { bridge: { resolve: resolved('capture'), 'capture-sessions': json({ text: 'Captured sessions: A, B', sessions: [{ session_id: 'A' }, { session_id: 'B' }] }) } })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  expect((await obs($, 'sessions 2 --session /x/capture.jsonl')).text).toBe('Captured sessions: A, B')
+  expect(bridgeCalls(ran).at(-1)).toEqual(['capture-sessions', '--transcript', '/x/capture.jsonl', '--limit', '2'])
+})
 
 const COMPARE_TEXT = 'Comparison: reference `def.jsonl` → compared `abc.jsonl` (anchor: none, evidence: medium)\n\n| | reference | compared |\n|---|---|---|\n| finished | yes | no |'
 
@@ -299,14 +306,14 @@ test('collect passes its arguments through and prints what the tool wrote', asyn
   const { ran } = host(on, {
     bridge: {
       collect: [
-        json({ exit: 0, stdout: 'agent-trajviz-collect 0.2.1\n', stderr: '' }),
+        json({ exit: 0, stdout: 'agent-trajviz-collect 0.3.1\n', stderr: '' }),
         json({ exit: 1, stdout: '', stderr: 'error: unknown tool zed\n' }),
         json({ exit: 0, stdout: '', stderr: '' }),
       ],
     },
   })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  expect((await obs($, 'collect --version')).text).toBe('agent-trajviz-collect 0.2.1')
+  expect((await obs($, 'collect --version')).text).toBe('agent-trajviz-collect 0.3.1')
   expect(bridgeCalls(ran)[0]).toEqual(['collect', '--', '--version'])
   expect((await obs($, 'collect -- zed --out /tmp/z')).text).toBe('error: unknown tool zed\nagent-trajviz-collect exited with 1.')
   expect(bridgeCalls(ran)[1]).toEqual(['collect', '--', 'zed', '--out', '/tmp/z'])
@@ -326,13 +333,13 @@ test('passArgs is every token after the subcommand, a leading -- dropped', () =>
 test('setup --extras all builds llm and charts together, then installs app once', async ($, on) => {
   const { ran, spawned, files, statuses, toasts } = host(on, {
     extras: null,
-    commands: { uv: { exitCode: 0, stdout: 'uv 0.9.0\n' }, [VENV_PY]: { exitCode: 0, stdout: '0.2.1\n' } },
+    commands: { uv: { exitCode: 0, stdout: 'uv 0.9.0\n' }, [VENV_PY]: { exitCode: 0, stdout: '0.3.1\n' } },
   })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const out = await obs($, 'setup --extras all')
-  expect(setupRequests(spawned).map(r => r.extras)).toEqual([['llm', 'charts'], ['llm', 'charts', 'llm', 'charts', 'app']])
-  expect(JSON.parse(files[STATE_PATH] as string).extras).toEqual(['llm', 'charts', 'app'])
-  expect(out.text).toBe(`TrajViz 0.2.1 is set up at ${VENV_PY} (source ${SOURCE}; extras llm, charts, app).`)
+  expect(setupRequests(spawned).map(r => r.extras)).toEqual([['llm', 'charts', 'zstd'], ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app']])
+  expect(JSON.parse(files[STATE_PATH] as string).extras).toEqual(['llm', 'charts', 'zstd', 'app'])
+  expect(out.text).toBe(`TrajViz 0.3.1 is set up at ${VENV_PY} (source ${SOURCE}; extras llm, charts, zstd, app).`)
   // Progress went to the status line, cleared at the end; the first run's toast, no ask.
   expect(statuses[0]).toBe('obs setup: Installed')
   expect(statuses[statuses.length - 1]).toBeUndefined()
@@ -345,13 +352,13 @@ test('setup --extras all builds llm and charts together, then installs app once'
 
 test('setup alone leaves a ready environment alone; --extras names are checked; --source rebuilds', async ($, on) => {
   const { spawned, files } = host(on, {
-    extras: ['llm', 'charts'],
+    extras: ['llm', 'charts', 'zstd'],
     commands: { uv: { exitCode: 0, stdout: 'uv 0.9.0\n' }, [VENV_PY]: { exitCode: 0, stdout: '0.2.2\n' } },
   })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  expect((await obs($, 'setup')).text).toBe(`TrajViz 0.2.1 is set up at ${VENV_PY} (source ${SOURCE}; extras llm, charts).`)
-  expect((await obs($, 'setup --extras none')).text).toContain('extras llm, charts)')
-  expect((await obs($, 'setup --extras llm')).text).toContain('extras llm, charts)')
+  expect((await obs($, 'setup')).text).toBe(`TrajViz 0.3.1 is set up at ${VENV_PY} (source ${SOURCE}; extras llm, charts, zstd).`)
+  expect((await obs($, 'setup --extras none')).text).toContain('extras llm, charts, zstd)')
+  expect((await obs($, 'setup --extras llm')).text).toContain('extras llm, charts, zstd)')
   expect(spawned).toEqual([])
   const usage = 'Usage: /obs setup [--extras all|none|charts,app] [--source <pip requirement or checkout path>]'
   expect((await obs($, 'setup --extras bogus')).text).toBe(usage)
@@ -360,10 +367,10 @@ test('setup alone leaves a ready environment alone; --extras names are checked; 
   expect(spawned).toEqual([])
   // Another source: rebuilt from it (a checkout editable), and the config's source named, since the next /obs reads that.
   const out = await obs($, 'setup --source ~/tv')
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: '~/tv', installSource: `${HOME}/tv`, local: true, extras: ['llm', 'charts'] })
+  expect(setupRequests(spawned)[0]).toMatchObject({ source: '~/tv', installSource: `${HOME}/tv`, local: true, extras: ['llm', 'charts', 'zstd'] })
   expect(JSON.parse(files[STATE_PATH] as string).source).toBe('~/tv')
   expect(out.text).toBe(
-    `TrajViz 0.2.2 is set up at ${VENV_PY} (source ~/tv; extras llm, charts).\n` +
+    `TrajViz 0.2.2 is set up at ${VENV_PY} (source ~/tv; extras llm, charts, zstd).\n` +
       `trajvizSource in /config is still ${SOURCE}: the next /obs rebuilds from it unless you set it to ~/tv there.`,
   )
 })
@@ -371,7 +378,7 @@ test('setup alone leaves a ready environment alone; --extras names are checked; 
 test('manual setup and a later automatic rebuild restore the enabled summary after progress', { options: { statusline: true } }, async ($, on) => {
   const h = host(on, {
     bridge: { snapshot: json(SNAPSHOT), json: json({ path: '/tmp/views', bytes: 1, files: ['index.json'] }) },
-    commands: { uv: { exitCode: 0, stdout: 'uv 0.9.0\n' }, [VENV_PY]: { exitCode: 0, stdout: '0.2.1\n' } },
+    commands: { uv: { exitCode: 0, stdout: 'uv 0.9.0\n' }, [VENV_PY]: { exitCode: 0, stdout: '0.3.1\n' } },
   })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await obs($, '')
@@ -412,7 +419,7 @@ test('parseExtras', () => {
 
 const DOCTOR: DoctorDoc = {
   python: '3.12.4',
-  trajviz: { version: '0.2.1', path: `${CACHE}/venv/lib/python3.12/site-packages/agent_trajviz` },
+  trajviz: { version: '0.3.1', path: `${CACHE}/venv/lib/python3.12/site-packages/agent_trajviz` },
   plugins: { loaded: [], error: null },
   extras: { charts: true, llm: true, app: false },
   attribution: { available: false, reason: "No module named 'decaf'" },
@@ -421,7 +428,7 @@ const DOCTOR: DoctorDoc = {
 }
 
 test('doctor is a table of the bridge\'s doctor and the environment', async ($, on) => {
-  const { ran } = host(on, { extras: ['llm', 'charts'], bridge: { doctor: json(DOCTOR) } })
+  const { ran } = host(on, { extras: ['llm', 'charts', 'zstd'], bridge: { doctor: json(DOCTOR) } })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const out = await obs($, 'doctor')
   expect(bridgeCalls(ran)).toEqual([['doctor', '--cwd', CWD]])
@@ -430,7 +437,7 @@ test('doctor is a table of the bridge\'s doctor and the environment', async ($, 
   // `createdAt` (NOW) in local time, as the sessions table prints start times.
   expect(lines[1]).toMatch(new RegExp(`^  environment {3}${VENV_PY} \\(built from ${SOURCE.replace(/[.<>]/g, '\\$&')} on 2025-10-2[23] \\d\\d:\\d\\d\\)$`))
   expect(lines[2]).toBe('  python        3.12.4')
-  expect(lines[3]).toMatch(/^ {2}trajviz {7}0\.2\.1 at \//)
+  expect(lines[3]).toMatch(/^ {2}trajviz {7}0\.3\.1 at \//)
   expect(lines[4]).toBe('  plugins       none')
   expect(lines[5]).toBe('  extras        llm, charts installed; app not installed (/obs setup --extras app)')
   expect(lines[6]).toBe('  attribution   not available: Attribution is not available here.')
@@ -449,7 +456,7 @@ test('doctorText: every extra, plugins, a ready llm env, env mode and a referenc
     llm_env: { available: true, ready: true, missing: [], reason: null },
     reference_root: '/refs',
   }
-  const state = { python: VENV_PY, trajviz: '0.2.1', extras: ['llm', 'charts', 'app'], source: SOURCE, createdAt: NOW }
+  const state = { python: VENV_PY, trajviz: '0.3.1', extras: ['llm', 'charts', 'zstd', 'app'], source: SOURCE, createdAt: NOW }
   const lines = doctorText(doc, state, { llm: 'env', analysisModel: 'session', labelModel: 'haiku' }).split('\n')
   expect(lines[4]).toBe('  plugins       my_plugin, other')
   expect(lines[5]).toBe('  extras        llm, charts, app installed')

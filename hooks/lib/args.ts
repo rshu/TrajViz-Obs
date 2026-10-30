@@ -8,6 +8,82 @@ export type Parsed = {
   passthrough: string[]
 }
 
+/** Quote for this tokenizer, preserving real whitespace, quotes and backslashes. */
+export function quoteArgument(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+}
+
+/** An equals form keeps a leading dash inside a value, for the tokenizer and argparse. */
+export function valueArgv(flag: string, value: string): string[] {
+  return value.startsWith('-') ? [`--${flag}=${value}`] : [`--${flag}`, value]
+}
+
+export function quoteOption(flag: string, value: string): string {
+  return `--${flag}${value.startsWith('-') ? '=' : ' '}${quoteArgument(value)}`
+}
+
+export function argvValue(argv: readonly string[], flag: string): string | undefined {
+  let value: string | undefined
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === `--${flag}`) value = argv[++i]
+    else if (argv[i]!.startsWith(`--${flag}=`)) value = argv[i]!.slice(flag.length + 3)
+  }
+  return value
+}
+
+/** Free questions keep apostrophes; quoted text and text after -- are literal. */
+function analyzeParts(args: string) {
+  const raw = args.trimStart().replace(/^analyze(?=\s|$)/, '')
+  let question = '', session: string | undefined, captureSessionId: string | undefined
+  let hasSession = false, hasCapture = false, quote: string | undefined
+  for (let i = 0; i < raw.length;) {
+    const ch = raw[i]!
+    const boundary = i === 0 || /\s/.test(raw[i - 1]!)
+    if (quote) {
+      question += ch; i++
+      if (ch === '\\' && quote === '"' && i < raw.length) question += raw[i++]
+      else if (ch === quote) quote = undefined
+      continue
+    }
+    if (boundary && /^--(?=\s|$)/.test(raw.slice(i))) { question += raw.slice(i + 2); break }
+    if (boundary) {
+      const flag = /^--?(session-id|session)(?=\s|=|$)/.exec(raw.slice(i))
+      if (flag) {
+        if (flag[1] === 'session') hasSession = true
+        else hasCapture = true
+        const value = /^--?(?:session-id|session)(?:=|\s+)("(?:\\.|[^"\\])*"|'[^']*'|[^\s]+)(?=\s|$)/.exec(raw.slice(i))
+        const decoded = value ? tokenize(value[1]!)[0] : undefined
+        if (value && decoded !== undefined && (!decoded.startsWith('-') || /^--?(?:session-id|session)=/.test(value[0]))) {
+          if (flag[1] === 'session') session = decoded
+          else captureSessionId = decoded
+          i += value[0].length; continue
+        }
+      }
+      if (ch === '"' || ch === "'") quote = ch
+    }
+    question += ch; i++
+  }
+  return { question: question.trim() || undefined, session, captureSessionId, hasSession, hasCapture }
+}
+
+export function analyzeSelection(args: string): { question: string | undefined; session: string | undefined; captureSessionId?: string } {
+  const parsed = analyzeParts(args)
+  return { question: parsed.question, session: parsed.session, ...(parsed.captureSessionId === undefined ? {} : { captureSessionId: parsed.captureSessionId }) }
+}
+
+export function selectionError(flags: Parsed['flags'], rawAnalyze?: string): string | undefined {
+  const selected = rawAnalyze ? analyzeParts(rawAnalyze) : undefined
+  const session = selected ? selected.session : flags.session
+  const capture = selected ? selected.captureSessionId : flags['session-id']
+  const hasSession = selected ? selected.hasSession : flags.session !== undefined
+  const hasCapture = selected ? selected.hasCapture : flags['session-id'] !== undefined
+  if (hasSession && (typeof session !== 'string' || !session.trim())) return '--session needs a session id, prefix, or transcript path.'
+  if (hasCapture && (typeof capture !== 'string' || !capture.trim())) return '--session-id needs an exact session id inside the capture.'
+  if (hasCapture && !hasSession) return '--session-id requires --session <capture path>.'
+  if (typeof capture === 'string' && (capture.length > 4096 || capture.includes('\u0000'))) return '--session-id must be an exact captured session id up to 4096 characters, without NUL.'
+  return undefined
+}
+
 /** Every subcommand the grammar names, in the help table's order. */
 export const SUBCOMMANDS: readonly string[] = [
   'overview', 'pane', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'view',

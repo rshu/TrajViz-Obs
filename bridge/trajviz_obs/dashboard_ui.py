@@ -90,6 +90,8 @@ _CSS = """
   .obs-dashboard .obs-workflow-body .wf-scroll { max-height: 50vh; }
 }
 @media (max-width: 768px) {
+  .obs-dashboard #analysis-sidebar.right { width: calc(100vw - 32px) !important;
+    max-width: calc(100vw - 32px) !important; right: calc(32px - 100vw) !important; }
   .obs-dashboard .obs-file-row { flex-direction: column; }
   .obs-dashboard .obs-file-row > .column,
   .obs-dashboard .obs-file-row > .block,
@@ -130,13 +132,16 @@ _CSS = """
 """
 
 _JS = """() => {
-  // Native charts and callback state are light-only in TrajViz 0.2.
+  // Keep the dashboard presentation consistent with its native chart colors.
   document.documentElement.style.colorScheme = 'light';
   document.documentElement.classList.remove('dark');
   document.body?.classList.remove('dark');
   const root = document.querySelector('.gradio-container');
   if (!root || root.dataset.obsLayoutBound) return [];
   root.dataset.obsLayoutBound = 'true';
+  // Hidden overflow can scroll this root when focusing the mobile tab strip.
+  // Clip it without creating a second, invisible horizontal scroll container.
+  root.style.overflow = 'clip';
   let queued = false;
   let sourceSettled = false;
   let measuredTabs = null;
@@ -210,8 +215,8 @@ _GUIDE = {
 <p><strong>1 · Overview</strong>Start with Summary for health and issues. Contents opens tools, agents, context, diagnostics, and labels.</p>
 <p><strong>2 · Workflow</strong>Follow individual steps. Click an issue’s step number to jump to its evidence.</p>
 <p><strong>3 · Comparison</strong>Compare runs. Patterns, Raw Data, and Labels provide the supporting detail.</p>
-</div><p class="obs-model-note">For Claude Code’s model, use <code>/obs analyze</code> or <code>/obs fixes</code>.
-The browser’s AI controls use your <code>ANALYZE_*</code> environment settings.</p></details></section>""",
+</div><p class="obs-model-note">Use <code>/obs analyze</code> or <code>/obs fixes</code> for your host’s configured model.
+The browser’s AI controls use the connection in Settings, with environment settings as defaults.</p></details></section>""",
     "converge": """<section class="obs-guide" aria-label="Comparison guide">
 <div class="obs-guide-header"><h1>Compare trajectories</h1><p>Choose a comparison mode below.</p></div>
 <details><summary>How to compare runs</summary><div class="obs-guide-grid">

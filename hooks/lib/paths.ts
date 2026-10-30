@@ -2,6 +2,7 @@
 // name is a string literal (validate reads them off this source), and every
 // helper taking `$` is a function declaration (validate follows `$` into one).
 import type { EngineInterface } from 'claude-code'
+import { sha256 } from './identity'
 
 const PLUGIN_DIR = 'trajviz-obs'
 
@@ -54,8 +55,9 @@ export async function configDir($: EngineInterface): Promise<string> {
 }
 
 /** Where a session's artifacts go: `<cacheRoot>/sessions/<session-id>`. */
-export async function artifactsDir($: EngineInterface, sessionId: string): Promise<string> {
-  return `${await cacheRoot($)}/sessions/${sessionId}`
+export async function artifactsDir($: EngineInterface, sessionId: string, captureSessionId?: string, sourcePath?: string): Promise<string> {
+  const root = `${await cacheRoot($)}/sessions`
+  return captureSessionId === undefined ? `${root}/${sessionId}` : `${root}/captures/${sha256(JSON.stringify([sourcePath ?? sessionId, captureSessionId]))}`
 }
 
 /** The TrajViz virtual environment, `<cacheRoot>/venv`. */

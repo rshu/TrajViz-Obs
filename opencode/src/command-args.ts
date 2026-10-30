@@ -1,4 +1,4 @@
-import { BOOLEAN_FLAGS, parseArgs, suggest, type Parsed } from './shared/args.js'
+import { BOOLEAN_FLAGS, parseArgs, selectionError, suggest, type Parsed } from './shared/args.js'
 
 const VIEW = ['limit', 'offset', 'json']
 const OUTPUT = ['o', 'out']
@@ -12,13 +12,16 @@ const FLAGS: Record<string, readonly string[]> = {
   attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [],
   setup: ['extras', 'source'], doctor: [], help: [], cancel: [], report: [],
 }
-const SESSION = ['overview', 'pane', 'brief', 'view', ...Object.keys(FLAGS).filter(k => FLAGS[k] === VIEW), 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution']
+const SESSION = ['overview', 'pane', 'brief', 'view', ...Object.keys(FLAGS).filter(k => FLAGS[k] === VIEW), 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution', 'sessions']
 const NO_POSITIONALS = ['overview', 'brief', 'help', 'doctor', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'cancel', 'report']
 
 /** Pure validation shared by local TUI commands and the server. */
 export function validateArguments(args: string, parsed: Parsed = parseArgs(args)): string | undefined {
   const { sub, positional, flags, passthrough } = parsed
-  if (sub === 'analyze' || sub === 'collect' || sub === 'converge-cli') return undefined
+  if (sub === 'collect' || sub === 'converge-cli') return undefined
+  const invalidSelection = selectionError(flags, sub === 'analyze' ? args : undefined)
+  if (invalidSelection) return invalidSelection
+  if (sub === 'analyze') return undefined
   const allowed = FLAGS[sub]
   if (!allowed) {
     const near = suggest(sub)
@@ -26,8 +29,9 @@ export function validateArguments(args: string, parsed: Parsed = parseArgs(args)
   }
   if (flags.session === true || (typeof flags.session === 'string' && !flags.session.trim())) return '--session needs a session id, prefix, or transcript path.'
   if (flags.session !== undefined && !SESSION.includes(sub)) return `--session is not supported by /obs ${sub}.`
+  if (flags['session-id'] !== undefined && (!SESSION.includes(sub) || sub === 'sessions')) return `--session-id is not supported by /obs ${sub}.`
   for (const [flag, value] of Object.entries(flags)) {
-    if (flag !== 'session' && !allowed.includes(flag)) return `Unknown option '--${flag}' for /obs ${sub}. /obs help lists the supported options.`
+    if (flag !== 'session' && flag !== 'session-id' && !allowed.includes(flag)) return `Unknown option '--${flag}' for /obs ${sub}. /obs help lists the supported options.`
     if (BOOLEAN_FLAGS.includes(flag) && value !== true) return `--${flag} does not take a value.`
     if (OUTPUT.includes(flag) && (value === true || !value.trim())) return '-o/--out needs an output path.'
     if (!BOOLEAN_FLAGS.includes(flag) && value === true) return `--${flag} needs a value.`
@@ -37,7 +41,7 @@ export function validateArguments(args: string, parsed: Parsed = parseArgs(args)
   if (sub === 'watch' || sub === 'statusline') invalid ||= positional.length > 1 || (positional.length === 1 && !['on', 'off'].includes(positional[0]!))
   if (sub === 'schemas') invalid ||= positional.length > 1
   if (sub === 'view') invalid ||= positional.slice(1).some(p => !/^[^=]+=/.test(p))
-  if ((sub === 'dashboard' || sub === 'converge') && positional[0] === 'stop') invalid ||= Object.keys(flags).some(name => name !== 'session')
+  if ((sub === 'dashboard' || sub === 'converge') && positional[0] === 'stop') invalid ||= Object.keys(flags).some(name => name !== 'session' && name !== 'session-id')
   if (invalid) return `Unexpected arguments for /obs ${sub}. /obs help lists the supported form.`
   return undefined
 }

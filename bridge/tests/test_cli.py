@@ -13,7 +13,7 @@ BRIDGE = Path(__file__).resolve().parents[1]
 def test_doctor_envelope(run_cli):
     code, out = run_cli(["doctor"])
     assert code == 0
-    assert out["trajviz"]["version"].startswith("0.2")
+    assert out["trajviz"]["version"].startswith("0.3")
     assert set(out["extras"]) == {"charts", "llm", "app"}
     assert "available" in out["attribution"] and "ready" in out["llm_env"]
 
@@ -182,7 +182,7 @@ def test_launcher_runs_isolated(tmp_path):
     proc = subprocess.run([sys.executable, "-I", str(BRIDGE / "trajviz_obs_cli.py"), "doctor"], cwd=tmp_path,
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr
-    assert json.loads(proc.stdout)["trajviz"]["version"].startswith("0.2")
+    assert json.loads(proc.stdout)["trajviz"]["version"].startswith("0.3")
 
 
 def _run_without_requests(tmp_path, *args):

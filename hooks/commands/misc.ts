@@ -8,7 +8,7 @@ import { claimRefresh, releaseRefresh } from '../lib/state'
 import { publicationGeneration } from '../lib/publication'
 import { restoreStatusLine } from '../lib/watch'
 import type { CommandContext } from './index'
-import { EMPTY_TEXT, errorRow, sessionSpec } from './overview'
+import { EMPTY_TEXT, errorRow, captureSessionSpec, sessionSpec } from './overview'
 import { fmtWhen } from './sessions'
 
 /** `doctor` answers at once; `attribution` loads the run and a reference set, `collect` reads other tools' logs: the plan's 600 s. */
@@ -84,7 +84,7 @@ async function attribution($: EngineInterface, ctx: CommandContext, spec: string
     if (v !== undefined) values.push(`--${name}`, v)
   }
   await ensureReady($, ctx.options)
-  const { argv } = await sessionArgv($, spec)
+  const { argv } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
   const doc = await runBridge<Empty | AttributionDoc>($, ['attribution', ...argv, ...values], { timeoutMs: PASS_TIMEOUT_MS })
   if ('empty' in doc) return EMPTY_TEXT
   return attributionText(doc)
