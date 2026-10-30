@@ -27,7 +27,7 @@ Restart OpenCode. The first `/obs` installs a private TrajViz runtime; opening a
 
 After an assistant response, run `/obs` for a summary, `/obs pane` for the live panel, or `/obs dashboard` for the browser dashboard. Use the displayed **Open URL** action; remote servers need port forwarding.
 
-The panel has Overview, Tools, Issues, Patterns, Agents, Context, and Timeline tabs. `/obs pane close` closes it. `/obs watch off` disables automatic refresh; `/obs statusline on` adds a compact footer. `/obs cancel` cancels a running command.
+The panel has Overview, Tools, Issues, Patterns, Agents, Context, and Timeline tabs. See the [demo screenshots](../README.md#demo). `/obs pane close` closes it. `/obs watch off` disables automatic refresh; `/obs statusline on` adds a compact footer. `/obs cancel` cancels a running command.
 
 Use `/obs help` for all commands. Diagnostics, exports, comparisons, analysis, fixes, step labeling, and optional attribution follow the [shared usage guide](https://github.com/rshu/TrajViz-Obs#use). `/obs sessions` lists this project's saved sessions; session commands accept `--session <id|prefix|path>`.
 
@@ -62,4 +62,4 @@ bun test
 npm pack
 ```
 
-The package includes the OpenCode adapter and shared Python runtime. Keep real-session fixtures, logs, and screenshots outside the repository. OpenCode 1 and desktop GUI extensions are outside this adapter's scope.
+The package includes the OpenCode adapter and shared Python runtime. Keep private session fixtures, logs, and test output outside the repository. OpenCode 1 and desktop GUI extensions are outside this adapter's scope.

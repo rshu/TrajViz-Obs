@@ -62,11 +62,24 @@ Watch refreshes an open pane after turns. `/obs statusline on` pins a summary un
 
 ## Demo
 
-Claude Code overview and live pane in light mode, rendered from recorded output of a controlled test session:
+Terminal screenshots are rendered from recorded output of real, controlled test sessions.
+
+**Claude Code** — overview and live pane in light mode:
 
 ![Claude Code overview and live pane in light mode](assets/demo-terminal-light.png)
 
-Dashboard summary from the same session:
+**OpenCode 2** — live overview in light mode:
+
+![OpenCode 2 live overview with session metrics, health, and issues in light mode](assets/demo-opencode-overview-light.png)
+
+<details>
+<summary>OpenCode 2: main agent and subagent breakdown</summary>
+
+![OpenCode 2 Agents tab with per-agent steps, tokens, tools, and duration](assets/demo-opencode-agents.png)
+
+</details>
+
+**Browser dashboard** — summary from the Claude Code demo session:
 
 ![Dashboard summary with session health, tool success, and issues](assets/demo-dashboard.jpg)
 
