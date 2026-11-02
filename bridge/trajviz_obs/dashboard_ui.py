@@ -279,6 +279,10 @@ def decorate_dashboard(app: gr.Blocks, kind: str) -> gr.Blocks:
     """Wrap a native dashboard while preserving all its components and events."""
     import gradio as gr
 
+    from .comparison_ui import adapt_comparisons
+
+    adapt_comparisons(app, kind)
+
     if kind == "insight":
         _sequence_attribution_load(app)
     for block in app.blocks.values():

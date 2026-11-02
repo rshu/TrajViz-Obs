@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import shutil
 import subprocess
@@ -21,7 +22,8 @@ def test_decoration_preserves_every_native_component_and_callback(kind, tmp_path
     callbacks = [fn.fn for fn in native.fns.values() if fn.fn is not None]
     app = decorate_dashboard(native, kind)
     assert all(app.blocks[key] is block for key, block in blocks.items())
-    assert all(any(fn.fn is callback for fn in app.fns.values()) for callback in callbacks)
+    assert all(any(inspect.unwrap(fn.fn) is inspect.unwrap(callback) for fn in app.fns.values()
+                   if fn.fn is not None) for callback in callbacks)
     plots = [block for block in app.blocks.values() if isinstance(block, gr.Plot)]
     assert plots and all("obs-chart" in block.elem_classes for block in plots)
     assert any(isinstance(block, gr.HTML) and 'aria-label="' in str(block.value) and "obs-guide" in str(block.value)

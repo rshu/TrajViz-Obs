@@ -30,7 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from e2e_fixtures import native_run, prepare_comparison_inputs
+from e2e_fixtures import native_run, prepare_comparison_inputs, prepare_cost_inputs
 from optional_matrix import prepare_attribution_reference, prepare_inputs, source_hashes
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -448,8 +448,50 @@ def exercise_converge(app: Dashboard, fixtures: dict, ledger: dict) -> None:
     ledger["checks"].extend(["Converge all three modes", "Converge missing inputs", "Converge exact pairwise outcome metrics", "Converge milestone/cost/divergence/anchor plots", "Converge batch aggregation", "Converge fuzzy before/after improvement", "Converge data-root traversal refusal"])
 
 
+def exercise_comparison_costs(app: Dashboard, paths: dict, ledger: dict) -> None:
+    """Use native upload/callback routes, including Gradio's stored Overview state."""
+    from gradio_client import handle_file
+
+    upload = lambda key: handle_file(str(paths[key]))
+    if app.kind == "dashboard":
+        app.call("_do_load", upload("missing"), "", None)
+        report, _, _, status = app.call("on_run_comparison", upload("zero"), None, "", None, None)
+        require("Comparison complete" in status and ["Total Tokens", "0", "unknown"] in table_rows(report)
+                and ["Duration", "0.0s", "unknown"] in table_rows(report), "Insight lost missing/zero cost distinction")
+        group, timeline, behavior = app.call("on_run_group_scorecard", [upload("zero"), upload("positive"), upload("partial")], "")
+        rows = table_rows(group)[1:]
+        require(rows[0][4:6] == ["unknown", "unknown"] and rows[1][4:6] == ["0s", "0"]
+                and rows[2][5] == "20" and rows[3][5] == "unknown", "Scorecard fabricated a zero or lost a measured zero")
+        require("Tokens unavailable" in json.dumps(figure(timeline)) and "Tool coverage" in behavior
+                and "Unknown pairs lack complete" in behavior,
+                "Scorecard timeline or behavioral sections lost evidence")
+        app.call("_do_load", upload("positive"), "", None)
+        cleared = app.call("_reset_comparison")
+        require("unknown means" not in str(cleared), "Changing Overview retained the old scorecard")
+        report = app.call("on_run_comparison", upload("zero"), None, "", None, None)[0]
+        require(["Total Tokens", "0", "20"] in table_rows(report), "Complete comparison did not recover after missing input")
+        ledger["checks"].extend(["Insight uploaded missing/partial/zero/positive costs", "scorecard timeline unknown hover",
+                                 "comparison source reset and recovery"])
+    else:
+        report, _, segments, waterfall, _ = app.call("compare_uploads", upload("zero"), upload("missing"), None, 50, False)
+        require(["Total Tokens", "0", "unknown"] in table_rows(report)
+                and ["Duration", "0.0s", "unknown"] in table_rows(report), "Converge fabricated missing costs")
+        require(all(not figure(chart)["data"] and "Cost unknown" in json.dumps(figure(chart))
+                    for chart in (segments, waterfall)), "Unknown cost charts drew numeric placeholders")
+        batch = app.call("do_batch", upload("mixed_manifest"), 50, False)
+        require("2 of 2 tasks compared" in batch and "Cost evidence: 1 of 2 comparisons complete" in batch
+                and ["unknown", "20", "unknown", "1.1s", "unknown"] in table_rows(batch),
+                "Batch coverage or per-task unknown costs were lost")
+        intervention = app.call("do_before_after", upload("before_manifest"), upload("after_manifest"), 50, False)
+        require("No comparable metric observations are available" in intervention and "Metric Deltas" not in intervention
+                and "Cost evidence: 1 of 2 comparisons complete" in intervention, "Missing costs produced a false intervention effect")
+        ledger["checks"].extend(["Converge uploaded missing/zero costs", "unknown segment/divergence cost charts",
+                                 "mixed batch cost coverage", "incomplete before/after has no fabricated cost deltas"])
+
+
 def run(python: str, output: Path, *, attribution_root: Path | None = None) -> dict:
     fixtures = prepare_comparison_inputs(output / "fixtures")
+    costs = prepare_cost_inputs(output / "fixtures")
     sid = "ddd44444-0000-4000-8000-000000000004"
     fixtures.update(session_id=sid, agent_run=native_run(output / "fixtures" / f"{sid}.jsonl", sid, regression=True))
     child = native_run(output / "fixtures" / sid / "subagents/agent-worker-a.jsonl", sid, agent="worker-a")
@@ -487,11 +529,13 @@ def run(python: str, output: Path, *, attribution_root: Path | None = None) -> d
         insight = Dashboard(python, "dashboard", ["--transcript", str(fixtures["agent_run"]), "--labels", str(labels["agent"]), "--window", "1000000"], output, env, ledger)
         try:
             exercise_insight(insight, fixtures, labels, provider, ledger, attribution)
+            exercise_comparison_costs(insight, costs, ledger)
         finally:
             insight.close()
         converge = Dashboard(python, "converge", ["--data-root", str(output / "fixtures")], output, env, ledger)
         try:
             exercise_converge(converge, fixtures, ledger)
+            exercise_comparison_costs(converge, costs, ledger)
         finally:
             converge.close()
         require(source_hashes(output / "fixtures") == hashes, "Dashboard changed its source fixtures")

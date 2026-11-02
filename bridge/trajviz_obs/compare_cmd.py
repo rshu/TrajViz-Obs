@@ -15,7 +15,6 @@ import copy
 import hashlib
 import json
 import os
-from bisect import bisect_left
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
@@ -26,12 +25,11 @@ from agent_trajviz import Trajectory
 
 from . import paths
 from .cli import register
+from .comparison_quality import metric_coverage, project_report, project_scorecard
 from .compat import (
     EmptySession,
     load_plugins,
     load_run,
-    project_analysis,
-    project_view,
     protect_run_outputs,
     resolve_input_path,
 )
@@ -80,7 +78,7 @@ def _outcome_table(outcome: dict) -> str:
 def _alignment(summary: dict) -> str:
     a = summary.get("alignment") or {}
     level = (summary.get("confidence") or {}).get("alignment")
-    parts = [f"{name} {_num(a.get(key))}" for name, key in (
+    parts = [f"{name} {_num(a.get(key) if a.get(f'{key}_observed') is not False else None)}" for name, key in (
         ("F1", "alignment_f1"), ("recall", "reference_recall"), ("precision", "behavioral_precision"),
         ("overhead", "overhead_ratio"), ("harmful", "harmful_ratio"))]
     return f"Alignment{f' ({level})' if level else ''}: " + " · ".join(parts)
@@ -126,37 +124,57 @@ def _compare_text(views: dict[str, tv.View]) -> str:
                       *(_clip(line, LINE_CHARS) for line in lines), *(["Notes:", *notes] if notes else [])])
 
 
-def _native_comparison_evidence(views: dict[str, tv.View], reference: Trajectory, compared: Trajectory) -> None:
+def _native_comparison_evidence(views: dict[str, tv.View], report: dict,
+                                reference: Trajectory, compared: Trajectory) -> None:
     """Keep native missing metrics explicit in schema-2 comparison outputs.
 
     Comparison token fields are still integer-only in the published schema.
     Preserve those canonical values with observation flags and coverage, and
     render unknown values as such. This does not change action alignment.
     """
-    fields = {}
-    for side, run in (("reference", reference), ("compared", compared)):
-        analysis = project_analysis(run)
-        if analysis is run._analysis:
-            continue
-        for metric in ("tokens.total", "duration"):
-            fields[f"{side}.{metric}"] = analysis.data_quality["fields"][metric]
-    if not fields:
+    projected = project_report(report, reference, compared)
+    coverage = projected.get("_obs_cost_coverage")
+    if coverage is None:
         return
+    fields = {f"{side}.{metric}": value for side, run in (("reference", reference), ("compared", compared))
+              for metric, value in metric_coverage(run).items()}
     summary = copy.deepcopy(views["comparison_summary"].data)
     for side in ("reference", "compared"):
-        for metric, key in (("tokens.total", "tokens"), ("duration", "duration_s")):
-            if (coverage := fields.get(f"{side}.{metric}")) is not None:
-                summary["outcome"][f"{side}_{key}_observed"] = coverage["status"] == "observed"
+        summary["outcome"][f"{side}_tokens_observed"] = coverage[side]["tokens"]
+        summary["outcome"][f"{side}_duration_s_observed"] = coverage[side]["elapsed"]
+        # Duration is nullable in schema 2, and an explicit elapsed zero is valid.
+        summary["outcome"][f"{side}_duration_s"] = projected["outcome"][f"{side}_duration_s"]
+    for metric, value in projected.get("alignment", {}).items():
+        if metric == "harmful_cost":
+            for name, cost in value.items():
+                summary["alignment"]["harmful_cost"][f"{name}_observed"] = cost is not None
+        else:
+            summary["alignment"][f"{metric}_observed"] = value is not None
     observed = all(row["status"] == "observed" for row in fields.values())
-    availability = {"status": "observed" if observed else "partial" if any(row["observed"] for row in fields.values())
-                    else "unavailable", "basis": "source_records", "fields": fields}
     summary["metric_coverage"] = fields
+    summary["_obs_cost_coverage"] = coverage
+    summary["_obs_costs_complete"] = projected["_obs_costs_complete"]
     if not observed:
         summary["notes"].insert(0, "Token or timing evidence is incomplete; unobserved costs are unknown, not zero.")
     # Missing costs do not invalidate observed step counts or action alignment.
-    summary_availability = {**availability, "status": "observed" if observed else "partial"}
+    summary_availability = {"status": "observed" if observed else "partial", "basis": "source_records", "fields": fields}
     views["comparison_summary"] = replace(views["comparison_summary"], data=summary, availability=summary_availability)
-    views["segment_costs"] = replace(views["segment_costs"], availability=availability)
+    costs = {key: value for key, value in fields.items() if not key.endswith(".duration")}
+    availability = {"status": "observed" if projected["_obs_costs_complete"] else "partial" if any(
+        row["observed"] for row in costs.values()) else "unavailable", "basis": "source_records", "fields": costs}
+    segments = copy.deepcopy(views["segment_costs"].data)
+    for kind in ("reference_segments", "compared_segments", "segment_comparison"):
+        for canonical, display in zip(segments.get(kind, []), projected.get("segments", {}).get(kind, []), strict=True):
+            for metric in ("tokens", "recall", "precision", "overhead"):
+                if metric in display:
+                    canonical[f"{metric}_observed"] = display[metric] is not None
+    views["segment_costs"] = replace(views["segment_costs"], data=segments, availability=availability)
+    patterns = copy.deepcopy(views["divergence"].data)
+    for canonical, display in zip(patterns, projected.get("patterns", []), strict=True):
+        for metric, value in display.get("estimated_extra_cost", {}).items():
+            if metric in {"tokens", "latency_ms"}:
+                canonical["estimated_extra_cost"][f"{metric}_observed"] = value is not None
+    views["divergence"] = replace(views["divergence"], data=patterns, availability=availability)
 
 
 def compare_sessions(current: Trajectory, other_path: str, *, anchor_patch: str | None, fuzzy: bool, reverse: bool,
@@ -183,7 +201,7 @@ def compare_sessions(current: Trajectory, other_path: str, *, anchor_patch: str 
     except ValueError as exc:
         raise BridgeError("compare_failed", str(exc)) from exc
     views = tv.comparison_views(report)
-    _native_comparison_evidence(views, reference, compared)
+    _native_comparison_evidence(views, report, reference, compared)
     orientation = {"reference": ref_path, "compared": cmp_path}
     path = _views_file(destination, views, orientation=orientation)
     return {"path": path, "orientation": orientation, "summary": views["comparison_summary"].data,
@@ -203,46 +221,18 @@ def _scorecard_text(views: dict[str, tv.View]) -> str:
     labels = behavior.get("labels") or {}
     baseline = behavior.get("baseline_run_id")
     similar = (behavior.get("similarity") or {}).get(baseline) or {}
+    observed = (behavior.get("similarity_observed") or {}).get(baseline) or {}
     lines = [table, ""]
     if baseline is not None:
         name = labels.get(baseline, baseline)
-        pairs = [f"{labels.get(rid, rid)} {_num(score)}" for rid, score in similar.items() if rid != baseline]
+        pairs = [f"{labels.get(rid, rid)} {_num(score if observed.get(rid) is not False else None)}"
+                 for rid, score in similar.items() if rid != baseline]
         lines.append(f"Similarity to baseline {name}: " + (" · ".join(pairs) if pairs else "none"))
     for rid, patterns in (behavior.get("patterns_vs_baseline") or {}).items():
         if patterns:
             found = ", ".join(f"{p.get('label') or p.get('type')} ×{_num(p.get('count'))}" for p in patterns)
             lines.append(f"Patterns vs baseline, {labels.get(rid, rid)}: {found}")
     return "\n".join(_clip(line, LINE_CHARS) if "\n" not in line else line for line in lines).rstrip()
-
-
-def _native_scorecard_evidence(result: dict, sources: list[Trajectory | str]) -> dict:
-    """Project nullable scorecard and timeline metrics without altering canonical runs."""
-    result = copy.deepcopy(result)
-    timelines = {row["run_id"]: row for row in result["timelines"]["runs"]}
-    for row, run in zip(result["rows"], sources, strict=True):
-        if not isinstance(run, Trajectory) or row.get("error"):
-            continue
-        analysis = project_analysis(run)
-        if analysis is run._analysis:
-            continue
-        fields = analysis.data_quality["fields"]
-        row["data_quality"] = copy.deepcopy(analysis.data_quality)
-        row["tokens_observed"] = fields["tokens.total"]["status"] == "observed"
-        if not row["tokens_observed"]:
-            row.update(tokens=None, peak_occupancy=None, peak_pct=None)
-        if fields["tool_outcomes"]["status"] != "observed":
-            row["tool_success_pct"] = None
-        if analysis.metrics["wall_clock"] is None:
-            row.update(wall_clock_s=None, wall_clock_fmt="?")
-        known_tokens = {step["step"]: step["total"] is not None
-                        for step in project_view(run, run.view("token_usage")).data["steps"]}
-        missing_tokens = sorted(step["index"] for step in run.steps if step.get("role") == "assistant"
-                                and not known_tokens.get(step["index"], False))
-        for segment in timelines.get(row["run_id"], {}).get("segments", []):
-            first = bisect_left(missing_tokens, segment["start"])
-            if first < len(missing_tokens) and missing_tokens[first] <= segment["end"]:
-                segment["tokens"] = None
-    return result
 
 
 def scorecard(current: Trajectory | None, others: list[str], *, fuzzy: bool, labels: list[str] | None, no_self: bool,
@@ -275,7 +265,7 @@ def scorecard(current: Trajectory | None, others: list[str], *, fuzzy: bool, lab
         result = tv.compare_runs(sources, labels=labels, fuzzy_commands=fuzzy)
     except ValueError as exc:
         raise BridgeError("compare_failed", str(exc)) from exc
-    views = tv.run_group_views(_native_scorecard_evidence(result, sources))
+    views = tv.run_group_views(project_scorecard(result, sources))
     path = _views_file(destination, views)
     return {"path": path, "rows": views["run_scorecard"].data, "text": _scorecard_text(views)}
 

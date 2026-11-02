@@ -127,7 +127,6 @@ Run `/obs doctor` to check setup or `/obs setup` to install dependencies. If `/o
 
 - Timing is estimated from transcripts; workflow-spawned work and subagent finish times may be incomplete.
 - Operation-based OTLP captures support observed metrics and diagnostics; transcript alignment and capability attribution require supported native transcripts.
-- Browser comparison tables can show zero for missing native cost data. Use `/obs compare` or `/obs scorecard` to distinguish unknown values from measured zero.
 - Imported sessions require manual refresh after their inputs change. Claude Code files above **32 MiB** also require manual refresh; OpenCode has [live-capture limits](opencode/README.md#options). Insight analyzes at most the first **2,000 steps**; `/obs json --with-trajectory` retains the full parsed trajectory.
 - Real-session validation covers **macOS**. Linux and Windows still need platform-specific end-to-end testing.
 

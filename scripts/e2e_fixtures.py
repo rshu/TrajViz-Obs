@@ -62,3 +62,42 @@ def prepare_comparison_inputs(output: Path) -> dict[str, Path]:
                                          'anchor': anchor.name} for tid in ('addition', 'addition-repeat')]))
         manifests[f'{name}_manifest'] = manifest
     return {'before': before, 'after': after, 'reference': reference, 'anchor': anchor, **manifests}
+
+
+def prepare_cost_inputs(output: Path) -> dict[str, Path]:
+    """Native missing, partial, positive and measured-zero comparison controls."""
+    output.mkdir(parents=True, exist_ok=True)
+    paths = {}
+    base = 1_790_000_000_000
+    for kind in ("missing", "zero", "positive", "partial"):
+        messages = []
+        for index in range(2):
+            measured = kind != "missing"
+            start = base if kind == "zero" else base + index * 1000
+            end = start if kind == "zero" else start + 100
+            tool = {"type": "tool", "id": f"call-{index}", "name": "shell",
+                    "state": {"status": "error", "input": {"command": "false"}, "error": "controlled failure"}}
+            message = {"type": "assistant", "id": f"message-{index}", "agent": "build", "finish": "stop",
+                       "model": {"id": "controlled"}, "content": [tool]}
+            if measured:
+                message["time"] = {"created": start, "completed": end}
+                tool["time"] = {"created": start, "ran": start, "completed": end}
+            if kind != "missing" and not (kind == "partial" and index == 1):
+                message["tokens"] = {"input": 0 if kind == "zero" else 5, "output": 0 if kind == "zero" else 2,
+                                     "reasoning": 0, "cache": {"read": 0 if kind == "zero" else 3, "write": 0}}
+            messages.append(message)
+        session = {"id": kind}
+        if kind != "missing":
+            session["time"] = {"created": base, "updated": base if kind == "zero" else base + 1100}
+        path = output / f"{kind}.json"
+        path.write_text(json.dumps({"source_format": "opencode_v2", "schema_version": 1,
+                                    "session": session, "messages": messages}), encoding="utf-8")
+        paths[kind] = path
+    groups = {"mixed": [("known", "zero"), ("unknown", "missing")],
+              "before": [("task", "missing")], "after": [("task", "zero")]}
+    for name, cases in groups.items():
+        path = output / f"cost-{name}-manifest.json"
+        path.write_text(json.dumps([{"task_id": task, "reference": paths["positive"].name,
+                                     "compared": paths[kind].name} for task, kind in cases]), encoding="utf-8")
+        paths[f"{name}_manifest"] = path
+    return paths
