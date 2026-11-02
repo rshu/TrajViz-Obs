@@ -258,7 +258,7 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     require(len(preload) == 1 and app.ready.get("labels_preloaded") is True, "Native source/labels preload is not registered")
     source = app.raw(preload[0])[0]
     require(Path(source["path"]).resolve() == fixtures["agent_run"].resolve(), "Page load returned the wrong trajectory")
-    loaded = app.mapped("_do_load", source, "", raw=True)
+    loaded = app.mapped("_do_load", source, None, "", None, raw=True)
     require(app.get_output(loaded, label="Window limit (tokens)") == 1_000_000, "Preloaded 1M context override was lost")
     details_markup = app.get_output(loaded, elem_id="wf-detail-store")
     encoded = re.search(r'data-b64="([^"]+)"', details_markup)
@@ -278,10 +278,10 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     ledger["checks"].extend(["exact-path page preload", "1M context override", "sibling subagent merge", "Overview native chart set", "Raw Data", "Workflow detail payload"])
 
     # The browser's native change/click handlers expose five label plots through the same API.
-    reset = app.raw("_reset_labels", source)
+    reset = app.raw("_reset_labels", source, None, None)
     sidecar = value_of(reset[-1])
     require(Path(sidecar["path"]).resolve() == labels["agent"].resolve(), "Native label reset lost the preloaded sidecar")
-    drawn = app.mapped("do_load_labels", sidecar, raw=True)
+    drawn = app.mapped("do_load_labels", sidecar, None, raw=True)
     charts = [figure(value) for key, value in drawn.items() if app.components[key]["type"] == "plot"]
     require(len(charts) == 5 and all(chart["data"] for chart in charts), "Not all five native label charts loaded")
     require(charts[0]["data"][0]["y"] == [9], "Phase counts do not cover all nine assistant labels")
@@ -368,9 +368,9 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     ledger["checks"].extend(["closed AI sidebar privacy", "AI first analysis", "AI follow-up history", "AI reopen and clear chat", "streamed AI issue fixes"])
 
     # Additional real uploads must retain upstream defaults and not inherit the selected run's labels.
-    switched = app.mapped("_do_load", handle_file(str(fixtures["before"])), "")
+    switched = app.mapped("_do_load", handle_file(str(fixtures["before"])), "", None)
     require(app.get_output(switched, label="Window limit (tokens)") == 200_000, "An unrelated upload inherited the selected 1M window")
-    cleared = app.call("_reset_labels", handle_file(str(fixtures["before"])))
+    cleared = app.call("_reset_labels", handle_file(str(fixtures["before"])), None)
     require(value_of(cleared[-1]) is None, "An unrelated upload inherited another session's labels")
     reset_comparison = app.call("_reset_comparison")
     require("Comparison complete" not in str(reset_comparison) and value_of(reset_comparison[2]).get("type") == "plotly",
@@ -403,7 +403,7 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     ledger["checks"].append("downloadable populated HTML export")
 
     if attribution:
-        app.call("_do_load", handle_file(attribution["transcript"]), "")
+        app.call("_do_load", handle_file(attribution["transcript"]), "", None)
         result, status = app.call("on_diagnose", attribution["agent"], attribution["instance"], attribution["reference_root"])
         require("Diagnosis complete" in status and "missed_relevant_file" in result and "deductive" in result,
                 "Dashboard did not render real objective attribution")
@@ -414,7 +414,7 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
         ledger["checks"].append("honest missing optional attribution setup")
 
     # Failed loads must disarm the previous report and not leave a stale comparison/Workflow behind.
-    failed = app.mapped("_do_load", None, "")
+    failed = app.mapped("_do_load", None, "", None)
     require(value_of(app.get_output(failed, label="Export HTML")) is None and app.get_output(failed, elem_id="wf-detail-store") == "",
             "Clearing trajectory retained an export or stale Workflow detail")
     ledger["checks"].append("clearing source removes previous result state")

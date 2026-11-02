@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { EngineInterface, On, StateAddress } from 'claude-code'
-import type { EmptySnapshot } from '../types'
+import type { EmptySnapshot, RefreshState } from '../types'
 import { BridgeError } from './lib/bridge'
 import { BUSY_STALE_MS, captureSnapshot, mintId, parseSnapshotId, provenanceLine, storeSnapshot, takeSnapshot } from './lib/snapshot'
 import { claimRefresh, releaseRefresh } from './lib/state'
@@ -8,6 +8,7 @@ import { rememberTranscript, selectSession } from './lib/session'
 import { errorRow } from './commands/overview'
 import { maybeOpenPane } from './commands/pane'
 import { SNAPSHOT } from './testdata/snapshot'
+import { sha256 } from './lib/identity'
 
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
@@ -67,6 +68,18 @@ function host(on: On, world: World = {}): { ran: string[][] } {
 
 const json = (doc: unknown): RunAnswer => ({ exitCode: 0, stdout: `${JSON.stringify(doc)}\n` })
 
+/** Session-scoped storage retained when the host creates a new hook environment. */
+function refreshStore(on: On, initial: RefreshState) {
+  const store = { value: initial, version: 0 }
+  on('state.get', { plugin: 'trajviz-obs', key: 'refresh' }, () => ({ value: store }))
+  on('state.set', { plugin: 'trajviz-obs', key: 'refresh' }, (_, e) => {
+    if (e.ifVersion !== undefined && e.ifVersion !== store.version) return { value: { isSet: false, version: store.version } }
+    store.value = e.value
+    return { value: { isSet: true, version: ++store.version } }
+  })
+  return store
+}
+
 const obs = ($: { command: { run: (args: never) => Promise<{ text?: string; context?: readonly string[] }> } }, args: string) =>
   $.command.run({ command: 'obs', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
 
@@ -100,10 +113,33 @@ test('empty session row text', async ($, on) => {
 
 test('busy guard', async ($, on) => {
   const { ran } = host(on, { bridge: { snapshot: json(SNAPSHOT) } })
-  on('state.get', { plugin: 'trajviz-obs', key: 'refresh' }, () => ({ value: { value: HELD, version: 1 } }))
+  const store = refreshStore(on, HELD)
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  store.value = HELD
+  store.version++
   expect((await obs($, '')).text).toBe('An analysis is already running; try again in a moment.')
   expect(ran).toEqual([])
+})
+
+test('a freshly loaded environment releases the unloaded environment\'s abandoned refresh lock', async ($, on) => {
+  host(on, { bridge: { snapshot: json(SNAPSHOT) } })
+  const store = refreshStore(on, HELD)
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  expect(store.value.busy).toBe(false)
+  expect((await obs($, '')).text).toMatch(/^obs snapshot 1 · /)
+})
+
+test('duplicate session start in one live environment preserves its active refresh claim', async ($, on) => {
+  host(on, { bridge: { snapshot: json(SNAPSHOT) } })
+  const store = refreshStore(on, HELD)
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  store.value = HELD
+  store.version++
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  expect((await obs($, '')).text).toBe('An analysis is already running; try again in a moment.')
+  store.value = { ...HELD, busy: false, busySince: 0 }
+  store.version++
+  expect((await obs($, '')).text).toMatch(/^obs snapshot 1 · /)
 })
 
 test('a stale busy is reclaimed', async ($, on) => {
@@ -138,20 +174,35 @@ test('load error verbatim with its path', async ($, on) => {
 })
 
 test('--session resolves through the bridge and snapshots as kind other', async ($, on) => {
+  const importedArtifacts = `${CACHE}/sessions/imports/${sha256('/p/bbb333.jsonl')}`
   const { ran } = host(on, {
     bridge: {
       resolve: json({ path: '/p/bbb333.jsonl', session_id: 'bbb333', project_dir: '/p', kind: 'file' }),
-      snapshot: json({ ...SNAPSHOT, artifacts: { ...SNAPSHOT.artifacts, dir: `${CACHE}/sessions/bbb333` }, transcript: { ...SNAPSHOT.transcript, path: '/p/bbb333.jsonl', session_id: 'bbb333' } }),
+      snapshot: json({ ...SNAPSHOT, artifacts: { ...SNAPSHOT.artifacts, dir: importedArtifacts }, transcript: { ...SNAPSHOT.transcript, path: '/p/bbb333.jsonl', session_id: 'bbb333' } }),
     },
   })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const out = await obs($, '--session bbb')
   expect(out.text!.split('\n')[0]).toMatch(/^obs snapshot 1 · /)
-  expect(out.context![0]).toContain(`${CACHE}/sessions/bbb333`)
+  expect(out.context![0]).toContain(importedArtifacts)
   expect(ran.map(r => r.slice(3))).toEqual([
     ['resolve', '--cwd', CWD, '--config-dir', `${HOME}/.claude`, '--session', 'bbb'],
-    ['snapshot', '--transcript', '/p/bbb333.jsonl', '--artifacts', `${CACHE}/sessions/bbb333`, '--kind', 'other'],
+    ['snapshot', '--transcript', '/p/bbb333.jsonl', '--artifacts', importedArtifacts, '--kind', 'other'],
   ])
+})
+
+for (const imported of [false, true]) test(`a fresh ${imported ? 'imported' : 'current'} snapshot advertises the artifacts directory used by later commands`, async ($, on) => {
+  const path = imported ? '/saved/trajectory.jsonl' : DERIVED
+  const id = imported ? 'trajectory' : 'abc'
+  const { ran } = host(on, { bridge: {
+    resolve: json({ path, session_id: id, kind: 'file' }),
+    snapshot: json({ ...SNAPSHOT, artifacts: { ...SNAPSHOT.artifacts, dir: null }, transcript: { ...SNAPSHOT.transcript, path, session_id: id } }),
+  } })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  const out = await obs($, imported ? '--session /saved/trajectory.jsonl' : '')
+  const call = ran.find(argv => argv[3] === 'snapshot')!
+  const artifacts = call[call.indexOf('--artifacts') + 1]!
+  expect(out.context![0]).toContain(`go under ${artifacts} (`)
 })
 
 test('ambiguous --session lists the candidates with their start times', async ($, on) => {

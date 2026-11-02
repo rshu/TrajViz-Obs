@@ -63,7 +63,7 @@ async function exportJson($: EngineInterface, ctx: CommandContext, spec: string 
 async function bundle($: EngineInterface, ctx: CommandContext, spec: string | undefined): Promise<string> {
   await ensureReady($, ctx.options)
   const { transcript } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
-  const call = ['bundle', '--transcript', transcript.path, '--artifacts', await artifactsDir($, transcript.sessionId, transcript.captureSessionId, transcript.path)]
+  const call = ['bundle', '--transcript', transcript.path, '--artifacts', await artifactsDir($, transcript.sessionId, transcript.captureSessionId, spec ? transcript.path : undefined)]
   if (transcript.captureSessionId !== undefined) call.push(...valueArgv('session-id', transcript.captureSessionId))
   const out = outFlag(ctx)
   if (out) call.push('--out', out)

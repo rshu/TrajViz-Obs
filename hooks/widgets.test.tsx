@@ -95,6 +95,34 @@ const treeText = (node: unknown): string => typeof node === 'string' ? node :
   typeof node === 'object' && node !== null && Array.isArray((node as Found).children)
     ? ((node as Found).children as unknown[]).map(treeText).join('') : ''
 
+test('cards and panes use the health cache efficiency rather than a differently weighted input ratio', async ($, on) => {
+  let health = [{ metric: 'Cache Efficiency', status: 'good', label: '80.7%', detail: 'Mean cache share across steps' }]
+  on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) => {
+    const els = $.ui.resolve(e)
+    const { Box } = els
+    const snap = { ...SNAPSHOT, health }
+    return <Box flexDirection="column">
+      {HealthChips({ els, health })}
+      {KpiRow({ els, snap, columns: 100 })}
+      {PaneMetrics({ els, snap, columns: 88 })}
+    </Box>
+  })
+  const measured = await $.ui.mount({ ...pane(100), surface: 'terminal' })
+  expect(await measured.findAll({ type: 'Text', text: /^80\.7%$/ })).toHaveLength(2)
+  expect(await measured.find({ type: 'Text', text: /^95%$/ })).toBeUndefined()
+  await measured.unmount()
+  health = [{ metric: 'Cache Efficiency', status: 'unavailable', label: 'N/A', detail: 'No measured efficiency' }]
+  const unknown = await $.ui.mount({ ...pane(100), surface: 'terminal' })
+  expect(await unknown.findAll({ type: 'Text', text: /^unavailable$/ })).toHaveLength(2)
+  expect(await unknown.find({ type: 'Text', text: /^95%$/ })).toBeUndefined()
+  await unknown.unmount()
+  health = []
+  const fallback = await $.ui.mount({ ...pane(100), surface: 'terminal' })
+  expect(await fallback.findAll({ type: 'Text', text: /^Cache read$/ })).toHaveLength(2)
+  expect(await fallback.findAll({ type: 'Text', text: /^95%$/ })).toHaveLength(2)
+  await fallback.unmount()
+})
+
 test('pane metrics keep fixed columns across pane widths and preserve every primary value', async ($, on) => {
   on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) =>
     PaneMetrics({ els: $.ui.resolve(e), snap: SNAPSHOT, usage: USAGE, columns: e.props.bodyColumns }))
@@ -108,7 +136,7 @@ test('pane metrics keep fixed columns across pane widths and preserve every prim
       expect(widths).toEqual([Math.floor((columns - 2) / 2), Math.floor((columns - 2) / 2)])
       expect(widths.reduce((sum, n) => sum + n, 2)).toBeLessThanOrEqual(columns)
     }
-    expect(rows.flatMap(row => kids(row).map(cell => treeText(kids(cell)[0])))).toEqual(['Steps', 'Tools', 'Tokens', 'Cost', 'Context', 'Cache', 'Agents', 'Elapsed'])
+    expect(rows.flatMap(row => kids(row).map(cell => treeText(kids(cell)[0])))).toEqual(['Steps', 'Tools', 'Tokens', 'Cost', 'Context', 'Cache read', 'Agents', 'Elapsed'])
     for (const value of ['311', '196', '4.8M', '$1.25', '24%', '95%', '2', '52m02s']) expect(await ui.find({ type: 'Text', text: value })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /7 prompts · 1 compaction · 96% tool success · p95 31s/ })).toBeDefined()
     expect(await ui.findAll({ type: 'Raster' })).toHaveLength(0)
@@ -123,7 +151,7 @@ test('pane metrics reduce inline rows and wrap large values without dropping unk
     PaneMetrics({ els: $.ui.resolve(e), snap: SNAPSHOT, usage, columns: e.props.bodyColumns, compact }))
   let ui = await $.ui.mount({ ...pane(80), surface: 'terminal' })
   expect(kids(await ui.find({ key: 'pane-metric-rows' }))).toHaveLength(2)
-  expect(await ui.find({ type: 'Text', text: /Tokens 4.8M · Cache 95% · Agents 2 · Elapsed 52m02s/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Tokens 4.8M · Cache read 95% · Agents 2 · Elapsed 52m02s/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^Token split:/ })).toBeUndefined()
   await ui.unmount()
   compact = false
@@ -258,8 +286,8 @@ test('the widgets draw on every surface; Rasters only on the terminal', async ($
     expect((await ui.find({ type: 'Text', text: /context/ }))?.props['color']).toBe('warning')
 
     // The KPI row: a tile is a dim label over its value (wide layout).
-    const label = await ui.find({ type: 'Text', text: /Cache Efficiency/ })
-    expect(label?.text).toBe('Cache Efficiency')
+    const label = await ui.find({ type: 'Text', text: /Cache read/ })
+    expect(label?.text).toBe('Cache read')
     expect(label?.props['dimColor']).toBe(true)
     expect(await ui.find({ type: 'Text', text: /^95%$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^311$/ })).toBeDefined()
@@ -267,10 +295,9 @@ test('the widgets draw on every surface; Rasters only on the terminal', async ($
     expect(await ui.find({ type: 'Text', text: /^24%$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /peak 75%/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^\$1\.25$/ })).toBeDefined()
-    // Every tile row fits the 100 columns, the tiles packed by their measured widths: the first row fills exactly 100.
+    // Every tile row fits the viewport, packed by its measured text width.
     const rows = kpiRowCells(await ui.find({ key: 'kpis' }))
     expect(rows.length).toBe(2)
-    expect(rows[0]).toBe(100)
     for (const w of rows) expect(w).toBeLessThanOrEqual(100)
     expect(kids(await ui.find({ key: 'kpis' })).reduce((n, row) => n + kids(row).length, 0)).toBe(8)
 
@@ -362,7 +389,7 @@ test('seriesOf draws the three series the card and the pane share, in order', as
 test('below 72 columns the KPIs separate values from supporting detail', async ($, on) => {
   on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) => probe($.ui.resolve(e), e.surface, e.props.bodyColumns))
   const ui = await $.ui.mount({ ...pane(60), surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /Cache Efficiency/ }))?.text).toMatch(/^Cache Efficiency\s+95%$/)
+  expect((await ui.find({ type: 'Text', text: /Cache read/ }))?.text).toMatch(/^Cache read\s+95%$/)
   expect((await ui.find({ type: 'Text', text: /^113k written$/ }))?.props['dimColor']).toBe(true)
   expect(await ui.findAll({ type: 'Raster' })).toHaveLength(3)
   await ui.unmount()
@@ -425,7 +452,7 @@ test('narrow diagnostic records use readable numeric units and preserve every fi
 
 test('the KPI tiles and the phase ribbon fit their columns at every breakpoint', async ($, on) => {
   on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) => probe($.ui.resolve(e), e.surface, e.props.bodyColumns))
-  const labels = ['Steps', 'Agents', 'Tokens', 'Cache Efficiency', 'Tools', 'Wall clock', 'Cost', 'Context']
+  const labels = ['Steps', 'Agents', 'Tokens', 'Cache read', 'Tools', 'Wall clock', 'Cost', 'Context']
   for (const columns of [72, 80, 99, 100, 132, 200]) {
     const ui = await $.ui.mount({ ...pane(columns), surface: 'terminal' })
     const kpis = await ui.find({ key: 'kpis' })

@@ -148,7 +148,14 @@ class _Projection:
 
     @cached_property
     def metrics(self):
-        return _project_metrics(self._original.metrics, self.data_quality)
+        result = _project_metrics(self._original.metrics, self.data_quality)
+        if result["total_duration"] is None:
+            from agent_trajviz.insight.metrics import session_wall_clock_seconds
+
+            # The canonical native metric falls back to the sum of durations,
+            # which is zero even when no duration was recorded.
+            result["wall_clock"] = session_wall_clock_seconds(self.steps, self._original.raw.get("timing"))
+        return result
 
     @cached_property
     def verdicts(self):
@@ -233,6 +240,7 @@ def project_view(run, view):
     steps = {step["index"]: step for step in run.steps}
     if view.id == "summary":
         data.update(tokens=copy.deepcopy(projection.metrics["tokens"]), data_quality=copy.deepcopy(projection.data_quality),
+                    wall_clock_s=projection.metrics.get("wall_clock"),
                     tool_success_rate=projection.metrics.get("tool_success_rate"),
                     output_tokens_per_sec=projection.metrics.get("output_tokens_per_sec"),
                     health={row["metric"]: row["status"] for row in projection.verdicts})

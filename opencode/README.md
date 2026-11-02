@@ -29,6 +29,8 @@ After an assistant response, run `/obs` for a summary, `/obs pane` for the live 
 
 The panel has Overview, Tools, Issues, Patterns, Agents, Context, and Timeline tabs. See the [demo screenshots](../README.md#demo). `/obs pane close` closes it. `/obs watch off` disables automatic refresh; `/obs statusline on` adds a compact footer. `/obs cancel` cancels a running command.
 
+Focus the panel to switch tabs with **1–7**, scroll with **↑↓**, **PgUp/PgDn**, or **Home/End**, and toggle fullscreen with **f**.
+
 Use `/obs help` for all commands. Diagnostics, exports, comparisons, analysis, fixes, step labeling, and optional attribution follow the [shared usage guide](https://github.com/rshu/TrajViz-Obs#use). `/obs sessions` lists this project's saved sessions; session commands accept `--session <id|prefix|path>`.
 
 For a saved OTLP capture, use `/obs sessions --session /path/to/capture`, then `/obs --session /path/to/capture --session-id <id>`. Each selected session has separate artifacts and model history. Refresh imported sessions manually after their inputs change. TrajViz **0.3.1** provides all **36 views**, including `/obs view data_quality`; view JSON uses schema version **2**.

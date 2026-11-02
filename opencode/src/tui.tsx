@@ -321,16 +321,24 @@ export function setup(context: Plugin.Context): () => void {
   }
 
   function Pane(props: { panel: Panel }) {
+    let scroll: ScrollBoxRenderable | undefined
     const id = () => selected(props.panel.sessionID)
     const snapshot = () => state.snapshots[id()]
     const terminal = useTerminalDimensions()
     const compact = () => terminal().height < 34
+    const selectTab = (tab: number) => { update(draft => { draft.tab = tab }); scroll?.scrollTo(0) }
     onMount(() => props.panel.focus())
     createEffect(() => { const target = id(); if (!state.snapshots[target] && !state.errors[target]) void refresh(target) })
     context.keymap.layer(() => ({
       mode: 'global', enabled: () => props.panel.focused,
       commands: [
-        ...TABS.map((name, index) => ({ bind: String(index + 1), title: name, run: () => { update(draft => { draft.tab = index }) } })),
+        ...TABS.map((name, index) => ({ bind: String(index + 1), title: name, run: () => selectTab(index) })),
+        { bind: 'down', title: 'Scroll pane down', run: () => scroll?.scrollBy(1) },
+        { bind: 'up', title: 'Scroll pane up', run: () => scroll?.scrollBy(-1) },
+        { bind: 'pagedown', title: 'Next pane page', run: () => scroll?.scrollBy(Math.max(1, (scroll?.height ?? terminal().height) - 1)) },
+        { bind: 'pageup', title: 'Previous pane page', run: () => scroll?.scrollBy(-Math.max(1, (scroll?.height ?? terminal().height) - 1)) },
+        { bind: 'home', title: 'Start of pane', run: () => scroll?.scrollTo(0) },
+        { bind: 'end', title: 'End of pane', run: () => scroll?.scrollTo(scroll.scrollHeight) },
         { bind: 'r', title: 'Refresh', run: () => refresh(id()) },
         { bind: 'w', title: 'Toggle watch', run: () => command('watch') },
         { bind: 'd', title: 'Dashboard', run: () => command('dashboard', true) },
@@ -340,16 +348,17 @@ export function setup(context: Plugin.Context): () => void {
     }))
     return <box flexDirection="column" flexGrow={1} minHeight={0} padding={1} gap={1} onMouseDown={() => props.panel.focus()}>
       <box flexDirection="row" flexWrap="wrap" gap={1}>
-        <For each={TABS}>{(name, index) => <text fg={context.theme.text.base} onMouseDown={() => update(draft => { draft.tab = index() })}>{`${state.tab === index() ? '▸' : ''}${index() + 1} ${name}`}</text>}</For>
+        <For each={TABS}>{(name, index) => <text fg={context.theme.text.base} onMouseDown={() => selectTab(index())}>{`${state.tab === index() ? '▸' : ''}${index() + 1} ${name}`}</text>}</For>
       </box>
       <box flexDirection="row" flexWrap="wrap" gap={2}>
         <Action label="r Refresh" run={() => { void refresh(id()) }} />
         <Action label={`w Watch ${settings.watch ? 'on' : 'off'}`} run={() => { void command('watch') }} />
         <Action label="d Dashboard" run={() => { void command('dashboard', true) }} />
+        <Action label="f Fullscreen" run={() => props.panel.toggleFullscreen()} />
         <Action label="x Close" run={() => props.panel.close()} />
       </box>
       <Text muted>{`${id() === props.panel.sessionID ? 'Current session' : 'Saved session'}${state.files[id()]?.captureSessionID ? ` · ${state.files[id()]!.captureSessionID}` : ''}${snapshot() && !snapshot()!.empty && (snapshot() as Snapshot).title ? ` · ${(snapshot() as Snapshot).title}` : ''}`}</Text>
-      <scrollbox flexGrow={1} minHeight={0} scrollX={false} contentOptions={{ gap: 1 }}>
+      <scrollbox ref={scroll} flexGrow={1} minHeight={0} scrollX={false} contentOptions={{ gap: 1 }}>
         <Show when={state.errors[id()]}><Text>{`Unable to refresh: ${state.errors[id()]}. Press r to retry.`}</Text></Show>
         <Show when={state.tab === 0 && snapshot() && !snapshot()!.empty}>
           <box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={compact() ? 0 : 1}>
@@ -364,7 +373,7 @@ export function setup(context: Plugin.Context): () => void {
           <Text>{section.title}</Text><Text muted={section.title === 'Notes'}>{section.lines.join('\n')}</Text>
         </box>}</For>
       </scrollbox>
-      <Text muted>{snapshot() && !snapshot()!.empty ? `Updated ${localTime((snapshot() as Snapshot).generated_at)} · ${(snapshot() as Snapshot).counts.assistant_steps} steps · watch ${settings.watch ? 'on' : 'off'}` : 'Dashboard provides the full interactive workflow.'}</Text>
+      <Text muted>{snapshot() && !snapshot()!.empty ? `Updated ${localTime((snapshot() as Snapshot).generated_at)} · ${(snapshot() as Snapshot).counts.assistant_steps} steps · watch ${settings.watch ? 'on' : 'off'} · ↑↓ scroll` : 'Dashboard provides the full interactive workflow.'}</Text>
     </box>
   }
 

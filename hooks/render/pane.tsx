@@ -10,7 +10,7 @@ import type { Dashboards, EmptySnapshot, Flags, Snapshot } from '../../types'
 import { EMPTY_TEXT } from '../commands/overview'
 import { refreshPane } from '../commands/pane'
 import { runSelectedCommand, runSnapshotCommand } from '../lib/actions'
-import { failureSummary, fmtCompact, fmtInt, fmtPct, unavailableView } from '../lib/format'
+import { clip, failureSummary, fmtCompact, fmtInt, fmtPct, qualitySummary, unavailableView } from '../lib/format'
 import { isEmpty } from '../lib/snapshot'
 import { toggleWatch, writePaneTab } from '../lib/state'
 import {
@@ -164,6 +164,21 @@ function overviewBody(b: Body): RenderElement {
   const { els, e, snap, columns, usage } = b
   const { Box, Text } = els
   const short = e.props.scroll.bodyRows < 24
+  const issues = snap.counts.issues ?? snap.issues.length
+  // Resizing a dock into a short inline pane can leave only nine body rows.
+  // Keep the actionable finding visible before the longer evidence notes.
+  if (e.props.scroll.bodyRows < 12) return (
+    <Box flexDirection="column">
+      {PaneMetrics({ els, snap, usage: usage ?? undefined, columns, compact: true })}
+      {snap.issues.length ? (
+        <Box flexDirection="column">
+          <Text weight="semibold">{`Top issue: ${clip(snap.issues[0]!.title, Math.max(1, columns - 11))}`}</Text>
+          <Text dimColor>{`${fmtInt(issues)} issue${issues === 1 ? '' : 's'} · press 3 for evidence`}</Text>
+        </Box>
+      ) : <Text dimColor>No observed issues.</Text>}
+      {WarningsLine({ els, warnings: snap.trajviz.warnings })}
+    </Box>
+  )
   const latestPhase = snap.phases.reduce<Snapshot['phases'][number] | null>((latest, phase) =>
     latest === null || phase.end >= latest.end ? phase : latest, null)
   return (
@@ -353,7 +368,7 @@ export function renderPane(
   const footer =
     snap === null || isEmpty(snap)
       ? null
-      : `Updated ${timeOf(snap.generated_at)} · ${fmtInt(snap.counts.assistant_steps)} steps · watch ${flags.watch ? 'on' : 'off'}`
+      : `Updated ${timeOf(snap.generated_at)} · ${fmtInt(snap.counts.assistant_steps)} steps · watch ${flags.watch ? 'on' : 'off'}${tab === 1 && e.props.scroll.bodyRows < 12 && qualitySummary(snap) ? ' · quality: /obs view data_quality' : ''}`
   return (
     <Box flexDirection="column" gap={e.props.scroll.bodyRows < 24 ? 0 : 1}>
       <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={0}>
@@ -371,7 +386,7 @@ export function renderPane(
       {dashboards.insight ? <Text dimColor wrap="wrap">{`Dashboard: ${dashboards.insight.url}`}</Text> : null}
       {dashboards.converge ? <Text dimColor wrap="wrap">{`Compare: ${dashboards.converge.url}`}</Text> : null}
       <Box flexDirection="column">
-        <Text weight="semibold">{TABS[tab - 1] ?? TABS[0]}</Text>
+        {tab === 1 && e.props.scroll.bodyRows < 12 ? null : <Text weight="semibold">{TABS[tab - 1] ?? TABS[0]}</Text>}
         {snap?.transcript.capture_session_id !== undefined ? <Text dimColor wrap="wrap">{`Captured session: ${snap.transcript.capture_session_id}`}</Text> : null}
         {columns >= 72 && e.props.scroll.bodyRows >= 24 ? <Text dimColor wrap="wrap">{TAB_GUIDES[tab - 1] ?? TAB_GUIDES[0]}</Text> : null}
       </Box>

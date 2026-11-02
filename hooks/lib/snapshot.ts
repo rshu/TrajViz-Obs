@@ -209,7 +209,7 @@ export async function sessionArgv($: EngineInterface, spec?: string, resolvingGe
   const window = spec ? null : await contextWindow($)
   if (window !== null) argv.push('--window', String(window))
   if (captureSessionId !== undefined) argv.push(...valueArgv('session-id', captureSessionId))
-  argv.push('--artifacts', await artifactsDir($, transcript.sessionId, captureSessionId, transcript.path), '--kind', spec ? 'other' : 'current')
+  argv.push('--artifacts', await artifactsDir($, transcript.sessionId, captureSessionId, spec ? transcript.path : undefined), '--kind', spec ? 'other' : 'current')
   if (generation !== publicationGeneration()) throw new BridgeError('session_changed', 'The selected session changed during analysis; run /obs again.')
   return { transcript, argv, generation }
 }

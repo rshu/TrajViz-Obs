@@ -2,6 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On, ToolSpec } from 'claude-code'
 import { SNAPSHOT } from './testdata/snapshot'
 import { PARTIAL_SNAPSHOT } from './testdata/quality'
+import { sha256 } from './lib/identity'
 
 const HOME = '/Users/me'
 const CWD = '/Users/me/p'
@@ -235,7 +236,7 @@ test('the tool reads the session --session selected', async ($, on) => {
   ran.length = 0
   expect((await callObs($, { what: 'brief' })).result).toBe('the other session')
   const brief = bridgeCalls(ran).find(c => c[0] === 'brief')
-  expect(brief).toEqual(['brief', '--transcript', other, '--artifacts', `${CACHE}/sessions/def`, '--kind', 'other'])
+  expect(brief).toEqual(['brief', '--transcript', other, '--artifacts', `${CACHE}/sessions/imports/${sha256(other)}`, '--kind', 'other'])
 })
 
 for (const suffix of ['.jsonl', '.jsonl.zst', '.jsonl.zstd', '.manifest.txt', '.json', '.zip']) test(`model tool refreshes selected ${suffix} imports even when parent metadata is unchanged`, async ($, on) => {

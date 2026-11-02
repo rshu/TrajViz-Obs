@@ -90,11 +90,12 @@ type Kpi = { label: string; value: string; sub?: string }
 /** The KPI tiles: steps, prompts, agents, tokens, cache efficiency, tools, wall clock, cost and the live context fill. */
 function kpis(snap: Snapshot, usage?: Snapshot['engine_usage']): Kpi[] {
   const { counts, tokens, tools, timing, context } = snap
+  const cacheHealth = snap.health.find(row => /cache[\s_]*efficien/i.test(row.metric))
   const out: Kpi[] = [
     { label: 'Steps', value: fmtInt(counts.assistant_steps), sub: `${fmtInt(counts.prompts)} prompts` },
     { label: 'Agents', value: fmtInt(counts.agents), sub: `${fmtInt(counts.compactions)} compactions` },
     { label: 'Tokens', value: fmtCompact(tokens.total), sub: `${fmtCompact(tokens.input)} fresh · ${fmtCompact(tokens.cache_read)} cache · ${fmtCompact(tokens.output)} out` },
-    { label: 'Cache Efficiency', value: fmtPct(cacheEfficiency(tokens)), sub: `${fmtCompact(tokens.cache_write)} written` },
+    { label: cacheHealth ? 'Cache Efficiency' : 'Cache read', value: cacheHealth ? cacheHealth.status === 'unavailable' ? 'unavailable' : cacheHealth.label : fmtPct(cacheEfficiency(tokens)), sub: `${fmtCompact(tokens.cache_write)} written` },
     { label: 'Tools', value: fmtInt(tools.calls), sub: `${fmtPct(tools.success_rate)} ok · ${failureSummary(tools.failed, tools.unknown)}` },
     { label: 'Wall clock', value: fmtSecs(timing.wall_clock_s), sub: `avg ${fmtSecs(timing.avg_step_s)} · p95 ${fmtSecs(timing.p95_step_s)}` },
   ]
@@ -195,14 +196,16 @@ export function PaneMetrics({ els, snap, usage, columns, compact = false }: {
 }): RenderElement {
   const { Box, Text } = els
   const metrics = kpis(snap, usage)
+  const cacheLabel = metrics.some(k => k.label === 'Cache Efficiency') ? 'Cache Efficiency' : 'Cache read'
   const named = (label: string): Kpi => metrics.find(k => k.label === label) ?? { label, value: '?' }
-  const order = compact ? ['Steps', 'Tools', 'Context', 'Cost'] : ['Steps', 'Tools', 'Tokens', 'Cost', 'Context', 'Cache Efficiency', 'Agents', 'Wall clock']
+  const order = compact ? ['Steps', 'Tools', 'Context', 'Cost'] : ['Steps', 'Tools', 'Tokens', 'Cost', 'Context', cacheLabel, 'Agents', 'Wall clock']
   const items = order.map(label => {
     const k = named(label)
-    return { label: label === 'Cache Efficiency' ? 'Cache' : label === 'Wall clock' ? 'Elapsed' : label, value: k.value }
+    if (label === 'Cache Efficiency') return { label: 'Cache', value: k.value }
+    return { label: label === 'Wall clock' ? 'Elapsed' : label, value: k.value }
   })
   const width = Math.max(1, Math.floor(columns))
-  const labelWidth = 7
+  const labelWidth = Math.max(7, ...items.map(k => k.label.length))
   const pairWidth = Math.floor((width - 2) / 2)
   const across = width >= 40 && items.every(k => labelWidth + 1 + k.value.length <= pairWidth) ? 2 : 1
   const cellWidth = across === 2 ? pairWidth : width
@@ -226,7 +229,7 @@ export function PaneMetrics({ els, snap, usage, columns, compact = false }: {
         ))}
       </Box>
       {compact ? (
-        <Text dimColor wrap="wrap">{`Tokens ${named('Tokens').value} · Cache ${named('Cache Efficiency').value} · Agents ${named('Agents').value} · Elapsed ${named('Wall clock').value}`}</Text>
+        <Text dimColor wrap="wrap">{`Tokens ${named('Tokens').value} · ${cacheLabel === 'Cache read' ? cacheLabel : 'Cache'} ${named(cacheLabel).value} · Agents ${named('Agents').value} · Elapsed ${named('Wall clock').value}`}</Text>
       ) : (
         <Text dimColor wrap="wrap">{`${prompts} · ${compactions} · ${fmtPct(snap.tools.success_rate)} tool success · p95 ${fmtSecs(snap.timing.p95_step_s)}`}</Text>
       )}

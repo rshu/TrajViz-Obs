@@ -76,5 +76,5 @@ export async function overview($: EngineInterface, ctx: CommandContext): Promise
   const at = new Date(snap.generated_at)
   const text = `${provenanceLine(id, snap, Number.isNaN(at.getTime()) ? new Date() : at)}\n${snap.text}`
   await maybeOpenPane($, ctx)
-  return { text, context: [contextNote(snap.artifacts.dir ?? await artifactsDir($, snap.transcript.session_id, snap.transcript.capture_session_id, snap.transcript.path))] }
+  return { text, context: [contextNote(snap.artifacts.dir ?? await artifactsDir($, snap.transcript.session_id, snap.transcript.capture_session_id, spec ? snap.transcript.path : undefined))] }
 }

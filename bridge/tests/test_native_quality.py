@@ -2,6 +2,7 @@
 
 import copy
 import json
+from pathlib import Path
 
 import agent_trajviz as tv
 import jsonschema
@@ -28,10 +29,10 @@ def message(mid="a", tokens=None, *, content=None, completed=1000):
 
 @pytest.fixture
 def native_run(tmp_path):
-    def write(messages, children=None):
+    def write(messages, children=None, *, session_time=True):
         path = tmp_path / "native.json"
         path.write_text(json.dumps({"source_format": "opencode_v2", "schema_version": 1,
-            "session": {"id": "root", "time": {"created": BASE, "updated": BASE + 2000}},
+            "session": {"id": "root", **({"time": {"created": BASE, "updated": BASE + 2000}} if session_time else {})},
             "messages": messages, "children": children or []}))
         return path, load_run(str(path))
     return write
@@ -97,6 +98,111 @@ def test_compaction_usage_keeps_real_totals_without_changing_assistant_throughpu
     assert analysis.data_quality["fields"]["duration"] == {
         "status": "observed", "observed": 1, "partial": 0, "total": 1, "reasons": {}}
     assert analysis.metrics["output_tokens_per_sec"] == run.metrics["output_tokens_per_sec"]
+
+
+def test_recorded_elapsed_clock_survives_missing_assistant_duration(native_run):
+    _, run = native_run([message("start", completed=None),
+                         {**message("later", completed=None), "time": {"created": BASE + 2100}}], session_time=False)
+    assert project_analysis(run).metrics["total_duration"] is None
+    assert project_analysis(run).metrics["wall_clock"] == 2
+
+
+def test_missing_native_clock_is_unknown_instead_of_a_zero_duration(native_run):
+    _, run = native_run([message(completed=None)], session_time=False)
+    assert run.metrics["wall_clock"] == 0
+    assert project_analysis(run).metrics["wall_clock"] is None
+    summary = project_view(run, run.view("summary"))
+    assert summary.data["wall_clock_s"] is None
+    jsonschema.validate(summary.to_dict(), tv.view_schema("summary"))
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_native_comparison_exports_flag_missing_usage_without_fabricating_costs(native_run, tmp_path, reverse):
+    from trajviz_obs.compare_cmd import compare_sessions
+
+    unknown_path, unknown = native_run([message(completed=None)], session_time=False)
+    # Keep both loaded run identities independent from the fixture's reused path.
+    other = tmp_path / "known.json"
+    payload = json.loads(unknown_path.read_text())
+    payload["messages"] = [message(tokens=usage(0, 0, 0, 0, 0))]
+    other.write_text(json.dumps(payload))
+    canonical = copy.deepcopy(unknown.to_dict(include_raw=True))
+    result = compare_sessions(unknown, str(other), anchor_patch=None, fuzzy=False, reverse=reverse,
+                              out_dir=tmp_path / "compared")
+    unknown_side = "reference" if reverse else "compared"
+    known_side = "compared" if reverse else "reference"
+    summary = result["summary"]
+    assert summary["outcome"][f"{unknown_side}_tokens_observed"] is False
+    assert summary["outcome"][f"{unknown_side}_duration_s_observed"] is False
+    assert summary["outcome"][f"{known_side}_tokens_observed"] is True
+    assert summary["metric_coverage"][f"{unknown_side}.tokens.total"]["status"] == "unknown"
+    expected_tokens = "| tokens | ? | 0 |" if reverse else "| tokens | 0 | ? |"
+    assert expected_tokens in result["text"]
+    assert "unobserved costs are unknown, not zero" in result["text"]
+    saved = json.loads(Path(result["path"]).read_text())["views"]
+    for view in saved.values():
+        jsonschema.validate(view, tv.view_schema(view["id"]))
+    assert saved["segment_costs"]["availability"]["status"] == "partial"
+    assert unknown.to_dict(include_raw=True) == canonical
+
+
+def test_comparing_two_unknown_native_costs_keeps_action_alignment_available(native_run, tmp_path):
+    from trajviz_obs.compare_cmd import compare_sessions
+
+    path, run = native_run([message(completed=None)], session_time=False)
+    other = tmp_path / "other.json"
+    other.write_bytes(path.read_bytes())
+    result = compare_sessions(run, str(other), anchor_patch=None, fuzzy=False, reverse=False,
+                              out_dir=tmp_path / "compared")
+    assert "| tokens | ? | ? |" in result["text"]
+    assert "Alignment" in result["text"]
+    saved = json.loads(Path(result["path"]).read_text())["views"]
+    assert saved["comparison_summary"]["availability"]["status"] == "partial"
+    assert saved["segment_costs"]["availability"]["status"] == "unavailable"
+    for view in saved.values():
+        jsonschema.validate(view, tv.view_schema(view["id"]))
+
+
+@pytest.mark.parametrize("no_self", [False, True])
+def test_native_scorecards_and_timelines_preserve_unknowns_and_measured_zero(native_run, tmp_path, no_self):
+    from trajviz_obs.compare_cmd import scorecard
+
+    unknown_path, unknown = native_run([message(completed=None)], session_time=False)
+    other = tmp_path / "zero.json"
+    payload = json.loads(unknown_path.read_text())
+    payload["messages"] = [message(tokens=usage(0, 0, 0, 0, 0))]
+    other.write_text(json.dumps(payload))
+    before = unknown_path.read_bytes(), other.read_bytes(), copy.deepcopy(unknown.to_dict(include_raw=True))
+    result = scorecard(None if no_self else unknown, [str(unknown_path), str(other)] if no_self else [str(other)],
+                       fuzzy=False, labels=["unknown", "zero"], no_self=no_self, out_dir=tmp_path / "scorecard")
+    missing, measured = result["rows"]
+    assert missing["tokens"] is None and missing["tokens_observed"] is False
+    assert missing["wall_clock_s"] is None and missing["wall_clock_fmt"] == "?"
+    assert missing["peak_occupancy"] is None and missing["peak_pct"] is None
+    assert measured["tokens"] == 0 and measured["tokens_observed"] is True
+    assert "| unknown | no | 1 | ? | ? |" in result["text"]
+    saved = json.loads(Path(result["path"]).read_text())["views"]
+    for view in saved.values():
+        jsonschema.validate(view, tv.view_schema(view["id"]))
+    timelines = saved["run_timelines"]["data"]["runs"]
+    assert timelines[0]["segments"][0]["tokens"] is None
+    assert timelines[1]["segments"][0]["tokens"] == 0
+    assert before == (unknown_path.read_bytes(), other.read_bytes(), unknown.to_dict(include_raw=True))
+
+
+def test_partial_native_scorecard_keeps_observed_timeline_segments(native_run, tmp_path):
+    from trajviz_obs.compare_cmd import scorecard
+
+    path, run = native_run([message("known", usage(0, 0, 0, 0, 0)),
+                            {**message("unknown"), "agent": "plan"}])
+    other = tmp_path / "other.json"
+    other.write_bytes(path.read_bytes())
+    result = scorecard(run, [str(other)], fuzzy=False, labels=None, no_self=False, out_dir=tmp_path / "scorecard")
+    row = result["rows"][0]
+    assert row["tokens"] is None and row["data_quality"]["fields"]["tokens.total"]["status"] == "partial"
+    saved = json.loads(Path(result["path"]).read_text())["views"]
+    for run in saved["run_timelines"]["data"]["runs"]:
+        assert [segment["tokens"] for segment in run["segments"]] == [0, None]
 
 
 @pytest.mark.parametrize("invalid", [True, "7", float("nan"), -1, 1.5])

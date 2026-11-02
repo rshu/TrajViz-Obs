@@ -437,6 +437,25 @@ test('a short inline pane avoids chart stacks and long issue evidence even on a 
   await ui.unmount()
 })
 
+test('a resized inline overview keeps its top issue and route to evidence above the data notes', async ($, on) => {
+  host(on, [{ ...PARTIAL_SNAPSHOT, issues: SNAPSHOT.issues, counts: { ...PARTIAL_SNAPSHOT.counts, issues: SNAPSHOT.counts.issues } }])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($)
+  const event = pane('terminal', 88)
+  const ui = await $.ui.mount({ ...event, props: { ...event.props, placement: 'inline', scroll: { offset: 0, bodyRows: 9 } } })
+  expect(await ui.find({ type: 'Text', text: /^Top issue: / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /press 3 for evidence/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Updated .*quality: \/obs view data_quality$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Overview$/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^Updated / })).toBeDefined()
+  expect(await ui.find({ key: 'pane-trends' })).toBeUndefined()
+  await ui.press({ key: 'tab:3' })
+  await ui.unmount()
+  const details = await $.ui.mount({ ...event, props: { ...event.props, placement: 'inline', scroll: { offset: 0, bodyRows: 9 } } })
+  expect(await details.find({ type: 'Text', text: /^Issues$/ })).toBeDefined()
+  await details.unmount()
+})
+
 test('the action keys refresh, toggle watch, and run dashboard', async ($, on) => {
   const h = host(on, [SNAPSHOT, SECOND])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })

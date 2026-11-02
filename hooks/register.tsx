@@ -6,13 +6,20 @@ import { rememberTranscript } from './lib/session'
 import { isEmpty, parseSnapshotId } from './lib/snapshot'
 import { OBS_TOOL, serveTool } from './lib/tool'
 import { onTurnComplete, resetStatusLine } from './lib/watch'
-import { readDashboards, readFlags, readLatest, readPaneTab, readSession, readSnapshotMember, seedFlags } from './lib/state'
+import { readDashboards, readFlags, readLatest, readPaneTab, readSession, readSnapshotMember, resetRefreshLock, seedFlags } from './lib/state'
 import { commandFailure, dispatch } from './commands/index'
 import { cardColumns, renderCard, showsButtons } from './render/card'
 import { paneUsage, renderPane, renderPaneFailure } from './render/pane'
 
 export const register: Register = (on, options) => {
+  let started = false
   on('session.start', async ($, e, next) => {
+    // Session state survives a reload; the old environment's operations do
+    // not. A duplicate start in this live environment must retain its locks.
+    if (!started) {
+      started = true
+      await resetRefreshLock($)
+    }
     await $.command.register({
       name: 'obs',
       description: "Visualize and diagnose this session's trajectory with TrajViz",

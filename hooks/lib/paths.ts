@@ -54,10 +54,11 @@ export async function configDir($: EngineInterface): Promise<string> {
   return `${home ?? '.'}/.claude`
 }
 
-/** Where a session's artifacts go: `<cacheRoot>/sessions/<session-id>`. */
+/** Current sessions keep their native ID; imported sources and captured sessions have separate identities. */
 export async function artifactsDir($: EngineInterface, sessionId: string, captureSessionId?: string, sourcePath?: string): Promise<string> {
   const root = `${await cacheRoot($)}/sessions`
-  return captureSessionId === undefined ? `${root}/${sessionId}` : `${root}/captures/${sha256(JSON.stringify([sourcePath ?? sessionId, captureSessionId]))}`
+  if (captureSessionId !== undefined) return `${root}/captures/${sha256(JSON.stringify([sourcePath ?? sessionId, captureSessionId]))}`
+  return sourcePath === undefined ? `${root}/${sessionId}` : `${root}/imports/${sha256(sourcePath)}`
 }
 
 /** The TrajViz virtual environment, `<cacheRoot>/venv`. */

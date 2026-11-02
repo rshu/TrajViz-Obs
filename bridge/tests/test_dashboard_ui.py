@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 
 import gradio as gr
 import plotly.graph_objects as go
 import pytest
 from agent_trajviz import dashboard
 
-from trajviz_obs.dashboard_ui import decorate_dashboard, presentation
+from trajviz_obs.dashboard_ui import _JS, decorate_dashboard, presentation
 
 
 @pytest.mark.parametrize("kind", ["insight", "converge"])
@@ -216,3 +218,60 @@ def test_converge_upload_rows_stack_on_mobile_without_stacking_chart_rows(tmp_pa
     assert "obs-file-row" not in desktop
     mobile = mobile.split("\n}\n", 1)[0]
     assert ".obs-file-row { flex-direction: column; }" in mobile
+
+
+def test_step_navigation_reaches_tabs_moved_into_gradio_overflow():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required to execute the dashboard browser script")
+    script = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const calls = [];
+let controls = [{textContent: 'Workflow', click: () => calls.push('overflow')}];
+const tabs = {};
+const root = {
+  dataset: {}, style: {}, addEventListener() {},
+  querySelector: selector => selector === '.obs-main-tabs' ? tabs : null,
+  querySelectorAll: selector => selector.includes('overflow-dropdown') ? controls : [],
+};
+const historyCalls = [];
+let nativeReturnPoints = 0;
+const history = {
+  state: null,
+  replaceState: state => historyCalls.push(['source', state.tvTab]),
+  pushState: state => historyCalls.push(['target', state.tvTab]),
+};
+const window = {
+  tvClickMainTab: label => calls.push('native:' + label),
+  tvActiveMainTab: () => 'Overview', location: {href: 'http://localhost/'},
+  tvPushTabReturnPoint: () => nativeReturnPoints++,
+  tvGotoWorkflowStep: (index, options) => {
+    if (!options?.restore) history.pushState({tvTab: 'Workflow'});
+    window.tvPushTabReturnPoint('Overview');
+  },
+};
+const document = {
+  documentElement: {style: {}, classList: {remove() {}}},
+  body: {classList: {remove() {}}}, querySelector: () => root,
+};
+class Observer { observe() {} disconnect() {} }
+vm.runInNewContext('(' + JSON.parse(process.argv[1]) + ')()', {
+  document, window, history, ResizeObserver: Observer, MutationObserver: Observer,
+  requestAnimationFrame: callback => callback(),
+});
+window.tvClickMainTab('Workflow');
+controls = [{textContent: 'Workflow', click: () => calls.push('visible-tab')}];
+window.tvClickMainTab('Workflow');
+controls = [];
+window.tvClickMainTab('Comparison');
+assert.deepEqual(calls, ['overflow', 'visible-tab', 'native:Comparison']);
+window.tvGotoWorkflowStep(3);
+assert.deepEqual(historyCalls, [['source', 'Overview'], ['target', 'Workflow']]);
+assert.equal(nativeReturnPoints, 0);
+window.tvGotoWorkflowStep(3, {restore: true});
+assert.equal(historyCalls.length, 2);
+window.tvPushTabReturnPoint('Overview');
+assert.equal(nativeReturnPoints, 1);
+"""
+    subprocess.run([node, "-e", script, json.dumps(_JS)], check=True, capture_output=True, text=True, timeout=10)

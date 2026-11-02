@@ -140,6 +140,11 @@ export async function setDashboard($: EngineInterface, kind: keyof Dashboards, v
 /** How often `claimRefresh` retries a write another beat. */
 const CLAIM_TRIES = 8
 
+/** Only a freshly loaded environment can discard the previous environment's abandoned claim. */
+export async function resetRefreshLock($: EngineInterface): Promise<void> {
+  await update($, refresh, r => ({ ...r, busy: false, busySince: 0 }))
+}
+
 /**
  * Takes the refresh lock: the claim's stamp (the host's clock) when `busy`
  * was clear and is now set, null when another analysis holds it (nothing

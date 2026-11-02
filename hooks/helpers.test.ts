@@ -24,6 +24,15 @@ test('capture artifacts use verified SHA-256 identities without exposing capture
   expect(a).not.toBe(await artifactsDir($, 'capture', '../../A', '/different/capture.json'))
 })
 
+test('separate imported sources with the same session ID cannot share labels or model history', async () => {
+  const $ = envOf({ HOME: '/home/me' })
+  const a = await artifactsDir($, 'trajectory', undefined, '/run-a/trajectory.json')
+  const b = await artifactsDir($, 'trajectory', undefined, '/run-b/trajectory.json')
+  expect(a).not.toBe(b)
+  expect(a).not.toBe(await artifactsDir($, 'trajectory'))
+  expect(a).toBe(await artifactsDir($, 'renamed display ID', undefined, '/run-a/trajectory.json'))
+})
+
 /** The cells back from the Raster encoding: `[cp, fg, bg]` per cell. */
 function decodeCells(b64: string): [number, number, number][] {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'

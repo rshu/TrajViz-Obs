@@ -74,7 +74,7 @@ _CSS = """
 .obs-dashboard .insight-step-link:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .obs-dashboard .obs-workflow-filters { display: grid; align-items: start;
   grid-template-columns: auto minmax(0, 1fr) minmax(220px, .6fr); }
-.obs-dashboard .obs-workflow-filters > button { align-self: start !important; height: auto !important; }
+.obs-dashboard .obs-workflow-filters > button { align-self: start !important; justify-self: start; height: auto !important; }
 .obs-dashboard .filter-group { align-items: start; }
 .obs-dashboard .filter-options { min-width: 0; max-height: 128px; overflow-y: auto; padding: 2px; }
 .obs-dashboard .filter-chip { flex-shrink: 0; }
@@ -104,7 +104,7 @@ _CSS = """
   .obs-dashboard .overview-section-nav { padding: 4px; margin-bottom: 8px; }
   .obs-dashboard .overview-nav-title { padding: 4px 8px; margin-bottom: 0; }
   .obs-dashboard .overview-section-radio > .wrap { scrollbar-width: thin; }
-  .obs-dashboard .obs-workflow-filters { grid-template-columns: auto minmax(0, 1fr); }
+  .obs-dashboard .obs-workflow-filters { grid-template-columns: minmax(0, 1fr); }
   .obs-dashboard .obs-workflow-filters > .form { grid-column: 1 / -1; }
   .obs-dashboard .obs-workflow-body { grid-template-columns: minmax(0, 1fr); }
   .obs-dashboard .obs-workflow-body > .column { grid-column: 1; grid-row: auto !important; }
@@ -123,6 +123,7 @@ _CSS = """
 .obs-main-tabs.obs-content-medium .obs-workflow-filters { grid-template-columns: auto minmax(0, 1fr); }
 .obs-main-tabs.obs-content-medium .obs-workflow-filters > .form { grid-column: 1 / -1; }
 .obs-main-tabs.obs-content-narrow .ov-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+.obs-main-tabs.obs-content-narrow .obs-workflow-filters { grid-template-columns: minmax(0, 1fr); }
 .obs-main-tabs.obs-content-narrow .obs-workflow-body { grid-template-columns: minmax(0, 1fr); }
 .obs-main-tabs.obs-content-narrow .obs-workflow-body > .column { grid-column: 1; grid-row: auto !important; }
 .obs-main-tabs.obs-content-narrow .wf-toc-sidebar { max-height: 140px; position: static; }
@@ -161,6 +162,40 @@ _JS = """() => {
   function polish() {
     queued = false;
     const tabs = root.querySelector('.obs-main-tabs');
+    // Gradio moves narrow-screen tabs into a dropdown without role="tab".
+    // Keep upstream step links, chart clicks, and history navigation working.
+    if (typeof window.tvClickMainTab === 'function' && !window.tvClickMainTab.obsOverflowAware) {
+      const original = window.tvClickMainTab;
+      const clickTab = label => {
+        const button = Array.from(root.querySelectorAll(
+          '.obs-main-tabs [role="tab"], .obs-main-tabs .overflow-dropdown button'
+        )).find(el => el.textContent.trim() === label);
+        if (button) button.click();
+        else original(label);
+      };
+      clickTab.obsOverflowAware = true;
+      window.tvClickMainTab = clickTab;
+    }
+    if (typeof window.tvGotoWorkflowStep === 'function' && !window.tvGotoWorkflowStep.obsHistoryAware
+        && typeof window.tvPushTabReturnPoint === 'function') {
+      const originalJump = window.tvGotoWorkflowStep;
+      const originalReturn = window.tvPushTabReturnPoint;
+      let jumping = false;
+      // Save the source before the native jump pushes its step URL. Dropdown
+      // tabs miss the native capture handler; visible tabs would add it twice.
+      const gotoStep = (index, options) => {
+        const source = window.tvActiveMainTab?.();
+        if (!options?.restore && source && source !== 'Workflow') {
+          history.replaceState({...history.state, tvTab: source}, '', window.location.href);
+        }
+        jumping = true;
+        try { return originalJump(index, options); }
+        finally { jumping = false; }
+      };
+      window.tvPushTabReturnPoint = label => { if (!jumping) return originalReturn(label); };
+      gotoStep.obsHistoryAware = true;
+      window.tvGotoWorkflowStep = gotoStep;
+    }
     if (tabs && tabs !== measuredTabs) {
       resize.disconnect();
       resize.observe(tabs);
