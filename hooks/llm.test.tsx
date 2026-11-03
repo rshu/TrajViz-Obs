@@ -214,7 +214,7 @@ test('analyze asks the question as typed, runs one completion, writes the replie
   expect(repliesPath).toMatch(/replies-analyze-\d+-\d+\.json$/)
   expect(JSON.parse(files[repliesPath] as string)).toEqual({ hash: 'h1', replies: [{ index: 0, text: 'The session spent 40% of its tokens re-reading files.' }] })
   expect(bridgeCalls(ran)[1]).toEqual(['llm-apply', ...SESSION_ARGV, '--feature', 'analyze', '--replies', repliesPath, '--question', "why's it slow?"])
-  expect(out.text).toBe(['analyze: 1 call · ~7k input tokens · model sonnet', 'The session spent 40% of its tokens re-reading files.', ONE_CALL_USAGE].join('\n'))
+  expect(out.text).toBe(['analyze: 1 call · ~7k input tokens · model sonnet', 'The session spent 40% of its tokens re-reading files.', '', ONE_CALL_USAGE].join('\n'))
   // No question: TrajViz's first pass, nothing passed; `--session` is read off the raw text too.
   await obs($, 'analyze')
   expect(bridgeCalls(ran)[2]).toEqual(['llm-prompt', ...SESSION_ARGV, '--feature', 'analyze'])
@@ -291,7 +291,7 @@ test('Run proceeds; up to 4 calls are never asked', async ($, on) => {
   const out = await obs($, 'fixes')
   expect(asked).toEqual(['Run 6 model calls?'])
   expect(completions).toHaveLength(6)
-  expect(out.text).toBe(['fixes: 6 calls · ~42k input tokens · model sonnet', fixes.text, 'usage: 6,000 input · 1,200 cache read · 1,800 cache write · 300 output tokens'].join('\n'))
+  expect(out.text).toBe(['fixes: 6 calls · ~42k input tokens · model sonnet', fixes.text, '', 'usage: 6,000 input · 1,200 cache read · 1,800 cache write · 300 output tokens'].join('\n'))
   await obs($, 'fixes')
   expect(asked).toHaveLength(1)
   expect(completions).toHaveLength(10)
@@ -355,12 +355,36 @@ test('label takes its flags, labels with labelModel (or --model), and names the 
     'llm-apply', ...SESSION_ARGV, '--feature', 'label', '--replies', replyFile(files, 'label'),
     '--max-steps', '3', '--assistant-only', '--out', '/tmp/l.json', '--model', 'haiku',
   ])
-  expect(out.text).toBe(['label: 3 calls · ~21k input tokens · model haiku', labelled.text, 'Sidecar written to /tmp/l.json', 'usage: 3,000 input · 600 cache read · 900 cache write · 150 output tokens'].join('\n'))
+  expect(out.text).toBe(['label: 3 calls · ~21k input tokens · model haiku', labelled.text, '', 'Sidecar written to /tmp/l.json', '', 'usage: 3,000 input · 600 cache read · 900 cache write · 150 output tokens'].join('\n'))
   // `--model M` is the completion model and the sidecar's.
   await obs($, 'label --model opus --max-steps 3')
   expect(completions.slice(3).map(c => c.model)).toEqual(['opus', 'opus', 'opus'])
   expect(bridgeCalls(ran)[3]?.slice(-2)).toEqual(['--model', 'opus'])
 })
+
+for (const mode of ['session', 'env']) {
+  test(`label footers form a paragraph after the phase table (${mode})`, { options: { llm: mode } }, async ($, on) => {
+    const path = `${ARTIFACTS}/labels.json`
+    const table = '| phase | steps | time |\n|---|---|---|\n| validate | 1 | 1.0s |'
+    const labelled = { path, summary: {}, text: `Labels: 1 step\n\n${table}`, errors: [] }
+    const { completions } = host(on, { bridge: { 'llm-prompt': json(planOf('label', 1)), 'llm-apply': json(labelled), label: json(labelled) } })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    const out = await obs($, 'label --max-steps 1')
+    expect(out.text).toContain(`${table}\n\nSidecar written to ${path}`)
+    expect(completions).toHaveLength(mode === 'session' ? 1 : 0)
+    if (mode === 'session') expect(out.text).toContain(`Sidecar written to ${path}\n\n${ONE_CALL_USAGE}`)
+  })
+}
+
+for (const feature of ['analyze', 'fixes'] as const) {
+  test(`${feature} usage forms a paragraph after a table reply`, async ($, on) => {
+    const table = '| finding | step |\n|---|---|\n| failed assertion | 1 |'
+    const doc = feature === 'analyze' ? { reply: table, history_path: null } : { text: table, issues: [], errors: [] }
+    host(on, { bridge: { 'llm-prompt': json(planOf(feature, 1)), 'llm-apply': json(doc) } })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    expect((await obs($, feature)).text).toContain(`${table}\n\n${ONE_CALL_USAGE}`)
+  })
+}
 
 test('a headless label is capped at labelMaxSteps, an interactive one asks', { options: { labelMaxSteps: 2 } }, async ($, on) => {
   const labelled = { path: `${ARTIFACTS}/labels.json`, summary: {}, text: 'Labels', errors: [] }
@@ -471,7 +495,7 @@ test('env mode plans first, then runs ask, fixes and label through the bridge an
   expect(spawned).toEqual([])
   // Headless: no ask; the direct `label` (one request per step, no deadline) is spawned, not run.
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
-  expect((await obs($, 'label --model gpt-x --max-steps 10')).text).toBe(`label: 10 calls · ~70k input tokens · model gpt-x (env)\nLabels\nSidecar written to ${ARTIFACTS}/labels.json`)
+  expect((await obs($, 'label --model gpt-x --max-steps 10')).text).toBe(`label: 10 calls · ~70k input tokens · model gpt-x (env)\nLabels\n\nSidecar written to ${ARTIFACTS}/labels.json`)
   expect(bridgeCalls(spawned)).toEqual([['label', ...SESSION_ARGV, '--max-steps', '10', '--model', 'gpt-x']])
   expect(bridgeCalls(ran)).toHaveLength(6)
   expect(bridgeCalls(ran).map(a => a[0])).not.toContain('label')

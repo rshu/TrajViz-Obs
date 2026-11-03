@@ -132,7 +132,7 @@ test('sessions --session lists captured IDs without selecting a model source', a
 
 const COMPARE_TEXT = 'Comparison: reference `def.jsonl` → compared `abc.jsonl` (anchor: none, evidence: medium)\n\n| | reference | compared |\n|---|---|---|\n| finished | yes | no |'
 
-test('compare resolves the other run, passes its flags and prints the comparison', async ($, on) => {
+test('compare resolves the other run and separates its artifact footer from a table', async ($, on) => {
   const { ran } = host(on, {
     bridge: { resolve: resolved('def'), compare: json({ path: `${ARTIFACTS}/compare/def.json`, orientation: {}, summary: {}, text: COMPARE_TEXT }) },
   })
@@ -142,7 +142,7 @@ test('compare resolves the other run, passes its flags and prints the comparison
     [...RESOLVE, '--session', 'def'],
     ['compare', ...SESSION_ARGV, '--other', '/x/def.jsonl', '--anchor-patch', '/tmp/p.diff', '--fuzzy-commands', '--reverse'],
   ])
-  expect(out.text).toBe(`${COMPARE_TEXT}\nComparison views written to ${ARTIFACTS}/compare/def.json.`)
+  expect(out.text).toBe(`${COMPARE_TEXT}\n\nComparison views written to ${ARTIFACTS}/compare/def.json.`)
   // Bare: no flags passed; `--session` picks the current side.
   await obs($, 'compare def')
   expect(bridgeCalls(ran)[3]).toEqual(['compare', ...SESSION_ARGV, '--other', '/x/def.jsonl'])
@@ -176,7 +176,7 @@ test('compare of an empty session is the spec row', async ($, on) => {
   expect((await obs($, 'compare def')).text).toBe('Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.')
 })
 
-test('scorecard resolves every other run and passes labels and --no-self', async ($, on) => {
+test('scorecard resolves every other run and separates its artifact footer from a table', async ($, on) => {
   const text = '| run | finished | steps |\n|---|---|---|\n| me | yes | 12 |'
   const { ran } = host(on, {
     bridge: { resolve: [resolved('b'), resolved('c')], scorecard: json({ path: `${ARTIFACTS}/compare/scorecard.json`, rows: [], text }) },
@@ -188,7 +188,7 @@ test('scorecard resolves every other run and passes labels and --no-self', async
     [...RESOLVE, '--session', 'c'],
     ['scorecard', ...SESSION_ARGV, '--others', '/x/b.jsonl', '/x/c.jsonl', '--fuzzy-commands', '--labels', 'me,b,c', '--no-self'],
   ])
-  expect(out.text).toBe(`${text}\nScorecard views written to ${ARTIFACTS}/compare/scorecard.json.`)
+  expect(out.text).toBe(`${text}\n\nScorecard views written to ${ARTIFACTS}/compare/scorecard.json.`)
   const usage = 'Usage: /obs scorecard <session|path> [<session|path>...] [--fuzzy-commands] [--labels a,b] [--no-self]'
   expect((await obs($, 'scorecard')).text).toBe(usage)
   expect((await obs($, 'scorecard b --labels')).text).toBe(usage)

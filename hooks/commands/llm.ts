@@ -133,7 +133,8 @@ function resultText(feature: Feature, doc: AnalyzeDoc | FixesDoc | LabelDoc): st
   if (feature === 'analyze') return (doc as AnalyzeDoc).reply
   if (feature === 'fixes') return (doc as FixesDoc).text
   const l = doc as LabelDoc
-  return `${l.text}\nSidecar written to ${l.path}`
+  // The summary can end in a Markdown table; finish it before the artifact footer.
+  return `${l.text}\n\nSidecar written to ${l.path}`
 }
 
 /**
@@ -177,7 +178,7 @@ async function viaSession($: EngineInterface, ctx: CommandContext, req: Request,
   if (req.feature === 'label') apply.push(...labelArgv(req, model))
   const doc = await runBridge<ResultDoc>($, apply, { timeoutMs: APPLY_TIMEOUT_MS })
   if ('empty' in doc) return EMPTY_TEXT
-  return `${line}\n${resultText(req.feature, doc)}\n${usageLine(run.usage)}`
+  return `${line}\n${resultText(req.feature, doc)}\n\n${usageLine(run.usage)}`
 }
 
 /**

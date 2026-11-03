@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2 — 2026-11-03
+
+- Keep Claude Code command output paths and model usage outside Markdown tables so numeric columns stay readable.
+
 ## 0.3.1 — 2026-11-03
 
 - Keep OpenCode pane tabs, controls, session titles, and the footer readable at narrow widths.
