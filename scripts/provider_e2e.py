@@ -241,12 +241,13 @@ def exercise(provider_name: str, output: Path, cache: Path) -> dict:
         unauthorized, failed = turn(f'analyze {selector} Test unauthorized response', [(401, PRIVATE_BODY)], r'HTTP 401')
         require(len(failed) == 1 and PRIVATE_BODY not in unauthorized, 'Unauthorized request leaked its body or retried')
         malformed_path = work / 'malformed-labels.json'
+        previous_labels = b'Preserve previous labels when all attempted requests fail.'
+        malformed_path.write_bytes(previous_labels)
         _, malformed = turn(f'label {selector} --max-steps 1 --assistant-only -o "{malformed_path}"',
                                [(200, {'unexpected': PRIVATE_BODY}), (200, {'unexpected': PRIVATE_BODY})],
-                               r'prompt 0: (?:KeyError|ValueError)')
-        malformed_labels = json.loads(malformed_path.read_text())
-        require(len(malformed) == 2 and not any(row.get('label_source') == 'llm' for row in malformed_labels['steps'])
-                and PRIVATE_BODY not in json.dumps(malformed_labels), 'Malformed response retry was not safe and bounded')
+                               r'Labeling failed for all 1 attempted step')
+        require(len(malformed) == 2 and malformed_path.read_bytes() == previous_labels,
+                'All failed label requests did not preserve the previous output')
 
         expected_path = '/v1/messages' if provider_name == 'anthropic' else '/v1/chat/completions'
         for request in provider.calls:

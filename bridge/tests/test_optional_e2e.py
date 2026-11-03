@@ -1,4 +1,4 @@
-"""Real optional collectors, synthetic native stores, and honest behavior when attribution setup is missing."""
+"""Real optional collectors, synthetic native stores, and bundled attribution with reference identity checks."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ def test_collectors_export_real_stores_roundtrip_and_preserve_sources(tmp_path):
     assert ledger["status"] == "passed" and ledger["schema_validations"] >= 210
     refusals = [command for command in ledger["commands"] if command.get("upstream_exit") not in (None, 0)]
     assert len(refusals) == 3 and {command["args"][1] for command in refusals} == {"cursor", "opencode", "codearts"}
-    assert ledger["attribution_fallback"].startswith(("passed:", "not_tested:"))
-    assert ledger["attribution_verdict"].startswith("not_tested:")
+    assert ledger["attribution_fallback"].startswith("passed:")
+    assert ledger["attribution_verdict"].startswith("passed:")
 
 
 def test_optional_matrix_refuses_to_overwrite_an_existing_output(tmp_path):

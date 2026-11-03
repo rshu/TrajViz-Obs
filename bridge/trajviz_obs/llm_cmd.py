@@ -62,7 +62,7 @@ FEATURES: tuple[str, ...] = get_args(Feature)
 #: Most issues the fix judge takes (TrajViz's ``JUDGE_ISSUE_CAP``).
 FIXES_CAP = 8
 #: The labeler's own reply cap, and the timeout the mod gives each label call.
-LABEL_MAX_TOKENS, LABEL_TIMEOUT_S = 1024, 120
+LABEL_MAX_TOKENS, LABEL_TIMEOUT_S = 4096, 120
 #: Default number of steps labelled (the mod's ``labelMaxSteps``).
 DEFAULT_MAX_STEPS = 50
 #: Name recorded as the sidecar's model when the session's model labelled it and the mod named none.
@@ -281,7 +281,7 @@ def _prepare_label_output(out_path: Path, *, sources: list[Path]) -> None:
 def _label(transcript_path: str, out_path: Path, *, assistant_only: bool, model: str,
            label_options: dict | None = None, **client: Any) -> dict:
     """Label the captured run against the taxonomy bytes validated for this operation."""
-    from agent_trajviz.labeling.labeler import OutputSafetyError, label_trajectory
+    from agent_trajviz.labeling.labeler import LabelingAborted, OutputSafetyError, label_trajectory
 
     options = _label_settings(label_options)
     _prepare_label_output(out_path, sources=[Path(transcript_path), Path(options["taxonomy_path"])])
@@ -297,6 +297,8 @@ def _label(transcript_path: str, out_path: Path, *, assistant_only: bool, model:
                                     **{"base_url": "", "api_key": "", **options, **client})
     except OutputSafetyError as exc:
         raise BridgeError("bad_output", str(exc), path=str(out_path)) from exc
+    except LabelingAborted as exc:
+        raise BridgeError("labeling_failed", str(exc), path=str(out_path)) from exc
     except OSError as exc:
         raise BridgeError("bad_path", f"Cannot write labels to {out_path} ({type(exc).__name__}).",
                           path=str(out_path)) from exc

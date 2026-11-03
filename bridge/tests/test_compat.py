@@ -216,7 +216,7 @@ def test_empty_session_is_signalled(tmp_path):
         load_run(str(p))
 
 
-@pytest.mark.parametrize("version", ["0.1.9", "0.2.0", "0.3.0", "0.4.0", "1.0.0", "unknown"])
+@pytest.mark.parametrize("version", ["0.1.9", "0.2.0", "0.3.1", "0.4.0", "0.5.0", "1.0.0", "unknown"])
 def test_unsupported_trajviz_is_refused(monkeypatch, version):
     monkeypatch.setattr(compat, "TRAJVIZ_VERSION", version)
     with pytest.raises(BridgeError) as caught:
@@ -224,7 +224,7 @@ def test_unsupported_trajviz_is_refused(monkeypatch, version):
     assert caught.value.code == "unsupported_trajviz"
 
 
-@pytest.mark.parametrize("version", ["0.3.1", "0.3.2", "0.3.99"])
+@pytest.mark.parametrize("version", ["0.4.1", "0.4.2", "0.4.99"])
 def test_supported_published_minor_is_accepted(monkeypatch, version):
     monkeypatch.setattr(compat, "TRAJVIZ_VERSION", version)
     compat.check_supported()
@@ -573,3 +573,16 @@ def test_plugins_load_before_any_view_lookup_or_load(command, fake_plugins, run_
         code, out = run_cli(["scorecard", "--no-self", "--transcript", custom, "--artifacts", artifacts,
                              "--others", custom, other])
         assert code == 0 and [row.get("error") for row in out["rows"]] == [None, None]
+
+
+def test_captured_label_loader_preserves_output_protection(fixture_run, fixture_session):
+    from agent_trajviz.labeling import labeler
+
+    original = labeler.load_all_steps
+    with compat.labeler_run(fixture_run):
+        with pytest.raises(BridgeError) as caught:
+            labeler.load_all_steps(str(fixture_session), output_path=str(fixture_session))
+        assert caught.value.code == "bad_output"
+        steps = labeler.load_all_steps(str(fixture_session))
+        assert steps == fixture_run.steps and steps is not fixture_run.steps
+    assert labeler.load_all_steps is original

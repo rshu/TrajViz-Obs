@@ -18,11 +18,11 @@ resolution-markers = [
 
 [[package]]
 name = "agent-trajviz"
-version = "0.3.1"
+version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/10/4d/1d7b3727dd3b6b3535e0ffefbf05fef8039e821fcfe1778500cda745d890/agent_trajviz-0.3.1.tar.gz", hash = "sha256:88d603b0c96b824c8d8b765c1c9206ddfe426f67f5d8c4869fa1ad4ab46110ca", size = 493454, upload-time = "2026-10-29T02:52:02.988Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/e8/5f7d6a17b9db515a8e439476b28b10d91f4626660efb1ebe251dd03161f6/agent_trajviz-0.4.1.tar.gz", hash = "sha256:f724afe975aaa667d07689a7bdffda16145519d7aba811eefcd1f758bb9731a8", size = 911143, upload-time = "2026-11-03T05:52:49.673Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cc/e2/eac965a8d51c941e9852a746b60b45c4a72d5f179eb241ce7acf97292789/agent_trajviz-0.3.1-py3-none-any.whl", hash = "sha256:60681f3dc7c5628916c99f222c856b36762b6218fffd70cb62c6509030525519", size = 589877, upload-time = "2026-10-29T02:52:00.997Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/c8/8770302f76f7e0fa00c65768b29fda16616526a8025957e38351b9aad8c6/agent_trajviz-0.4.1-py3-none-any.whl", hash = "sha256:8db5f76b4056073c70b03934fb83b678c7ef970aec25ff5c271cfcd0fa48e017", size = 1087297, upload-time = "2026-11-03T05:52:47.757Z" },
 ]
 
 [package.optional-dependencies]
@@ -1805,7 +1805,7 @@ wheels = [
 
 [[package]]
 name = "trajviz-obs-bridge"
-version = "0.2.2"
+version = "0.3.0"
 source = { virtual = "." }
 dependencies = [
     { name = "agent-trajviz", extra = ["all"] },
@@ -1820,7 +1820,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-trajviz", extras = ["all"], specifier = "==0.3.1" },
+    { name = "agent-trajviz", extras = ["all"], specifier = "==0.4.1" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.23,<5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },

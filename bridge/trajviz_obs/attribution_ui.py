@@ -1,0 +1,64 @@
+"""Public wording for the bundled evaluation workspace, scoped to each app.
+
+Only generated labels, status messages and errors change. Saved evidence,
+settings, remembered values, operation results and source paths keep their
+native identities and contents.
+"""
+from __future__ import annotations
+
+import functools
+
+from .compat import attribution_message
+
+_STATUS = {"on_awe_apply": 3, "on_awe_restore": -2, "on_awe_reset": -2}
+_WORKER_NOTE = ("For OpenCode subagent diagnoses, use `/obs attribution` for session-accurate child evidence. "
+                "The bundled evaluation workers can group child evidence by agent role.")
+_GRAPH_LABEL = ("aria-label='Numbered AWE provenance graph'", "aria-label='Numbered attribution provenance graph'")
+
+
+def _callback(original):
+    import gradio as gr
+
+    name = original.__name__
+
+    @functools.wraps(original)
+    def present(*args, **kwargs):
+        try:
+            result = original(*args, **kwargs)
+        except gr.Error as exc:
+            raise gr.Error(attribution_message(exc.message), duration=exc.duration, visible=exc.visible,
+                           title=exc.title, print_exception=exc.print_exception) from None
+        if name in _STATUS:
+            values = list(result)
+            index = _STATUS[name]
+            values[index] = attribution_message(values[index])
+            return tuple(values)
+        if name in {"on_awe_import", "on_awe_filter", "on_awe_case", "on_awe_node", "on_awe_import_result"}:
+            # This literal belongs to generated SVG markup. Imported quotes
+            # are escaped, so recorded text and source values are unaffected.
+            return tuple(value.replace(*_GRAPH_LABEL) if isinstance(value, str) else value for value in result)
+        return result
+
+    present._obs_attribution_workspace = True
+    return present
+
+
+def adapt_attribution_workspace(app) -> None:
+    """Preserve native callback contracts and the workspace's independent state."""
+    import gradio as gr
+
+    workspaces = [component for component in app.blocks.values()
+                  if isinstance(component, gr.Tab) and component.label in {"AWE", "Attribution workspace"}]
+    for component in workspaces:
+        component.label = "Attribution workspace"
+        if not any("obs-attribution-worker-note" in (child.elem_classes or []) for child in component.children):
+            with app:
+                note = gr.Markdown(_WORKER_NOTE, elem_classes=["obs-attribution-worker-note"])
+            app.children.remove(note)
+            component.children.insert(1, note)
+    for entry in app.fns.values():
+        original = entry.fn
+        if (callable(original) and getattr(original, "__module__", "") == "agent_trajviz.insight.ui.awe_tab"
+                and getattr(original, "__name__", "").startswith("on_awe_")
+                and not getattr(original, "_obs_attribution_workspace", False)):
+            entry.fn = _callback(original)

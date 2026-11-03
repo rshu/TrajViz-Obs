@@ -1,6 +1,6 @@
 """Version-checked compatibility shims for TrajViz internals.
 
-The plugin ships against the published ``agent-trajviz>=0.3.1,<0.4``. These integrations need internal seams:
+The plugin ships against the published ``agent-trajviz>=0.4.1,<0.5``. These integrations need internal seams:
 
 1. **The real context window everywhere.** ``context_pressure(window_limit=)`` and the ``context_*`` views take
    an override, but the issues, the brief and the export do not. :func:`load_run` writes the window
@@ -10,8 +10,8 @@ The plugin ships against the published ``agent-trajviz>=0.3.1,<0.4``. These inte
    labeler's ``call_llm`` (and its retry sleep) for the duration of a capture or replay.
 3. **A step cap on env-mode labeling.** ``label_trajectory()`` labels every step; :func:`labeler_step_cap`
    wraps its real ``call_llm`` so only the first steps reach the endpoint, as session mode labels them.
-4. **Native Claude attribution evidence.** :func:`install_attribution_guard` refuses capability blame when
-   the optional attribution parser cannot preserve native JSONL Read/Bash calls in an isolated capability probe.
+4. **Attribution evidence.** :func:`install_attribution_guard` retains the bundled engine's native-source
+   certification and refuses non-finite capability evidence before it reaches JSON or the dashboard.
 5. **Local command display records.** Native conversion skips known command UI text, retaining source
    positions and tool results so inspecting a session does not become part of its work trajectory.
 6. **OpenCode 2 records.** The versioned capture adapter normalizes the native message schema and
@@ -30,10 +30,8 @@ import functools
 import inspect
 import json
 import math
-import os
 import re
 import sys
-import tempfile
 import types
 import weakref
 from collections.abc import Callable, Iterable, Iterator
@@ -51,8 +49,8 @@ from .native_records import normalize_native_records
 #: The installed TrajViz version.
 TRAJVIZ_VERSION: str = agent_trajviz.__version__
 
-#: Supported releases: ``>=0.3.1,<0.4`` as ``[lowest, first unsupported)``.
-_SUPPORTED = ((0, 3, 1), (0, 4, 0))
+#: Supported releases: ``>=0.4.1,<0.5`` as ``[lowest, first unsupported)``.
+_SUPPORTED = ((0, 4, 1), (0, 5, 0))
 
 #: ``LoadError`` codes that mean "no assistant step yet" for the session being written.
 _EMPTY_CODES = frozenset({"unknown_format", "no_steps"})
@@ -84,12 +82,12 @@ def _release(version: str) -> tuple[int, int, int] | None:
 
 
 def check_supported() -> None:
-    """Refuse a TrajViz outside ``>=0.3.1,<0.4``, whose internals the shims were not written against."""
+    """Refuse a TrajViz outside ``>=0.4.1,<0.5``, whose internals the shims were not written against."""
     release = _release(TRAJVIZ_VERSION)
     if release is None or not _SUPPORTED[0] <= release < _SUPPORTED[1]:
         raise BridgeError("unsupported_trajviz",
-                          f"agent-trajviz {TRAJVIZ_VERSION} is installed; this bridge needs >=0.3.1,<0.4.",
-                          version=TRAJVIZ_VERSION, required=">=0.3.1,<0.4")
+                          f"agent-trajviz {TRAJVIZ_VERSION} is installed; this bridge needs >=0.4.1,<0.5.",
+                          version=TRAJVIZ_VERSION, required=">=0.4.1,<0.5")
 
 
 @functools.cache
@@ -419,58 +417,6 @@ def dashboard_server_options(port: int | None) -> dict[str, Any]:
                                 max_file_size=_serve.DEFAULT_MAX_FILE_SIZE, auth=_serve.auth_from_env())
 
 
-@functools.lru_cache(maxsize=16)
-def _attribution_reads_native_claude(parser: Callable) -> bool:
-    """Probe the uncached attribution parser without changing its reference root or reading a real trajectory.
-
-    Some attribution parser versions send every non-Pi JSONL file through their Codex adapter. They silently lose
-    Claude's native ``tool_use`` blocks, then attribute missing test execution to the agent. A tiny native
-    Read/Bash transcript must retain both tool identities and their canonical actions before that parser
-    may diagnose this format. Cache by the actual function object so a replaced parser is checked again.
-    """
-    if not isinstance(parser, types.FunctionType):
-        return False
-    try:
-        config = parser.__globals__["config"]
-        with tempfile.TemporaryDirectory(prefix="trajviz-obs-attribution-probe-") as folder:
-            root = Path(folder)
-            path = root / "claude_code" / "native-probe.jsonl"
-            path.parent.mkdir()
-            records = [
-                {"type": "user", "sessionId": "native-probe", "uuid": "user", "parentUuid": None,
-                 "message": {"role": "user", "content": "Read the source and run its tests."}},
-                {"type": "assistant", "sessionId": "native-probe", "uuid": "read", "parentUuid": "user",
-                 "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "read-call",
-                    "name": "Read", "input": {"file_path": "src/probe.py"}}]}},
-                {"type": "user", "sessionId": "native-probe", "uuid": "read-result", "parentUuid": "read",
-                 "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "read-call",
-                    "content": "def probe(): pass", "is_error": False}]}},
-                {"type": "assistant", "sessionId": "native-probe", "uuid": "test", "parentUuid": "read-result",
-                 "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "test-call",
-                    "name": "Bash", "input": {"command": "pytest -q tests/test_probe.py"}}]}},
-                {"type": "user", "sessionId": "native-probe", "uuid": "test-result", "parentUuid": "test",
-                 "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "test-call",
-                    "content": "1 passed\nExit code 0", "is_error": False}]}},
-            ]
-            path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
-            isolated_config = types.SimpleNamespace(**{**vars(config), "TRAJECTORY_DIR": root})
-            isolated = types.FunctionType(parser.__code__, {**parser.__globals__, "config": isolated_config},
-                                          parser.__name__, parser.__defaults__, parser.__closure__)
-            isolated.__kwdefaults__ = parser.__kwdefaults__
-            parsed = isolated("claude_code", "native-probe")
-            calls = {(step.native_tool, step.canonical_action) for step in parsed.steps if step.type == "tool_call"}
-            return {("Read", "read"), ("Bash", "run_test")} <= calls
-    except Exception:  # noqa: BLE001 - an unverifiable parser must never support a capability verdict
-        return False
-
-
-def configure_attribution_environment() -> None:
-    """Pass the public parser checkout setting to the upstream discovery API before it imports."""
-    configured = os.environ.get("TRAJVIZ_ATTRIBUTION_PATH", "").strip()
-    if configured:
-        os.environ["AWE_DECAF_PATH"] = configured
-
-
 def attribution_message(text: str | None) -> str | None:
     """Use public attribution terminology without rewriting paths or upstream API identifiers."""
     if text is None:
@@ -484,25 +430,51 @@ def attribution_message(text: str | None) -> str | None:
     if unavailable:
         phase, error = unavailable.groups()
         if phase.lower() == "import":
-            return (f"Attribution parser unavailable ({error}). Set TRAJVIZ_ATTRIBUTION_PATH to its checkout "
-                    "and TRAJVIZ_REFERENCE_ROOT to the reference data.")
-        return (f"Attribution parser configuration failed ({error}). Check TRAJVIZ_ATTRIBUTION_PATH "
-                "and TRAJVIZ_REFERENCE_ROOT.")
+            return (f"Bundled attribution engine unavailable ({error}). Reinstall TrajViz "
+                    "and check TRAJVIZ_REFERENCE_ROOT for the reference data.")
+        return f"Attribution configuration failed ({error}). Check TRAJVIZ_REFERENCE_ROOT."
     text = re.sub(r"(?<![\w/\\.-])decaf(?![\w/\\-]|\.[\w])", "attribution", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<![\w/\\.-])AWE(?![\w/\\.-])", "attribution", text)
     text = re.sub(r"\b([Aa]) attribution\b", lambda match: match[1] + "n attribution", text)
     return re.sub(r"(^|[.!?]\s+|>\s*)attribution\b", lambda match: match[1] + "Attribution", text)
 
 
-def install_attribution_guard() -> None:
-    """Protect CLI and native dashboard attribution from an incompatible optional parser.
+def _install_attribution_projection() -> None:
+    """Keep OpenCode child identity distinct from its shared agent persona."""
+    from agent_trajviz.awe import native
 
-    The original diagnosis retains all reference, byte identity and cache provenance gates. Native
-    Claude JSONL and OpenCode 2 are refused when the parser cannot preserve their diagnostic evidence.
+    original = native.project_native
+    if getattr(original, "_trajviz_obs_thread_identity", False):
+        return
+    if set(inspect.signature(original).parameters) != {"run", "agent", "instance_id"}:
+        raise BridgeError("unsupported_trajviz", "TrajViz's attribution projection changed; update the plugin.")
+
+    @functools.wraps(original)
+    def project(run, agent, instance_id):
+        result = original(run, agent, instance_id)
+        if run.format == "opencode":
+            rows = {row["index"]: row for row in run.steps}
+            for step in result.steps:
+                row = rows.get((step.source_ref or {}).get("workflow_step"), {})
+                if row.get("is_sub_agent") and row.get("session_id"):
+                    step.subagent_id = row["session_id"]
+        return result
+
+    project._trajviz_obs_thread_identity = True
+    native.project_native = project
+
+
+def install_attribution_guard() -> None:
+    """Keep the bundled native-source gates and reject invalid numeric evidence.
+
+    TrajViz certifies native tool evidence, reference identity and complete
+    parent/child trees itself. The plugin only adds its strict JSON boundary
+    and public terminology, without loading code from external checkouts.
     """
     check_supported()
-    configure_attribution_environment()
     from agent_trajviz.insight import attribution
 
+    _install_attribution_projection()
     native = attribution.diagnose
     if getattr(native, "_trajviz_obs_native_guard", False):
         return
@@ -510,50 +482,6 @@ def install_attribution_guard() -> None:
     @functools.wraps(native)
     def guarded(*, agent, instance_id, source_path=None, fmt=None, expected_sha=None, merged_sources=0,
                 reference_root=None):
-        if attribution.DECAF_AVAILABLE and fmt == "pi" and source_path is not None:
-            from .pi import excludes_branch
-
-            if excludes_branch(source_path):
-                return attribution.AttributionResult(False, mode="reference", agent=agent, instance_id=instance_id,
-                    reason="Attribution cannot currently verify the selected active branch of this Pi session. "
-                           "No capability verdict was issued.")
-        if attribution.DECAF_AVAILABLE and fmt == "opencode" and source_path is not None:
-            from .opencode import attribution_source, attribution_supported
-
-            source = attribution_source(source_path)
-            if source is not None:
-                reason = None
-                if source.get("children") or Path(source_path).suffix.lower() == ".zip":
-                    reason = ("Attribution cannot currently certify an OpenCode 2 subagent family or ZIP bundle. "
-                              "No capability verdict was issued; use a supported single-session native export.")
-                else:
-                    try:
-                        from awe.adapters import _parse_normalized
-
-                        supported = attribution_supported(_parse_normalized, source.get("source_format") == "opencode_v2")
-                    except Exception:  # noqa: BLE001 - optional parser failure is unavailable, never blame
-                        supported = False
-                    if not supported:
-                        reason = ("This attribution parser does not preserve native OpenCode 2 read/shell tool "
-                                  "evidence. No capability verdict was issued. Update the attribution parser "
-                                  "to one that supports OpenCode 2 session exports.")
-                if reason:
-                    return attribution.AttributionResult(False, mode="reference", agent=agent,
-                                                         instance_id=instance_id, reason=reason)
-        if (attribution.DECAF_AVAILABLE and fmt == "claude_code" and source_path is not None
-                and Path(source_path).suffix.lower() == ".jsonl"):
-            try:
-                from awe.adapters import _parse_normalized
-
-                supported = _attribution_reads_native_claude(_parse_normalized)
-            except Exception:  # noqa: BLE001 - optional module/API failure is unavailable, never blame
-                supported = False
-            if not supported:
-                return attribution.AttributionResult(
-                    False, mode="reference", agent=agent, instance_id=instance_id,
-                    reason="This attribution parser does not preserve native Claude Code JSONL Read/Bash tool evidence. "
-                           "No capability verdict was issued. Update the attribution parser to one that supports native "
-                           "Claude Code session transcripts.")
         result = native(agent=agent, instance_id=instance_id, source_path=source_path, fmt=fmt,
                         expected_sha=expected_sha, merged_sources=merged_sources, reference_root=reference_root)
         if result.available and not _finite_attribution(result):
@@ -571,7 +499,7 @@ def install_attribution_guard() -> None:
 
 
 def _finite_attribution(result) -> bool:
-    """Invalid optional-backend numbers cannot become capability grades or JSON NaN."""
+    """Invalid engine numbers cannot become capability grades or JSON NaN."""
     from dataclasses import asdict
 
     def finite(value):
@@ -646,7 +574,12 @@ def labeler_run(run: Trajectory) -> Iterator[None]:
         return annotate_label(step, serialize(step, fallback_index=fallback_index, label=label,
                                               label_source=label_source))
 
-    labeler.load_all_steps = lambda _path: copy.deepcopy(run.steps)
+    def load_steps(_path, *, output_path=None):
+        if output_path is not None:
+            protect_run_outputs(run, [Path(output_path)])
+        return copy.deepcopy(run.steps)
+
+    labeler.load_all_steps = load_steps
     labeler._serialize_step = serialize_step
     try:
         yield
@@ -697,17 +630,32 @@ def labeler_step_cap(max_steps: int, fallback: str) -> Iterator[list[str]]:
     logs it: a provider error can echo credentials or prompt text).
     """
     check_supported()
+    from collections import Counter
+
     from agent_trajviz.labeling import labeler, llm
 
     original_call, original_classify = llm.call_llm, labeler._classify
     state = {"step": -1}
+    attempted: list[str | None] = []
     failures: dict[int, str] = {}
     errors: list[str] = []
 
     @functools.wraps(original_classify)
     def classify(*args: Any, **kwargs: Any) -> Any:
         state["step"] += 1
-        return original_classify(*args, **kwargs)
+        if state["step"] >= max_steps and attempted and all(failure is not None for failure in attempted):
+            # Capped fallback records are not successful provider requests.
+            # Abort before they can hide a failed real prefix and commit an
+            # all-unknown replacement for an existing sidecar.
+            summary = ", ".join(f"{name} ×{count}" for name, count in Counter(attempted).most_common())
+            noun = "step" if len(attempted) == 1 else "steps"
+            raise labeler.LabelingAborted(
+                f"Labeling failed for all {len(attempted)} attempted {noun} ({summary}). "
+                "Check the label model connection and request settings. No labels were written.")
+        result = original_classify(*args, **kwargs)
+        if state["step"] < max_steps:
+            attempted.append(result[1])
+        return result
 
     def call_llm(*args: Any, **kwargs: Any) -> str:
         step = state["step"]

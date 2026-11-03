@@ -1,12 +1,11 @@
-"""An optional parser that loses native tool evidence must never attribute missing tool execution."""
+"""Bundled native attribution keeps certified evidence and strict JSON results."""
 from __future__ import annotations
 
+import inspect
 import json
 import os
-import sys
-import types
+from dataclasses import asdict
 from pathlib import Path
-from types import SimpleNamespace
 
 import agent_trajviz as tv
 import pytest
@@ -15,121 +14,42 @@ from agent_trajviz.insight import attribution as native_attribution
 from trajviz_obs import compat, dashboard_cmd, passthrough
 
 
-def _parser_fixture(agent, instance_id):
-    config, calls, mode = (globals()[key] for key in ("config", "calls", "mode"))
-    path = config.TRAJECTORY_DIR / agent / (instance_id + ".jsonl")
-    calls.append(path)
-    if mode == "raises":
-        raise OSError("unreadable parser")
-    records = [json.loads(line) for line in path.read_text().splitlines()]
-    steps = []
-    if mode == "supported":
-        for record in records:
-            for part in record.get("message", {}).get("content", []):
-                if isinstance(part, dict) and part.get("type") == "tool_use":
-                    steps.append(SimpleNamespace(type="tool_call", native_tool=part["name"],
-                        canonical_action={"Read": "read", "Bash": "run_test"}[part["name"]]))
-    return SimpleNamespace(steps=steps)
+def request(**overrides):
+    return {"agent": "claude_code", "instance_id": "case", "source_path": "/synthetic/case.jsonl",
+            "fmt": "claude_code", "expected_sha": "captured", "merged_sources": 3,
+            "reference_root": "/synthetic/reference", **overrides}
 
 
 @pytest.fixture
 def seam(monkeypatch, tmp_path):
-    calls, native_calls = [], []
-    real_root = tmp_path / "real-reference-trajectories"
-    real_root.mkdir()
-    config = SimpleNamespace(TRAJECTORY_DIR=real_root, unrelated="retain")
-    adapters = types.ModuleType("awe.adapters")
-    awe = types.ModuleType("awe")
-    awe.adapters = adapters
-    monkeypatch.setitem(sys.modules, "awe", awe)
-    monkeypatch.setitem(sys.modules, "awe.adapters", adapters)
-    monkeypatch.setattr(native_attribution, "DECAF_AVAILABLE", True)
-    compat._attribution_reads_native_claude.cache_clear()
+    """Isolate mutable engine caches and the per-app wrapper across tests."""
+    from agent_trajviz.awe._engine import config
+
+    monkeypatch.setattr(native_attribution, "diagnose", inspect.unwrap(native_attribution.diagnose))
+    monkeypatch.setattr(config, "PROJECT_DATA", tmp_path / "cache")
+    monkeypatch.setattr(config, "OUTPUT_DATA", tmp_path / "output")
+    monkeypatch.setattr(config, "JUDGE_CACHE_DIR", tmp_path / "judge")
+    native_attribution.configure(native_attribution._DEFAULT_ROOT)
+    yield
+    native_attribution.configure(native_attribution._DEFAULT_ROOT)
+
+
+def test_guard_is_idempotent_and_keeps_every_native_identity_gate(seam, monkeypatch):
+    calls = []
+    expected = native_attribution.AttributionResult(True, mode="reference")
 
     def native(**kwargs):
-        native_calls.append(kwargs)
-        return native_attribution.AttributionResult(True, mode="reference", agent=kwargs["agent"],
-                                                    instance_id=kwargs["instance_id"])
+        calls.append(kwargs)
+        return expected
 
     monkeypatch.setattr(native_attribution, "diagnose", native)
-
-    def parser(mode="supported"):
-        namespace = {"config": config, "Path": Path, "json": json, "SimpleNamespace": SimpleNamespace,
-                     "calls": calls, "mode": mode}
-        adapters._parse_normalized = types.FunctionType(_parser_fixture.__code__, namespace, "parse")
-        return adapters._parse_normalized
-
-    return SimpleNamespace(calls=calls, native_calls=native_calls, config=config, real_root=real_root,
-                           parser=parser, adapters=adapters, native=native)
-
-
-def request(**overrides):
-    return {"agent": "claude_code", "instance_id": "case", "source_path": "/synthetic/case.jsonl",
-            "fmt": "claude_code", "expected_sha": "recorded-sha", "merged_sources": 0,
-            "reference_root": "/synthetic/reference", **overrides}
-
-
-def test_parser_that_loses_native_tools_is_unavailable_without_blame_and_probed_once(seam):
-    seam.parser("unsupported")
-    compat.install_attribution_guard()
-    result = native_attribution.diagnose(**request())
-    again = native_attribution.diagnose(**request())
-    assert not result.available and not again.available and result.mode == "reference"
-    assert "This attribution parser does not preserve native Claude Code JSONL" in result.reason
-    assert "decaf" not in result.reason.lower()
-    assert result.faults == result.scorecard == [] and result.primary is None and not result.used_judge
-    assert len(seam.calls) == 1 and seam.native_calls == []
-    assert seam.config.TRAJECTORY_DIR == seam.real_root and list(seam.real_root.iterdir()) == []
-    assert not seam.calls[0].exists()  # the isolated probe was deleted, with no reference cache created
-
-
-def test_supported_parser_retains_all_native_identity_and_reference_gates(seam):
-    parser = seam.parser()
     compat.install_attribution_guard()
     wrapped = native_attribution.diagnose
     compat.install_attribution_guard()
     assert native_attribution.diagnose is wrapped
-    args = request(merged_sources=3)
-    result = native_attribution.diagnose(**args)
-    assert result.available and seam.native_calls == [args]
-    assert len(seam.calls) == 1 and parser.__globals__["config"] is seam.config
-    assert seam.config.TRAJECTORY_DIR == seam.real_root and seam.config.unrelated == "retain"
-
-
-def test_replacing_the_parser_rechecks_capability_instead_of_reusing_an_old_refusal(seam):
-    seam.parser("unsupported")
-    compat.install_attribution_guard()
-    assert not native_attribution.diagnose(**request()).available
-    seam.parser()
-    assert native_attribution.diagnose(**request()).available
-    assert len(seam.calls) == 2 and len(seam.native_calls) == 1
-
-
-@pytest.mark.parametrize("overrides", [{"fmt": "codex"}, {"fmt": None}, {"source_path": "/synthetic/case.json"},
-                                      {"source_path": None}])
-def test_other_formats_and_non_native_exports_keep_native_diagnosis(seam, overrides):
-    seam.parser("unsupported")
-    compat.install_attribution_guard()
-    args = request(**overrides)
-    assert native_attribution.diagnose(**args).available
-    assert seam.calls == [] and seam.native_calls == [args]
-
-
-def test_missing_parser_uses_public_setup_guidance_without_attempting_a_probe(seam, monkeypatch):
-    seam.parser("raises")
-    monkeypatch.setattr(native_attribution, "DECAF_AVAILABLE", False)
-    expected = native_attribution.AttributionResult(
-        False, reason="DECAF unavailable (DECAF import failed (ImportError))",
-        notes=["DECAF's dossier API lacks per-call judge/arbiter controls"],
-    )
-    monkeypatch.setattr(native_attribution, "diagnose", lambda **_kwargs: expected)
-    compat.install_attribution_guard()
-    result = native_attribution.diagnose(**request())
-    assert not result.available and result.reason.startswith("Attribution parser unavailable (ImportError)")
-    assert "TRAJVIZ_ATTRIBUTION_PATH" in result.reason and "TRAJVIZ_REFERENCE_ROOT" in result.reason
-    assert result.notes == ["Attribution's dossier API lacks per-call judge/arbiter controls"]
-    assert expected.reason.startswith("DECAF unavailable")  # the upstream result itself is not mutated
-    assert seam.calls == []
+    args = request()
+    assert native_attribution.diagnose(**args) is expected
+    assert calls == [args]
 
 
 @pytest.mark.parametrize("message, expected", [
@@ -137,159 +57,33 @@ def test_missing_parser_uses_public_setup_guidance_without_attempting_a_probe(se
     ("DECAF diagnosis unavailable (ValueError)", "Attribution diagnosis unavailable (ValueError)"),
     ("This DeCaF parser failed. DECAF is unavailable.", "This attribution parser failed. Attribution is unavailable."),
     ("Failed while loading DECAF.", "Failed while loading attribution."),
-    ("Set AWE_DECAF_PATH to a DECAF checkout", "Set TRAJVIZ_ATTRIBUTION_PATH to an attribution checkout"),
+    ("AWE workspace", "Attribution workspace"),
+    ("Use AWE operations for verified cached judgments.", "Use attribution operations for verified cached judgments."),
     ("Reference path /tmp/DECAF/data; DECAF.json; DECAF_AVAILABLE",
      "Reference path /tmp/DECAF/data; DECAF.json; DECAF_AVAILABLE"),
-    ("Check AWE_DECAF_PATH; /tmp/AWE_DECAF_PATH/parser; AWE_DECAF_PATH.json",
-     "Check TRAJVIZ_ATTRIBUTION_PATH; /tmp/AWE_DECAF_PATH/parser; AWE_DECAF_PATH.json"),
+    ("AWE_JUDGE_MODEL; agent_trajviz.awe; /tmp/AWE/data", "AWE_JUDGE_MODEL; agent_trajviz.awe; /tmp/AWE/data"),
 ])
-def test_attribution_messages_normalize_prose_and_public_configuration_only(message, expected):
+def test_public_terminology_does_not_rewrite_paths_or_api_identifiers(message, expected):
     assert compat.attribution_message(message) == expected
 
 
-def test_public_parser_path_reaches_upstream_discovery(monkeypatch):
-    monkeypatch.setenv("TRAJVIZ_ATTRIBUTION_PATH", " /synthetic/attribution-parser ")
-    monkeypatch.setenv("AWE_DECAF_PATH", "/synthetic/old-parser")
-    compat.configure_attribution_environment()
-    assert os.environ["AWE_DECAF_PATH"] == "/synthetic/attribution-parser"
-    monkeypatch.setenv("TRAJVIZ_ATTRIBUTION_PATH", " ")
-    compat.configure_attribution_environment()
-    assert os.environ["AWE_DECAF_PATH"] == "/synthetic/attribution-parser"
-
-
-def test_parser_probe_errors_are_unavailable_rather_than_a_verdict(seam):
-    seam.parser("raises")
+def test_old_checkout_configuration_never_selects_executable_code(seam, monkeypatch, tmp_path):
+    hostile = tmp_path / "external"
+    hostile.mkdir()
+    (hostile / "awe.py").write_text('raise RuntimeError("external code must not be loaded")')
+    monkeypatch.setenv("TRAJVIZ_ATTRIBUTION_PATH", str(hostile))
+    monkeypatch.setenv("AWE_DECAF_PATH", str(hostile))
+    environment = dict(os.environ)
     compat.install_attribution_guard()
-    result = native_attribution.diagnose(**request())
-    assert not result.available and result.faults == [] and seam.native_calls == []
-    assert seam.config.TRAJECTORY_DIR == seam.real_root
-
-
-def test_cli_attribution_installs_the_same_guard_before_public_api_dispatch(seam, fixture_run):
-    seam.parser("unsupported")
-    result = passthrough.attribution(fixture_run, reference_root="/synthetic/reference", agent="claude_code",
-                                     instance_id="case")
-    assert result["available"] is False and "does not preserve" in result["reason"]
-    assert result["faults"] == [] and result["primary"] is None and seam.native_calls == []
-
-
-def test_native_browser_attribution_callback_uses_the_guard(seam, fixture_session):
-    seam.parser("unsupported")
-    app = dashboard_cmd.build_preloaded_insight(str(fixture_session))
-    callback = next(block.fn for block in app.fns.values() if getattr(block.fn, "__name__", "") == "on_diagnose")
-    run = tv.load(fixture_session)
-    raw = {**run.raw, "_source_path": str(fixture_session), "_source_sha256": run.sha256}
-    html, status = callback(raw, "claude_code", "case", "/synthetic/reference")
-    assert "does not preserve" in html and "No gold-grounded attribution" in status
-    assert "decaf" not in html.lower()
-    assert seam.native_calls == [] and len(seam.calls) == 1
-
-
-def test_native_browser_missing_parser_diagnostic_uses_public_terminology(seam, fixture_session, monkeypatch):
-    monkeypatch.setattr(native_attribution, "DECAF_AVAILABLE", False)
-    monkeypatch.setattr(native_attribution, "diagnose", lambda **_kwargs: native_attribution.AttributionResult(
-        False, reason="DECAF unavailable (DECAF import failed (ImportError))"))
-    app = dashboard_cmd.build_preloaded_insight(str(fixture_session))
-    callback = next(block.fn for block in app.fns.values() if getattr(block.fn, "__name__", "") == "on_diagnose")
-    html, status = callback({"_source_path": str(fixture_session)}, "claude_code", "case", "")
-    assert "Attribution parser unavailable" in html and "TRAJVIZ_ATTRIBUTION_PATH" in html
-    assert "decaf" not in (html + status).lower() and seam.calls == []
-
-
-def _v2_parser_fixture(agent, instance_id):
-    config, calls, mode = (globals()[key] for key in ("config", "calls", "mode"))
-    path = config.TRAJECTORY_DIR / agent / (instance_id + ".json")
-    calls.append(path)
-    payload = json.loads(path.read_text())
-    steps = []
-    if mode == "supported":
-        for message in payload["messages"]:
-            for part in message.get("content", []):
-                if part.get("type") == "tool":
-                    steps.append(SimpleNamespace(type="tool_call", native_tool=part["name"],
-                        canonical_action={"read": "read", "shell": "run_test"}[part["name"]]))
-    return SimpleNamespace(steps=steps)
-
-
-def _v2_parser(seam, mode="supported"):
-    namespace = {"config": seam.config, "json": json, "SimpleNamespace": SimpleNamespace,
-                 "calls": seam.calls, "mode": mode}
-    seam.adapters._parse_normalized = types.FunctionType(_v2_parser_fixture.__code__, namespace, "parse_v2")
-
-
-@pytest.fixture
-def opencode_source(tmp_path):
-    raw = {"source_format": "opencode_v2", "schema_version": 1, "session": {"id": "ses_test"},
-           "messages": [{"type": "assistant", "id": "a", "agent": "build", "model": {"id": "test"},
-                         "content": [], "time": {"created": 1790000000000}}], "children": []}
-    path = tmp_path / "opencode.json"
-    path.write_text(json.dumps(raw))
-    return path, raw
-
-
-def test_v2_parser_that_loses_tools_cannot_issue_a_capability_verdict(seam, opencode_source):
-    _v2_parser(seam, "unsupported")
-    path, _ = opencode_source
-    compat.install_attribution_guard()
-    result = native_attribution.diagnose(**request(fmt="opencode", source_path=str(path)))
-    assert not result.available and "OpenCode 2 read/shell" in result.reason
-    assert result.faults == result.scorecard == [] and result.primary is None
-    assert seam.native_calls == [] and len(seam.calls) == 1
-    assert not seam.calls[0].exists() and list(seam.real_root.iterdir()) == []
-
-
-def test_supported_v2_parser_keeps_every_original_identity_and_reference_gate(seam, opencode_source):
-    _v2_parser(seam)
-    path, _ = opencode_source
-    compat.install_attribution_guard()
-    args = request(agent="opencode", fmt="opencode", source_path=str(path), merged_sources=3)
-    assert native_attribution.diagnose(**args).available
-    assert native_attribution.diagnose(**args).available
-    assert seam.native_calls == [args, args] and len(seam.calls) == 1
-    assert seam.config.TRAJECTORY_DIR == seam.real_root
-
-
-def test_v2_subagent_families_are_not_certified_by_a_single_session_probe(seam, opencode_source):
-    _v2_parser(seam)
-    path, raw = opencode_source
-    raw["children"] = [{"session": {"id": "ses_child"}, "messages": []}]
-    path.write_text(json.dumps(raw))
-    compat.install_attribution_guard()
-    result = native_attribution.diagnose(**request(fmt="opencode", source_path=str(path)))
-    assert not result.available and "subagent family" in result.reason
-    assert result.faults == [] and seam.native_calls == seam.calls == []
-
-
-def test_v2_zip_container_requires_its_own_parser_support(seam, opencode_source, tmp_path):
-    import zipfile
-
-    _v2_parser(seam)
-    path, _ = opencode_source
-    archive = tmp_path / "bundle.zip"
-    with zipfile.ZipFile(archive, "w") as handle:
-        handle.write(path, "source.json")
-    compat.install_attribution_guard()
-    result = native_attribution.diagnose(**request(fmt="opencode", source_path=str(archive)))
-    assert not result.available and "ZIP bundle" in result.reason
-    assert seam.native_calls == seam.calls == []
-
-
-def test_legacy_opencode_exports_keep_their_existing_attribution_contract(seam, tmp_path):
-    _v2_parser(seam, "unsupported")
-    path = tmp_path / "legacy.json"
-    path.write_text(json.dumps({"info": {"id": "ses_old"}, "messages": [
-        {"info": {"role": "assistant"}, "parts": []}]}))
-    compat.install_attribution_guard()
-    args = request(fmt="opencode", source_path=str(path))
-    assert native_attribution.diagnose(**args).available
-    assert seam.native_calls == [args] and seam.calls == []
+    result = native_attribution.diagnose(**request(source_path=None, expected_sha=None,
+                                                   reference_root=str(tmp_path / "missing")))
+    assert result.available is False and "no gold reference" in result.reason
+    assert dict(os.environ) == environment
 
 
 @pytest.mark.parametrize("number", [float("nan"), float("inf"), float("-inf")])
-@pytest.mark.parametrize("location", ["scorecard", "fault", "arbiter"])
-def test_nonfinite_attribution_evidence_never_becomes_a_capability_verdict(seam, monkeypatch, number, location):
-    from dataclasses import asdict
-
+@pytest.mark.parametrize("location", ["scorecard", "fault", "arbiter", "dossier"])
+def test_nonfinite_evidence_never_becomes_a_capability_verdict(seam, monkeypatch, number, location):
     def diagnose(**kwargs):
         result = native_attribution.AttributionResult(True, agent=kwargs["agent"],
             instance_id=kwargs["instance_id"], primary={"capability": "tool_use"}, used_judge=True)
@@ -297,40 +91,168 @@ def test_nonfinite_attribution_evidence_never_becomes_a_capability_verdict(seam,
             result.scorecard = [native_attribution.CapabilityScore("tool_use", True, True, number, None, None)]
         elif location == "fault":
             result.faults = [{"capability": "tool_use", "blame_weight": number}]
+        elif location == "dossier":
+            result.dossier = {"evidence": [{"confidence": number}]}
         else:
             result.arbiter = {"evidence": [{"confidence": number}]}
         return result
 
     monkeypatch.setattr(native_attribution, "diagnose", diagnose)
     compat.install_attribution_guard()
-    result = native_attribution.diagnose(**request(fmt="codex"))
+    result = native_attribution.diagnose(**request())
     assert not result.available and "non-finite" in result.reason
     assert result.primary is None and result.faults == result.scorecard == [] and not result.used_judge
     assert result.agent == "claude_code" and result.instance_id == "case"
     json.dumps(asdict(result), allow_nan=False)
 
 
-def test_finite_observed_zero_attribution_weight_remains_valid(seam, monkeypatch):
+def test_observed_zero_attribution_weight_remains_valid(seam, monkeypatch):
     expected = native_attribution.AttributionResult(True, scorecard=[
         native_attribution.CapabilityScore("tool_use", True, False, 0.0, None, None)])
     monkeypatch.setattr(native_attribution, "diagnose", lambda **_: expected)
     compat.install_attribution_guard()
-    assert native_attribution.diagnose(**request(fmt="codex")) is expected
+    assert native_attribution.diagnose(**request()) is expected
 
 
-def test_branched_pi_cannot_receive_an_unverified_capability_grade(seam, tmp_path):
-    rows = [{"type": "session", "id": "pi", "version": 3, "timestamp": "2026-10-30T00:00:00Z"},
-            *[{"type": "message", "id": identity, "parentId": parent, "message": {"role": role,
-              "content": identity}} for identity, parent, role in [("u", None, "user"),
-              ("abandoned", "u", "assistant"), ("active", "u", "assistant")]]]
-    path = tmp_path / "pi.jsonl"
-    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+def test_unavailable_result_is_not_rewritten_in_place(seam, monkeypatch):
+    expected = native_attribution.AttributionResult(False,
+        reason="DECAF unavailable (DECAF import failed (ImportError))",
+        notes=["Use AWE operations for verified cached judgments."])
+    monkeypatch.setattr(native_attribution, "diagnose", lambda **_: expected)
     compat.install_attribution_guard()
-    result = native_attribution.diagnose(**request(agent="pi", fmt="pi", source_path=str(path)))
-    assert not result.available and "selected active branch" in result.reason
-    assert result.faults == result.scorecard == [] and result.primary is None and not result.used_judge
-    assert seam.native_calls == []
-    rows.pop(2)
+    result = native_attribution.diagnose(**request())
+    assert result.reason.startswith("Bundled attribution engine unavailable (ImportError)")
+    assert "Reinstall TrajViz" in result.reason and "TRAJVIZ_ATTRIBUTION_PATH" not in result.reason
+    assert result.notes == ["Use attribution operations for verified cached judgments."]
+    assert expected.reason.startswith("DECAF unavailable")
+    assert expected.notes[0].startswith("Use AWE")
+
+
+def _native_claude(path: Path, *, subagent=False):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"type": "user", "sessionId": "case", "uuid": "user", "parentUuid": None,
+         "message": {"role": "user", "content": "Read the source and run its tests."}},
+        {"type": "assistant", "sessionId": "case", "uuid": "read", "parentUuid": "user",
+         "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "read-call",
+            "name": "Read", "input": {"file_path": "src/probe.py"}}]}},
+        {"type": "user", "sessionId": "case", "uuid": "read-result", "parentUuid": "read",
+         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "read-call",
+            "content": "def probe(): pass", "is_error": False}]}},
+        {"type": "assistant", "sessionId": "case", "uuid": "test", "parentUuid": "read-result",
+         "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "test-call",
+            "name": "Bash", "input": {"command": "pytest -q tests/test_probe.py"}}]}},
+        {"type": "user", "sessionId": "case", "uuid": "test-result", "parentUuid": "test",
+         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "test-call",
+            "content": "1 failed\nExit code 1", "is_error": True}]}},
+    ]
+    if subagent:
+        for row in rows:
+            row.update(isSidechain=True, agentId="reviewer")
     path.write_text("".join(json.dumps(row) + "\n" for row in rows))
-    assert native_attribution.diagnose(**request(agent="pi", fmt="pi", source_path=str(path))).available
-    assert len(seam.native_calls) == 1
+    return path
+
+
+def _benchmark(root: Path, agent: str, instance="case"):
+    patch = "diff --git a/src/probe.py b/src/probe.py\n--- a/src/probe.py\n+++ b/src/probe.py\n@@ -1 +1 @@\n-def probe(): pass\n+def probe(): return 42\n"
+    requirements = root / "data/requirements" / f"{instance}.json"
+    requirements.parent.mkdir(parents=True, exist_ok=True)
+    requirements.write_text(json.dumps({"instance_id": instance, "repo": "controlled/project", "base_commit": "baseline",
+        "problem_statement": "Fix the source behavior.", "gold_patch": patch,
+        "FAIL_TO_PASS": ["test_fix"], "PASS_TO_PASS": []}))
+    submitted = root / "data/patch" / agent / f"{instance}.diff"
+    submitted.parent.mkdir(parents=True, exist_ok=True)
+    submitted.write_text(patch.replace("return 42", "return 0"))
+    (root / "data" / f"eval_{agent}.json").write_text(json.dumps({instance: False}))
+
+
+def test_bundled_claude_adapter_retains_native_tool_results_and_threads(seam, tmp_path):
+    from agent_trajviz.awe.native import project_native
+
+    path = _native_claude(tmp_path / "case.jsonl")
+    _native_claude(tmp_path / "case/subagents/agent-reviewer.jsonl", subagent=True)
+    run = compat.load_run(str(path))
+    projected = project_native(run, "claude_code", "case")
+    calls = {(step.native_tool, step.canonical_action) for step in projected.steps if step.type == "tool_call"}
+    assert {("Read", "read"), ("Bash", "run_test")} <= calls
+    results = [step for step in projected.steps if step.type == "tool_result"]
+    assert any(step.tool_error and "1 failed" in step.output_excerpt for step in results)
+    assert any(step.subagent_id for step in projected.steps)
+    assert projected.source["sha256"] == run.sha256
+
+
+def test_bundled_claude_tree_is_certified_and_changed_child_is_refused(seam, tmp_path):
+    source = _native_claude(tmp_path / "data/trajectory/claude_code/case.jsonl")
+    child = _native_claude(source.with_suffix("") / "subagents/agent-reviewer.jsonl", subagent=True)
+    _benchmark(tmp_path, "claude_code")
+    run = compat.load_run(str(source))
+    result = passthrough.attribution(run, reference_root=str(tmp_path), agent="claude_code", instance_id="case")
+    assert result["available"], result["reason"]
+    assert len(result["scorecard"]) == 7 and result["used_judge"] is False
+    assert result["dossier"]["source_certification"]["trajectory_sha256"] == run.sha256
+    child.write_text(child.read_text() + "\n")
+    stale = passthrough.attribution(run, reference_root=str(tmp_path), agent="claude_code", instance_id="case")
+    assert not stale["available"] and "does not match the canonical" in stale["reason"]
+    assert stale["faults"] == [] and stale["primary"] is None
+
+
+def test_cli_and_browser_use_the_bundled_guard(seam, fixture_session, monkeypatch):
+    calls = []
+
+    def refused(**kwargs):
+        calls.append(kwargs)
+        return native_attribution.AttributionResult(False, reason="AWE evidence is unavailable")
+
+    monkeypatch.setattr(native_attribution, "diagnose", refused)
+    result = passthrough.attribution(compat.load_run(str(fixture_session)), reference_root="/synthetic/reference",
+                                     agent="claude_code", instance_id="case")
+    assert result["available"] is False and result["reason"] == "Attribution evidence is unavailable"
+    app = dashboard_cmd.build_preloaded_insight(str(fixture_session))
+    callback = next(block.fn for block in app.fns.values() if getattr(block.fn, "__name__", "") == "on_diagnose")
+    run = tv.load(fixture_session)
+    raw = {**run.raw, "_source_path": str(fixture_session), "_source_sha256": run.sha256}
+    rendered, status = callback(raw, "claude_code", "case", "/synthetic/reference")
+    assert "Attribution evidence is unavailable" in rendered and "No gold-grounded attribution" in status
+    assert len(calls) == 2 and calls[-1]["expected_sha"] == run.sha256
+
+
+def test_bundled_opencode2_family_retains_read_shell_and_child_evidence(seam, tmp_path):
+    compat.install_attribution_guard()
+    from agent_trajviz.awe.native import project_native
+
+    def tool(name, identity, params, metadata=None):
+        return {"type": "tool", "id": identity, "name": name,
+                "time": {"created": 1790000000100, "ran": 1790000000200, "completed": 1790000000300},
+                "state": {"status": "completed", "input": params, "metadata": metadata or {},
+                          "content": [{"type": "text", "text": "1 passed"}]}}
+
+    def session(sid, content):
+        return {"source_format": "opencode_v2", "schema_version": 1, "directory": "/controlled",
+                "session": {"id": sid, "location": {"directory": "/controlled"},
+                            "time": {"created": 1790000000000, "updated": 1790000001000}},
+                "messages": [{"id": "assistant", "type": "assistant", "agent": "build", "content": content,
+                              "time": {"created": 1790000000100, "completed": 1790000000400}}], "children": []}
+
+    raw = session("ses_root", [tool("read", "read", {"path": "src/probe.py"}),
+                              tool("subagent", "spawn", {"prompt": "Check tests"}, {"sessionID": "ses_child"}),
+                              tool("subagent", "spawn-second", {"prompt": "Check again"}, {"sessionID": "ses_second"})])
+    raw["children"] = [session(sid, [tool("shell", "test", {"command": "pytest -q tests/test_probe.py"})])
+                       for sid in ("ses_child", "ses_second")]
+    source = tmp_path / "data/trajectory/opencode/case.json"
+    source.parent.mkdir(parents=True)
+    source.write_text(json.dumps(raw))
+    _benchmark(tmp_path, "opencode")
+    run = compat.load_run(str(source))
+    before = source.read_bytes(), json.dumps(run.steps, sort_keys=True)
+    projected = project_native(run, "opencode", "case")
+    calls = {(step.native_tool, step.canonical_action) for step in projected.steps if step.type == "tool_call"}
+    assert {("read", "read"), ("Bash", "run_test")} <= calls
+    assert {step.subagent_id for step in projected.steps if step.subagent_id} == {"ses_child", "ses_second"}
+    assert all(step["agent"] == "build" for step in run.steps)
+    result = passthrough.attribution(run, reference_root=str(tmp_path), agent="opencode", instance_id="case")
+    assert result["available"], result["reason"]
+    assert result["dossier"]["source_certification"]["trajectory_sha256"] == run.sha256
+    assert result["used_judge"] is False
+    threads = {row.get("source_ref", {}).get("thread") for row in result["dossier"]["thinking_process"]}
+    assert {"ses_child", "ses_second"} <= threads
+    assert (source.read_bytes(), json.dumps(run.steps, sort_keys=True)) == before

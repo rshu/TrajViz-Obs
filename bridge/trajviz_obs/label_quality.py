@@ -103,9 +103,15 @@ def _install_payload() -> None:
     original = label_ui.build_label_ui_payload
     if getattr(original, "_trajviz_obs_label_quality", False):
         return
+    parameters = inspect.signature(original).parameters
+    if (tuple(parameters) != ("file_path", "dark", "run")
+            or parameters["run"].kind is not inspect.Parameter.KEYWORD_ONLY
+            or not isinstance(original, types.FunctionType)
+            or "load_labeled_json" not in original.__code__.co_names):
+        raise RuntimeError("TrajViz's label payload changed; update the plugin.")
 
     @functools.wraps(original)
-    def payload(file_path, dark=False):
+    def payload(file_path, dark=False, *, run=None):
         captured = {}
 
         def load(path):
@@ -116,7 +122,7 @@ def _install_payload() -> None:
         build = types.FunctionType(original.__code__, {**original.__globals__, "load_labeled_json": load},
                                    original.__name__, original.__defaults__, original.__closure__)
         build.__kwdefaults__ = original.__kwdefaults__
-        result = build(file_path, dark=dark)
+        result = build(file_path, dark=dark, run=run)
         coverage = label_coverage(captured.get("data", {}))
         if coverage and coverage["duration"]["status"] != "observed":
             note = ("Partial timing: totals include observed durations only." if coverage["duration"]["observed"] else

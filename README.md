@@ -11,7 +11,7 @@ Visualize and diagnose Claude Code and OpenCode 2 sessions with [TrajViz](https:
 
 ## Install
 
-For **OpenCode 2.2.2**, follow the [OpenCode installation guide](opencode/README.md). The instructions below install the Claude Code plugin.
+For **OpenCode 2**, follow the [OpenCode installation guide](opencode/README.md). The instructions below install the Claude Code plugin.
 
 Requires Claude Code with function hooks (mods) and process execution, plus [uv](https://docs.astral.sh/uv/) or **Python 3.11+**. Validated on Claude Code **2.1.309**; hosts limited to shell hooks and Markdown commands cannot run this plugin.
 
@@ -56,7 +56,7 @@ Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path
 
 Saved OTLP captures can contain several sessions. List them with `/obs sessions --session /path/to/capture`, then select one with `/obs --session /path/to/capture --session-id <id>`. JSON, JSONL, bundle manifests, directories, and ZIP captures are supported. This imports saved telemetry; it does not enable live telemetry collection.
 
-Both plugins use TrajViz **0.3.1**, including all **36 views**, data-quality reporting, and Codex, Pi, and compressed DeepSeek session imports. `/obs view data_quality` explains missing or partial evidence; unavailable measurements appear as unknown. JSON view exports use schema version **2**. Bundles preserve a complete OTLP capture; use `/obs json --with-trajectory` to export only the selected session. Other imported formats may bundle a portable `trajectory.json` that can also be loaded separately.
+Both plugins use TrajViz **0.4.1**, including all **36 views**, bundled attribution, and Codex, Pi, and compressed DeepSeek session imports. `/obs view data_quality` explains missing or partial evidence; unavailable measurements appear as unknown. JSON view exports use schema version **2**. Bundles preserve a complete OTLP capture; use `/obs json --with-trajectory` to export only the selected session. Other imported formats may bundle a portable `trajectory.json` that can also be loaded separately.
 
 Watch refreshes an open pane after turns. `/obs statusline on` pins a summary under the prompt. Use `/obs watch off` and `/obs statusline off` to stop automatic refreshes.
 
@@ -105,11 +105,11 @@ Labeling uses `LABEL_BASE_URL`, `LABEL_API_KEY`, and `LABEL_MODEL`, falling back
 </details>
 
 <details>
-<summary>Optional attribution setup</summary>
+<summary>Attribution reference data</summary>
 
-Start your host with `TRAJVIZ_ATTRIBUTION_PATH=/path/to/attribution-checkout` and `TRAJVIZ_REFERENCE_ROOT=/path/to/reference-data`. Use `/obs attribution` or the dashboard's **Attribution** tab.
+The attribution engine is included. Set `TRAJVIZ_REFERENCE_ROOT=/path/to/reference-data` with the task's reference patch and test outcome, then use `/obs attribution` or the dashboard's **Attribution** tab. Verdicts require the matching canonical session; missing reference evidence produces an explanation instead of capability blame.
 
-Reference data must include requirements, patch, canonical trajectory, and a failed evaluation outcome. The uploaded trajectory must match its reference byte for byte. Unsupported parsers or merged subagent sessions show an explanation instead of a capability verdict.
+The **Attribution workspace** opens saved results, evidence graphs, and reports independently of the current session. Its evaluation settings and operations run only when explicitly selected. For OpenCode subagent diagnoses, use `/obs attribution`; bundled evaluation workers can group child evidence by agent role.
 
 </details>
 

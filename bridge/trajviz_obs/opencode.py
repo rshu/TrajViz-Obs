@@ -14,10 +14,7 @@ import inspect
 import io
 import json
 import math
-import tempfile
-import types
 import zipfile
-from pathlib import Path
 from typing import Any
 
 NATIVE_KEY = "_trajviz_obs_opencode_v2"
@@ -25,63 +22,6 @@ NORMALIZER_VERSION = 1
 MAX_DEPTH = 32
 MAX_BUNDLE_BYTES = 256 * 1024 * 1024
 _SPAWN_TOOLS = frozenset({"agent", "subagent", "task"})
-
-
-def attribution_source(path: str) -> dict | None:
-    """Native V2 input for the optional parser guard; never extract an archive."""
-    try:
-        if Path(path).suffix.lower() == ".zip":
-            with zipfile.ZipFile(path) as archive:
-                files = [f for f in archive.infolist() if not f.is_dir()]
-                if len(files) != 1 or files[0].file_size > MAX_BUNDLE_BYTES:
-                    return None
-                payload = json.loads(archive.read(files[0]))
-        else:
-            with open(path, encoding="utf-8-sig") as handle:
-                payload = json.load(handle)
-        return payload if is_native(payload) else None
-    except (OSError, ValueError, RecursionError, zipfile.BadZipFile):
-        return None
-
-
-@functools.lru_cache(maxsize=16)
-def attribution_supported(parser, capture: bool) -> bool:
-    """Probe actual native tool evidence in an isolated, uncached reference layout."""
-    if not isinstance(parser, types.FunctionType):
-        return False
-    try:
-        config = parser.__globals__["config"]
-        session = {"id": "ses_probe", "projectID": "probe", "cost": 0,
-                   "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
-                   "location": {"directory": "/controlled"},
-                   "time": {"created": 1790000000000, "updated": 1790000001000}}
-        tools = [{"type": "tool", "id": name, "name": name,
-                  "time": {"created": 1790000000000, "ran": 1790000000001, "completed": 1790000000010},
-                  "state": {"status": "completed", "input": params,
-                            "content": [{"type": "text", "text": "1 passed"}]}}
-                 for name, params in [("read", {"path": "src/probe.py"}),
-                                      ("shell", {"command": "pytest -q tests/test_probe.py"})]]
-        messages = [{"type": "user", "id": "msg_user", "text": "Read the source and run its tests.",
-                     "time": {"created": 1790000000000}},
-                    {"type": "assistant", "id": "msg_probe", "agent": "build",
-                     "model": {"providerID": "probe", "id": "probe"}, "content": tools,
-                     "time": {"created": 1790000000000, "completed": 1790000001000}}]
-        payload = ({"source_format": "opencode_v2", "schema_version": 1, "directory": "/controlled", "session": session,
-                    "messages": messages, "children": []} if capture else {"info": session, "messages": messages})
-        with tempfile.TemporaryDirectory(prefix="trajviz-obs-attribution-probe-") as folder:
-            root = Path(folder)
-            path = root / "opencode" / "native-probe.json"
-            path.parent.mkdir()
-            path.write_text(json.dumps(payload), encoding="utf-8")
-            isolated_config = types.SimpleNamespace(**{**vars(config), "TRAJECTORY_DIR": root})
-            isolated = types.FunctionType(parser.__code__, {**parser.__globals__, "config": isolated_config},
-                                          parser.__name__, parser.__defaults__, parser.__closure__)
-            isolated.__kwdefaults__ = parser.__kwdefaults__
-            parsed = isolated("opencode", "native-probe")
-            calls = {(step.native_tool, step.canonical_action) for step in parsed.steps if step.type == "tool_call"}
-            return {("read", "read"), ("shell", "run_test")} <= calls
-    except Exception:  # noqa: BLE001 - an unverified parser cannot issue a capability verdict
-        return False
 
 
 def _dict(value: Any) -> dict:
@@ -143,7 +83,7 @@ def _error_text(value: Any) -> str:
 
 
 def _lifecycle(messages: list) -> tuple[str | None, list[str]]:
-    """The current root outcome and observed failure history, as in TrajViz 0.3.1."""
+    """The current root outcome and observed failure history, as in TrajViz."""
     terminal = None
     history = []
     for message in messages:

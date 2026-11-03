@@ -9,7 +9,7 @@ const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
 const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
-const STATE_JSON = JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.3.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.3.1', createdAt: 1 })
+const STATE_JSON = JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.4.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.4.1', createdAt: 1 })
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const ARTIFACTS = `${CACHE}/sessions/abc`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 12 }, rateLimits: [] }
@@ -147,7 +147,7 @@ const planOf = (feature: PromptPlan['feature'], calls: number, extra: Partial<Pr
   feature,
   hash: 'h1',
   plan: { calls, approx_input_tokens: 7_000 * calls },
-  prompts: Array.from({ length: calls }, (_, i) => ({ index: i, system: 'SYS', prompt: `P${i}`, max_tokens: feature === 'label' ? 1024 : 2048, timeout_s: 120 })),
+  prompts: Array.from({ length: calls }, (_, i) => ({ index: i, system: 'SYS', prompt: `P${i}`, max_tokens: feature === 'label' ? 4096 : 8192, timeout_s: 120 })),
   path: `${ARTIFACTS}/prompts-${feature}.json`,
   bytes: 1_234,
   ...extra,
@@ -208,7 +208,7 @@ test('analyze asks the question as typed, runs one completion, writes the replie
   const out = await obs($, "analyze why's it slow?")
   // The apostrophe reaches the bridge: the question is the raw text after the subcommand, not re-joined tokens.
   expect(bridgeCalls(ran)[0]).toEqual(['llm-prompt', ...SESSION_ARGV, '--feature', 'analyze', '--question', "why's it slow?"])
-  expect(completions).toEqual([{ model: 'sonnet', system: 'SYS', prompt: 'P0', maxTokens: 2048, effort: undefined, timeoutMs: 120_000 }])
+  expect(completions).toEqual([{ model: 'sonnet', system: 'SYS', prompt: 'P0', maxTokens: 8192, effort: undefined, timeoutMs: 120_000 }])
   expect(asked).toEqual([])
   const repliesPath = replyFile(files, 'analyze')
   expect(repliesPath).toMatch(/replies-analyze-\d+-\d+\.json$/)
@@ -349,7 +349,7 @@ test('label takes its flags, labels with labelModel (or --model), and names the 
   const out = await obs($, 'label -o /tmp/l.json --assistant-only --max-steps 3')
   expect(bridgeCalls(ran)[0]).toEqual(['llm-prompt', ...SESSION_ARGV, '--feature', 'label', '--max-steps', '3', '--assistant-only', '--out', '/tmp/l.json'])
   expect(completions.map(c => c.model)).toEqual(['haiku', 'haiku', 'haiku'])
-  expect(completions[0]).toEqual({ model: 'haiku', system: 'SYS', prompt: 'P0', maxTokens: 1024, effort: undefined, timeoutMs: 120_000 })
+  expect(completions[0]).toEqual({ model: 'haiku', system: 'SYS', prompt: 'P0', maxTokens: 4096, effort: undefined, timeoutMs: 120_000 })
   expect(asked).toEqual([])
   expect(bridgeCalls(ran)[1]).toEqual([
     'llm-apply', ...SESSION_ARGV, '--feature', 'label', '--replies', replyFile(files, 'label'),

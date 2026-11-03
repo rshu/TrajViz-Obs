@@ -1,6 +1,6 @@
 """Display native evidence gaps without changing TrajViz's canonical records.
 
-TrajViz 0.3.1 publishes nullable OTLP views, while native parsers retain numeric
+TrajViz publishes nullable OTLP views, while native parsers retain numeric
 placeholders and per-step missing-field labels. These projections use that
 native evidence for plugin JSON, UI and model briefs; upstream APIs are untouched.
 """

@@ -86,18 +86,20 @@ def test_chart_row_preserves_a_column_containing_controls():
     assert app.blocks[button._id] is button and button.visible
 
 
-def test_attribution_clear_finishes_before_load_and_automatic_diagnosis():
+def test_native_attribution_load_clear_and_diagnosis_order_is_preserved():
     native = dashboard.insight_app()
     load = next(fn for fn in native.fns.values() if fn.api_name == "_do_load")
     clear = next(fn for fn in native.fns.values() if fn.api_name == "_clear_attribution")
     automatic = next(fn for fn in native.fns.values() if fn.api_name == "on_diagnose_autoload")
     clicks = list(load.targets)
-    assert clear.targets == clicks and load.trigger_after is None
+    assert load.trigger_after is None
+    assert clear.targets == [(None, "then")] and clear.trigger_after == load._id
+    assert automatic.trigger_after == clear._id
     app = decorate_dashboard(native, "insight")
     assert app.fns[load._id] is load and app.fns[clear._id] is clear
-    assert clear.targets == clicks and clear.trigger_after is None
-    assert load.targets == [(None, "then")] and load.trigger_after == clear._id
-    assert automatic.trigger_after == load._id
+    assert load.targets == clicks and load.trigger_after is None
+    assert clear.targets == [(None, "then")] and clear.trigger_after == load._id
+    assert automatic.trigger_after == clear._id
 
 
 @pytest.mark.parametrize("label", ["Token Usage", "Tool Call Frequency", "Token Breakdown by Agent", "Skill Calls by Agent"])
@@ -169,6 +171,9 @@ def test_health_and_findings_live_in_summary_without_burying_other_tabs():
     native = dashboard.insight_app()
     cards = next(block for block in native.blocks.values()
                  if "overview-kpi-strip" in (block.elem_classes or []))
+    status = next(block for block in native.blocks.values() if isinstance(block, gr.Column) and any(
+        "label-status-badge" in (child.elem_classes or []) for child in block.children))
+    status_children = list(status.children)
     app = decorate_dashboard(native, "insight")
     tabs = next(child for child in app.children if isinstance(child, gr.Tabs))
     overview = next(child for child in tabs.children if child.label == "Overview")
@@ -178,8 +183,9 @@ def test_health_and_findings_live_in_summary_without_burying_other_tabs():
     assert cards not in app.children and cards in summary.children
     assert overview.children == [layout]
     assert any(isinstance(child, gr.Button) and "Suggest fixes" in child.value for child in summary.children)
-    assert any(isinstance(child, gr.HTML) and "summary-banner" in child.elem_classes
-               for column in summary.children if isinstance(column, gr.Column) for child in column.children)
+    assert status in summary.children and status not in app.children
+    assert status.children == status_children
+    assert "obs-summary-status" in status.elem_classes
 
 
 @pytest.mark.parametrize("kind", ["insight", "converge"])

@@ -1,4 +1,4 @@
-"""Pi v2/v3 active-parent-chain selection before TrajViz 0.3.1 conversion.
+"""Pi v2/v3 active-parent-chain selection before native TrajViz conversion.
 
 SessionManager restores the final non-header entry as its leaf and getBranch
 walks parentId to the root. Historical sibling branches remain source evidence.

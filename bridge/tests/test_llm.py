@@ -32,7 +32,7 @@ def _replies(plan: dict, text: str) -> dict:
 def test_plan_fixes_captures_one_prompt_per_issue(fixture_run, fixture_session):
     p = plan_prompts(fixture_run, "fixes", **_opts(fixture_session))
     assert p["plan"]["calls"] == min(3, len(fixture_run.view("issues").data)) == len(p["prompts"])
-    assert p["prompts"][0]["max_tokens"] == 2048 and p["prompts"][0]["timeout_s"] == 120
+    assert p["prompts"][0]["max_tokens"] == 8192 and p["prompts"][0]["timeout_s"] == 120
     assert "fix judge" in p["prompts"][0]["system"] and "Judge a fix" in p["prompts"][0]["prompt"]
     assert p["plan"]["approx_input_tokens"] > 0 and p["feature"] == "fixes"
 
@@ -126,7 +126,7 @@ def test_cli_unicode_prompt_size_is_bounded(run_cli, fixture_session, tmp_artifa
 def test_analyze_history_round_trip(fixture_run, fixture_session, tmp_artifacts):
     history = tmp_artifacts / "analyze.json"
     first = plan_prompts(fixture_run, "analyze", **_opts(fixture_session, history_path=history))
-    assert first["plan"]["calls"] == 1 and first["prompts"][0]["max_tokens"] == 2048
+    assert first["plan"]["calls"] == 1 and first["prompts"][0]["max_tokens"] == 8192
     assert "User:" not in first["prompts"][0]["prompt"] and "bottlenecks" in first["prompts"][0]["prompt"]
     reply = "The run spent most of its time reading files."
     out = apply_replies(fixture_run, "analyze", _replies(first, reply),
@@ -155,7 +155,7 @@ def test_malformed_history_is_rejected_before_prompt_planning(message, fixture_s
 
 def test_label_capture_and_apply(fixture_run, fixture_session, tmp_artifacts):
     p = plan_prompts(fixture_run, "label", **_opts(fixture_session))
-    assert 0 < p["plan"]["calls"] <= 50 and p["prompts"][0]["max_tokens"] == 1024
+    assert 0 < p["plan"]["calls"] <= 50 and p["prompts"][0]["max_tokens"] == 4096
     assert p["prompts"][0]["timeout_s"] == 120 and "Step #" in p["prompts"][0]["prompt"]
     sidecar = tmp_artifacts / "labels.json"
     out = apply_replies(fixture_run, "label", _replies(p, LABEL), **_apply_opts(fixture_session, sidecar))
@@ -246,6 +246,29 @@ def test_direct_label_retry_is_one_step_and_failures_are_reported(fixture_run, f
     assert len(messages) == 5 and messages[0] == messages[1] and messages[2] == messages[3]  # step 3: past the cap
     assert len(set(messages)) == 3
     assert out["errors"] == ["prompt 1: ConnectionError"] and out["summary"]["classified"] == 2
+
+
+@pytest.mark.parametrize("cap", [1, 50])
+@pytest.mark.parametrize("existing", [False, True])
+def test_all_failed_label_requests_abort_without_writing_a_sidecar(cap, existing, tmp_path, label_endpoint):
+    from agent_trajviz.labeling import labeler, llm
+
+    source = Path(make_session(tmp_path, steps=2))
+    run = load_run(str(source))
+    sidecar = tmp_path / "labels.json"
+    previous = b"Keep previous labels"
+    if existing:
+        sidecar.write_bytes(previous)
+    label_endpoint["fail"] = set(range(1, 20))
+    original = labeler.load_all_steps, labeler._classify, llm.call_llm
+    with pytest.raises(BridgeError) as caught:
+        direct(run, "label", **_apply_opts(source, sidecar, max_steps=cap))
+    assert caught.value.code == "labeling_failed" and caught.value.path == str(sidecar)
+    assert "ConnectionError" in caught.value.message
+    assert len(label_endpoint["calls"]) == 2 * min(cap, 2)
+    assert (sidecar.read_bytes() == previous) if existing else not sidecar.exists()
+    assert not list(tmp_path.glob(".trajviz-obs-*"))
+    assert (labeler.load_all_steps, labeler._classify, llm.call_llm) == original
 
 
 def test_cli_prompt_then_apply(run_cli, fixture_session, tmp_artifacts):

@@ -6,7 +6,7 @@ uploads files and invokes native callbacks; the public REST API additionally pre
 and the exact server-side preload path. Gradio's browser executes event chains, so this harness calls
 their native endpoints explicitly. Browser rendering, clicks and responsive layout remain CUA checks.
 
-Run with the bridge's app/llm environment; optional --attribution-root enables real, offline attribution diagnosis.
+Run with the bridge's app/llm environment; includes bundled offline attribution diagnosis against controlled reference data.
 Artifacts and server caches must stay outside the repository. No external model requests are needed.
 """
 
@@ -291,7 +291,7 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     invalid_labels = app.output / "invalid-labels.json"
     write_json(invalid_labels, {})
     rejected_labels = app.call("do_load_labels_1", handle_file(str(invalid_labels)))
-    require("Error:" in rejected_labels[1] and all(not figure(chart)["data"] for chart in rejected_labels[2:]),
+    require("Labels could not be loaded:" in rejected_labels[1] and all(not figure(chart)["data"] for chart in rejected_labels[2:]),
             "Invalid sidecar did not visibly clear old label charts")
     restored_labels = app.call("do_load_labels", handle_file(str(labels["agent"])))
     require(all(figure(chart)["data"] for chart in restored_labels[2:]), "Labels did not recover after an invalid upload")
@@ -411,7 +411,7 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     else:
         result, status = app.call("on_diagnose", "claude_code", "synthetic", str(app.output / "missing-reference"))
         require("No gold-grounded attribution" in status and "unavailable" in text_of(result).lower(), "Attribution did not visibly explain missing optional setup")
-        ledger["checks"].append("honest missing optional attribution setup")
+        ledger["checks"].append("honest missing attribution reference data")
 
     # Failed loads must disarm the previous report and not leave a stale comparison/Workflow behind.
     failed = app.mapped("_do_load", None, "", None)
@@ -489,7 +489,7 @@ def exercise_comparison_costs(app: Dashboard, paths: dict, ledger: dict) -> None
                                  "mixed batch cost coverage", "incomplete before/after has no fabricated cost deltas"])
 
 
-def run(python: str, output: Path, *, attribution_root: Path | None = None) -> dict:
+def run(python: str, output: Path) -> dict:
     fixtures = prepare_comparison_inputs(output / "fixtures")
     costs = prepare_cost_inputs(output / "fixtures")
     sid = "ddd44444-0000-4000-8000-000000000004"
@@ -498,7 +498,7 @@ def run(python: str, output: Path, *, attribution_root: Path | None = None) -> d
     add_context_drop(fixtures["agent_run"])
     add_context_drop(child)
     hashes = source_hashes(output / "fixtures")
-    ledger: dict = {"status": "running", "callbacks": [], "checks": [], "attribution": "real objective attribution" if attribution_root else "missing setup only"}
+    ledger: dict = {"status": "running", "callbacks": [], "checks": [], "attribution": "bundled objective attribution"}
     provider = Provider()
     env = {key: val for key, val in os.environ.items() if not key.startswith(("ANALYZE_", "LABEL_", "AWE_", "TRAJVIZ_ATTRIBUTION_PATH", "TRAJVIZ_REFERENCE_ROOT"))}
     env.update(GRADIO_ANALYTICS_ENABLED="False", HF_HUB_DISABLE_TELEMETRY="1", GRADIO_TEMP_DIR=str(output / "gradio-cache"),
@@ -510,14 +510,13 @@ def run(python: str, output: Path, *, attribution_root: Path | None = None) -> d
     attribution = None
     labels = {}
     try:
-        if attribution_root:
-            optional = output / "optional"
-            inputs = prepare_inputs(optional)
-            collected = bridge_call(python, output, {**env, **inputs["environment"]}, "collect", "--", "opencode", "ses_root", str(optional / "exports/opencode.json"))
-            require(collected["exit"] == 0, "Could not prepare actual canonical OpenCode attribution input")
-            attribution = prepare_attribution_reference(optional)
-            env.update(TRAJVIZ_ATTRIBUTION_PATH=str(attribution_root), TRAJVIZ_REFERENCE_ROOT=attribution["reference_root"],
-                       AWE_ARGUS_ROOT=attribution["reference_root"], AWE_PROJECT_DATA=str(output / "awe-cache"), AWE_OUTPUT_DATA=str(output / "awe-output"))
+        optional = output / "optional"
+        inputs = prepare_inputs(optional)
+        collected = bridge_call(python, output, {**env, **inputs["environment"]}, "collect", "--", "opencode", "ses_root", str(optional / "exports/opencode.json"))
+        require(collected["exit"] == 0, "Could not prepare actual canonical OpenCode attribution input")
+        attribution = prepare_attribution_reference(optional)
+        env.update(TRAJVIZ_REFERENCE_ROOT=attribution["reference_root"],
+                   AWE_ARGUS_ROOT=attribution["reference_root"], AWE_PROJECT_DATA=str(output / "awe-cache"), AWE_OUTPUT_DATA=str(output / "awe-output"))
         for name, source in (("before", fixtures["before"]), ("reference", fixtures["reference"]), ("agent", fixtures["agent_run"])):
             labels[name] = output / "labels" / f"{name}-labels.json"
             labels[name].parent.mkdir(exist_ok=True)
@@ -557,13 +556,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--attribution-root", type=Path, help="An existing attribution engine checkout for offline diagnosis.")
-    parser.add_argument("--decaf-root", dest="attribution_root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.attribution_root is not None:
-        args.attribution_root = args.attribution_root.expanduser().resolve()
-    if args.attribution_root and not (args.attribution_root / "awe/__init__.py").is_file():
-        parser.error("--attribution-root must contain the attribution engine package")
     output = (args.output or Path(tempfile.mkdtemp(prefix="trajviz-obs-dashboard-e2e-"))).expanduser().resolve()
     if output.is_relative_to(ROOT):
         parser.error("--output must be outside the repository")
@@ -571,7 +564,7 @@ def main() -> int:
         parser.error("--output must be an empty directory")
     output.mkdir(parents=True, exist_ok=True)
     python = os.path.abspath(shutil.which(args.python) or args.python)
-    result = run(python, output, attribution_root=args.attribution_root)
+    result = run(python, output)
     print(json.dumps({"output": str(output), "status": result["status"],
                       "callbacks": len(result["callbacks"]), "http_model_requests": result["http_model_requests"],
                       "attribution": result["attribution"], "passed_checks": len(result["checks"]),

@@ -3,8 +3,8 @@
 
 The real bridge dispatches the upstream CLIs; exported trajectories are reloaded and all views validated.
 Artifacts and a native-command manifest stay in an explicitly empty output folder outside the repository.
-Attribution verdict execution additionally requires its real external checkout/reference set; an unavailable
-notice is recorded only as fallback coverage, never as a successful attribution diagnosis.
+Bundled attribution runs against an isolated reference set, with unavailable evidence and identity
+refusals checked separately from successful objective diagnosis.
 """
 
 from __future__ import annotations
@@ -179,7 +179,7 @@ def prepare_attribution_reference(output: Path) -> dict[str, str]:
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes((output / "exports/opencode.json").read_bytes())
     write_json(root / "data/requirements" / f"{instance}.json", {
-        "repo": "synthetic/optional-e2e", "base_commit": "0000000",
+        "instance_id": instance, "repo": "synthetic/optional-e2e", "base_commit": "0000000",
         "problem_statement": "Make answer return 42 and preserve the failing test as evidence.",
         "gold_patch": "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-def answer(): return 0\n+def answer(): return 42\n",
         "FAIL_TO_PASS": ["tests/test_app.py::test_answer"], "PASS_TO_PASS": [],
@@ -193,12 +193,12 @@ def prepare_attribution_reference(output: Path) -> dict[str, str]:
             "agent": "opencode_glm", "instance": instance}
 
 
-def run_matrix(python: str, output: Path, *, attribution_root: Path | None = None) -> dict:
+def run_matrix(python: str, output: Path) -> dict:
     from jsonschema import Draft202012Validator
 
     fixtures = prepare_inputs(output)
     ledger: dict = {"status": "running", "commands": [], "schema_validations": 0,
-                    "attribution_verdict": "not_tested: external attribution engine checkout/reference required"}
+                    "attribution_verdict": "not_tested: bundled objective diagnosis not completed"}
     env = {**os.environ, **fixtures["environment"], "XDG_CACHE_HOME": str(output / "cache"),
            "CLAUDE_CONFIG_DIR": str(output / "config")}
     before = source_hashes(output / "inputs")
@@ -282,52 +282,45 @@ def run_matrix(python: str, output: Path, *, attribution_root: Path | None = Non
             refused = call("collect", "--", name, *args)
             assert refused["exit"] != 0, f"{name} accepted overwriting its source"
         assert source_hashes(output / "inputs") == before, "A collector changed its source files"
-        # Exercise missing-dependency behavior separately from the optional real-checkout diagnosis.
-        # A fallback message cannot stand in for a tested attribution verdict.
-        env["TRAJVIZ_ATTRIBUTION_PATH"] = str(output / "missing-attribution")
-        if call("doctor")["attribution"]["available"] is False:
-            fallback = call("attribution", "--transcript", str(exports / "codearts.json"),
-                            "--reference-root", str(output / "missing-reference"),
-                            "--agent", "codearts", "--instance", "synthetic")
-            assert fallback["available"] is False and "Attribution unavailable" in fallback["reason"]
-            assert not fallback["faults"] and not fallback["scorecard"] and fallback["primary"] is None
-            ledger["attribution_fallback"] = "passed: missing dependency, no fabricated verdict"
-        else:
-            ledger["attribution_fallback"] = "not_tested: a real default attribution engine checkout was discovered"
-        if attribution_root is not None:
-            reference_data = prepare_attribution_reference(output)
-            reference, canonical = Path(reference_data["reference_root"]), Path(reference_data["transcript"])
-            original_reference = source_hashes(reference)
-            env.update({"TRAJVIZ_ATTRIBUTION_PATH": str(attribution_root), "AWE_ARGUS_ROOT": str(reference),
-                        "TRAJVIZ_REFERENCE_ROOT": str(reference), "AWE_PROJECT_DATA": str(output / "awe-cache"),
-                        "AWE_OUTPUT_DATA": str(output / "awe-output"), "OPENROUTER_API_KEY": ""})
-            assert call("doctor")["attribution"]["available"] is True
-            common = ["--reference-root", str(reference), "--agent", "opencode_glm", "--instance", "optional-case"]
-            verdict = call("attribution", "--transcript", str(canonical), *common)
-            assert verdict["available"] is True, verdict.get("reason")
-            assert verdict["mode"] == "reference" and len(verdict["scorecard"]) == 7
-            assert verdict["primary"] == {"capability": "code_localization", "error_type": "missed_relevant_file"}
-            assert verdict["faults"] and all(fault["evidence_chain"]["links"] for fault in verdict["faults"])
-            assert verdict["used_judge"] is False and verdict["arbiter"] is None
-            write_json(output / "attribution.json", verdict)
-            different = output / "mismatched-trajectory.json"
-            different.write_bytes(canonical.read_bytes() + b"\n ")
-            rejected = call("attribution", "--transcript", str(different), *common)
-            assert rejected["available"] is False and "does not match the canonical" in rejected["reason"]
-            assert not rejected["faults"] and not rejected["scorecard"] and rejected["primary"] is None
-            outcome = reference / "data/eval_opencode_glm.json"
-            write_json(outcome, {"optional-case": True})
-            resolved = call("attribution", "--transcript", str(canonical), *common)
-            assert resolved["available"] is False and "resolved" in resolved["reason"]
-            write_json(outcome, {"optional-case": False})
-            assert call("attribution", "--transcript", str(canonical), *common)["available"] is True
-            assert source_hashes(reference) == original_reference
-            ledger["attribution_verdict"] = "passed: real attribution objective diagnosis, identity refusal, resolved-case refusal, recovery"
-            fixtures["environment"].update({name: env[name] for name in (
-                "TRAJVIZ_ATTRIBUTION_PATH", "AWE_ARGUS_ROOT", "TRAJVIZ_REFERENCE_ROOT", "AWE_PROJECT_DATA", "AWE_OUTPUT_DATA",
-                "OPENROUTER_API_KEY")})
-            fixtures["commands"].append(f'/obs attribution --session "{canonical}" {shlex.join(common)}')
-            write_json(output / "native-commands.json", fixtures)
+        fallback = call("attribution", "--transcript", str(exports / "codearts.json"),
+                        "--reference-root", str(output / "missing-reference"),
+                        "--agent", "codearts", "--instance", "synthetic")
+        assert fallback["available"] is False and "no gold reference" in fallback["reason"]
+        assert not fallback["faults"] and not fallback["scorecard"] and fallback["primary"] is None
+        ledger["attribution_fallback"] = "passed: missing reference data, no fabricated verdict"
+        reference_data = prepare_attribution_reference(output)
+        reference, canonical = Path(reference_data["reference_root"]), Path(reference_data["transcript"])
+        original_reference = source_hashes(reference)
+        env.update({"AWE_ARGUS_ROOT": str(reference),
+                    "TRAJVIZ_REFERENCE_ROOT": str(reference), "AWE_PROJECT_DATA": str(output / "awe-cache"),
+                    "AWE_OUTPUT_DATA": str(output / "awe-output"), "OPENROUTER_API_KEY": ""})
+        assert call("doctor")["attribution"]["available"] is True
+        common = ["--reference-root", str(reference), "--agent", "opencode_glm", "--instance", "optional-case"]
+        verdict = call("attribution", "--transcript", str(canonical), *common)
+        assert verdict["available"] is True, verdict.get("reason")
+        assert verdict["mode"] == "reference" and len(verdict["scorecard"]) == 7
+        assert verdict["primary"] == {"capability": "code_localization", "error_type": "missed_relevant_file"}
+        assert verdict["faults"] and all(fault["evidence_chain"]["links"] for fault in verdict["faults"])
+        assert verdict["used_judge"] is False and verdict["arbiter"] is None
+        write_json(output / "attribution.json", verdict)
+        different = output / "mismatched-trajectory.json"
+        different.write_bytes(canonical.read_bytes() + b"\n ")
+        rejected = call("attribution", "--transcript", str(different), *common)
+        assert rejected["available"] is False and "does not match the canonical" in rejected["reason"]
+        assert not rejected["faults"] and not rejected["scorecard"] and rejected["primary"] is None
+        outcome = reference / "data/eval_opencode_glm.json"
+        write_json(outcome, {"optional-case": True})
+        resolved = call("attribution", "--transcript", str(canonical), *common)
+        assert resolved["available"] is False and "resolved" in resolved["reason"]
+        write_json(outcome, {"optional-case": False})
+        assert call("attribution", "--transcript", str(canonical), *common)["available"] is True
+        assert source_hashes(reference) == original_reference
+        ledger["attribution_verdict"] = "passed: real attribution objective diagnosis, identity refusal, resolved-case refusal, recovery"
+        fixtures["environment"].update({name: env[name] for name in (
+            "AWE_ARGUS_ROOT", "TRAJVIZ_REFERENCE_ROOT", "AWE_PROJECT_DATA", "AWE_OUTPUT_DATA",
+            "OPENROUTER_API_KEY")})
+        fixtures["commands"].append(f'/obs attribution --session "{canonical}" {shlex.join(common)}')
+        write_json(output / "native-commands.json", fixtures)
         ledger["status"] = "passed"
         return ledger
     finally:
@@ -338,14 +331,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--attribution-root", type=Path, help="An existing attribution engine checkout; enables offline objective verdict checks.")
     parser.add_argument("--prepare-only", action="store_true", help="Write fixtures and native /obs commands only.")
-    parser.add_argument("--decaf-root", dest="attribution_root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.attribution_root is not None:
-        args.attribution_root = args.attribution_root.expanduser().resolve()
-    if args.attribution_root is not None and not (args.attribution_root / "awe/__init__.py").is_file():
-        parser.error("--attribution-root must contain the attribution engine package")
     output = (args.output or Path(tempfile.mkdtemp(prefix="trajviz-obs-optional-"))).expanduser().resolve()
     if output.is_relative_to(ROOT):
         parser.error("--output must be outside the repository")
@@ -353,7 +340,7 @@ def main() -> int:
         parser.error("--output must be an empty directory")
     output.mkdir(parents=True, exist_ok=True)
     python = os.path.abspath(shutil.which(args.python) or args.python)
-    result = prepare_inputs(output) if args.prepare_only else run_matrix(python, output, attribution_root=args.attribution_root)
+    result = prepare_inputs(output) if args.prepare_only else run_matrix(python, output)
     print(json.dumps({"output": str(output), "result": result}, indent=2))
     return 0
 

@@ -111,6 +111,27 @@ def test_label_real_http_uses_label_settings_and_retries_within_step_cap(provide
     assert sum(step["label_source"] == "llm" for step in sidecar["steps"]) == 1
 
 
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+@pytest.mark.parametrize(("status", "cap", "attempts"), [(500, 1, 2), (401, 1, 2), (401, 50, 6)])
+def test_label_http_abort_is_structured_private_and_preserves_previous_output(provider, status, cap, attempts,
+                                                                            endpoint, monkeypatch, fixture_session,
+                                                                            tmp_path, run_cli):
+    monkeypatch.setenv("LABEL_PROVIDER", provider)
+    monkeypatch.setattr("agent_trajviz.labeling.labeler.time.sleep", lambda _seconds: None)
+    private = "Provider body must stay private, including sk-sensitive-test"
+    endpoint.responses.extend([(status, private)] * attempts)
+    sidecar = tmp_path / "labels.json"
+    previous = b"Keep previous labels"
+    sidecar.write_bytes(previous)
+    code, result = run_cli(["label", "--transcript", str(fixture_session), "--artifacts", str(tmp_path / "artifacts"),
+                            "--max-steps", str(cap), "--out", str(sidecar)])
+    assert code == 1 and result["error"]["code"] == "labeling_failed"
+    assert "HTTPError" in result["error"]["message"] or "HTTP 401" in result["error"]["message"]
+    assert len(endpoint.calls) == attempts and sidecar.read_bytes() == previous
+    assert private not in json.dumps(result)
+    assert not list(tmp_path.glob(".trajviz-obs-*"))
+
+
 def test_ask_http_error_is_safe_and_preserved_in_history(endpoint, fixture_session, tmp_path, run_cli):
     endpoint.responses.append((401, "response includes a pretend credential: sk-sensitive"))
     code, result = run_cli(["ask", "--transcript", str(fixture_session), "--artifacts", str(tmp_path / "artifacts"),

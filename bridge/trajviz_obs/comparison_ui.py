@@ -310,7 +310,7 @@ def adapt_comparisons(app, kind):
     from agent_trajviz.insight.ui.shared import safe_callback
 
     signatures = ({"on_run_comparison": ("ref_file", "anchor_file", "ref_format", "ref_labels_file",
-                                         "cmp_labels_file", "overview_run", "dark"),
+                                         "cmp_labels_file", "overview_run", "dark", "ref_session"),
                    "on_run_group_scorecard": ("files", "format_hint", "dark", "overview_run")}
                   if kind == "insight" else
                   {"compare_uploads": ("ref_upload", "cmp_upload", "anchor_upload", "rate", "fuzzy"),

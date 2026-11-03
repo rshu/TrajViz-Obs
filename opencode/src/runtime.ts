@@ -86,7 +86,7 @@ export class Runtime {
   }
   async ready(extras: string[] = [], signal?: AbortSignal): Promise<Environment> {
     signal?.throwIfAborted()
-    const source = this.options.trajvizSource ?? 'agent-trajviz==0.3.1'
+    const source = this.options.trajvizSource ?? 'agent-trajviz==0.4.1'
     if (this.environment?.source === source && extras.every(e => this.environment!.extras.includes(e))) return this.environment
     if (this.preparing) { await this.preparing; return this.ready(extras, signal) }
     this.preparing = (async () => {

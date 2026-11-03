@@ -16,7 +16,7 @@ const NOW = 1_761_150_000_000
 
 /** `state.json` with the given extras installed. */
 const stateJson = (extras: string[]): string =>
-  JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.3.1', extras, source: 'agent-trajviz==0.3.1', createdAt: 1 })
+  JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.4.1', extras, source: 'agent-trajviz==0.4.1', createdAt: 1 })
 
 /** The argv every session-bound bridge subcommand gets for the current session. */
 const SESSION_ARGV = ['--transcript', DERIVED, '--window', '1000000', '--artifacts', ARTIFACTS, '--kind', 'current']
@@ -94,7 +94,7 @@ function host(on: On, world: World = {}): Host {
     timeline.push('spawn')
     if (e.argv.some(a => a.endsWith('/bridge/bootstrap.py'))) {
       const req = JSON.parse(e.argv[e.argv.indexOf('--request') + 1] as string)
-      const state = { revision: 5, python: VENV_PY, pythonOption: req.pythonOption, trajviz: '0.3.1', extras: [...new Set(['llm', 'charts', 'zstd', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
+      const state = { revision: 5, python: VENV_PY, pythonOption: req.pythonOption, trajviz: '0.4.1', extras: [...new Set(['llm', 'charts', 'zstd', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
       files[STATE_PATH] = JSON.stringify(state)
 
       yield { stream: 'stderr' as const, text: 'Installed\n' }
@@ -315,7 +315,7 @@ test('sessions with none, and the first run sets the environment up first', asyn
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   expect((await obs($, 'sessions')).text).toBe('No sessions for this project in /pd.')
   expect(setupRequests(spawned)).toHaveLength(1)
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.3.1', extras: ['llm', 'charts', 'zstd'] })
+  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.4.1', extras: ['llm', 'charts', 'zstd'] })
   expect(STATE_PATH in files).toBe(true)
   expect(bridgeCalls(ran)).toEqual([['sessions', '--cwd', CWD, '--config-dir', `${HOME}/.claude`]])
 })

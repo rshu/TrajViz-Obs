@@ -279,12 +279,13 @@ def decorate_dashboard(app: gr.Blocks, kind: str) -> gr.Blocks:
     """Wrap a native dashboard while preserving all its components and events."""
     import gradio as gr
 
+    from .attribution_ui import adapt_attribution_workspace
     from .comparison_ui import adapt_comparisons
 
     adapt_comparisons(app, kind)
-
     if kind == "insight":
-        _sequence_attribution_load(app)
+        adapt_attribution_workspace(app)
+
     for block in app.blocks.values():
         for attribute in ("value", "label", "info", "placeholder"):
             value = getattr(block, attribute, None)
@@ -368,15 +369,6 @@ def decorate_dashboard(app: gr.Blocks, kind: str) -> gr.Blocks:
     return page
 
 
-def _sequence_attribution_load(app: gr.Blocks) -> None:
-    """Clear old diagnosis before loading, so it cannot overwrite the autoload result."""
-    load = next((fn for fn in app.fns.values() if fn.api_name == "_do_load"), None)
-    clear = next((fn for fn in app.fns.values() if fn.api_name == "_clear_attribution"), None)
-    if load is None or clear is None or load.trigger_after is not None or load.targets != clear.targets:
-        return
-    load.targets = [(None, "then")]
-    load.trigger_after = clear._id
-
 
 def _responsive_plot_data(value: Any) -> Any:
     """Size serialized Plotly figures to their container without changing cached figures."""
@@ -450,7 +442,7 @@ def _focus_overview(page: gr.Blocks) -> None:
         return
     cards = [child for child in page.children if "overview-kpi-strip" in (child.elem_classes or [])]
     warnings = [child for child in page.children if isinstance(child, gr.Column) and any(
-        "summary-banner" in (part.elem_classes or []) for part in child.children)]
+        "label-status-badge" in (part.elem_classes or []) for part in child.children)]
     findings = [child for child in overview.children if child is not layout]
     for child in [*cards, *warnings]:
         page.children.remove(child)

@@ -145,7 +145,7 @@ def test_env_label_honors_upstream_generation_settings_and_paces_only_actual_cal
                for c in provider.calls)
     assert provider.sleeps == [0.25]  # the remaining unknown assistant records never wait
     plan = llm_cmd.plan_prompts(fixture_run, "label", **options(fixture_session))
-    assert all(p["max_tokens"] == 1024 for p in plan["prompts"])  # host session calls keep their stated cap
+    assert all(p["max_tokens"] == 4096 for p in plan["prompts"])  # host session calls keep their stated cap
 
 
 @pytest.mark.parametrize("tokens,temperature", [("invalid", "nan"), ("-5", "-0.1"), ("0", "inf"),
@@ -156,7 +156,7 @@ def test_invalid_env_generation_settings_use_upstream_defaults(tokens, temperatu
     monkeypatch.setenv("LABEL_TEMPERATURE", temperature)
     llm_cmd.direct(fixture_run, "label", **options(fixture_session, max_steps=1,
         label_options={"taxonomy_path": str(taxonomy)}), out_path=tmp_path / "labels.json")
-    assert provider.calls[0]["max_tokens"] == 1024 and provider.calls[0]["temperature"] == 0.3
+    assert provider.calls[0]["max_tokens"] == 4096 and provider.calls[0]["temperature"] == 0.3
 
 
 def test_explicit_reply_cap_overrides_environment(provider, monkeypatch, taxonomy, fixture_run, fixture_session, tmp_path):

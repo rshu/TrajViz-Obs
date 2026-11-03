@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 — 2026-11-03
+
+- Upgrade both plugins to TrajViz 0.4.1, retaining all 36 views, schema 2 exports, and evidence-aware comparisons.
+- Use the bundled attribution engine and expose its saved-run workspace; a separate backend checkout is no longer required.
+- Preserve native label identity checks, provenance, captured reference-session selection, and the updated model output budgets.
+- Keep OpenCode subagent identities distinct in attribution and preserve existing sidecars when every labeling request fails.
+
 ## 0.2.0 — 2026-10-30
 
 - Upgrade both plugins to TrajViz 0.3.1, with all 36 views, schema 2 exports, data-quality reporting, and compressed-session support. Includes OpenCode adapter 0.2.0.

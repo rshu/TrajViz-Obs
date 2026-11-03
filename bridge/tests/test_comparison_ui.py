@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import html
+import inspect
 import json
 import re
 import runpy
@@ -46,6 +47,29 @@ def test_insight_pairwise_missing_partial_zero_and_positive_costs(controls):
         assert ["Total Tokens", "0", expected] in rows(report)
         assert ["Duration", "0.0s", "unknown" if kind == "missing" else "1.1s"] in rows(report)
     assert before == {key: run.to_dict(include_raw=True) for key, run in runs.items()}
+
+
+def test_insight_pairwise_preserves_selected_reference_capture_session(controls, captured_sessions, monkeypatch):
+    """The reference selector must reach the native loader through the scoped adapter."""
+    from agent_trajviz import api
+
+    _, runs = controls
+    app = decorate_dashboard(dashboard.insight_app(), "insight")
+    compare = callback(app, "on_run_comparison")
+    assert inspect.signature(compare).parameters["ref_session"].default is None
+    native = api.load
+    selected = []
+
+    def load(path, **kwargs):
+        selected.append((path, kwargs))
+        return native(path, **kwargs)
+
+    monkeypatch.setattr(api, "load", load)
+    report, _, _, status = compare(str(captured_sessions), None, "otlp", None, None, runs["zero"], False, "B")
+    assert selected == [(str(captured_sessions), {"format": "otlp", "session_id": "B"})]
+    assert "Transcript alignment unavailable" in report
+    assert "Transcript alignment unavailable" in status
+    assert "Comparison complete" not in status
 
 
 def test_scorecard_keeps_unknown_cells_out_of_rankings_and_timeline_costs(controls):

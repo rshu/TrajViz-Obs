@@ -54,7 +54,6 @@ def doctor_info(cwd: str | None) -> dict[str, Any]:
     """Describe the environment; LLM settings are read with *cwd*'s ``.env`` (names only, never values)."""
     if cwd and not os.path.isdir(cwd):
         raise BridgeError("not_found", f"No such directory: {cwd}", path=cwd)
-    compat.configure_attribution_environment()
     ok, reason = attribution.available()
     extras = {extra: all(_importable(name) for name in names) for extra, names in EXTRAS.items()}
     return {
