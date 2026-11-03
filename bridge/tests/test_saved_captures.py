@@ -136,7 +136,7 @@ def test_incomplete_capture_model_prompt_preserves_missing_evidence(captured_ses
                           "--artifacts", str(tmp_path / "artifacts"), "--feature", "analyze"])
     assert code == 0 and plan["plan"]["calls"] == 1
     prompt = plan["prompts"][0]["system"] + plan["prompts"][0]["prompt"]
-    assert "tokens_total: None" in prompt and "telemetry_evidence" in prompt
+    assert "tokens_total: unknown" in prompt and "telemetry_evidence" in prompt
     assert any("assistant" in line and "?tok" in line for line in prompt.splitlines())
     assert "file activity was not captured" in prompt
 

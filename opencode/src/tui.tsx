@@ -155,7 +155,7 @@ export function setup(context: Plugin.Context): () => void {
   }
 
   const Action = (props: { label: string; run(): void }): ReturnType<typeof Text> => <text fg={context.theme.text.base} onMouseDown={props.run}>{`[${props.label}]`}</text>
-  const Text = (props: { children: string; muted?: boolean }) => <text fg={props.muted ? context.theme.text.muted : context.theme.text.base} wrapMode="word">{safeText(props.children)}</text>
+  const Text = (props: { children: string; muted?: boolean }) => <text fg={props.muted ? context.theme.text.muted : context.theme.text.base} wrapMode="word" flexShrink={0}>{safeText(props.children)}</text>
 
   function showResult(runID: string): void {
     context.ui.dialog.set({ size: 'large', centered: true })
@@ -347,10 +347,10 @@ export function setup(context: Plugin.Context): () => void {
       ],
     }))
     return <box flexDirection="column" flexGrow={1} minHeight={0} padding={1} gap={1} onMouseDown={() => props.panel.focus()}>
-      <box flexDirection="row" flexWrap="wrap" gap={1}>
+      <box id="obs-pane-tabs" flexDirection="row" flexWrap="wrap" flexShrink={0} columnGap={1} rowGap={0}>
         <For each={TABS}>{(name, index) => <text fg={context.theme.text.base} onMouseDown={() => selectTab(index())}>{`${state.tab === index() ? '▸' : ''}${index() + 1} ${name}`}</text>}</For>
       </box>
-      <box flexDirection="row" flexWrap="wrap" gap={2}>
+      <box id="obs-pane-actions" flexDirection="row" flexWrap="wrap" flexShrink={0} columnGap={2} rowGap={0}>
         <Action label="r Refresh" run={() => { void refresh(id()) }} />
         <Action label={`w Watch ${settings.watch ? 'on' : 'off'}`} run={() => { void command('watch') }} />
         <Action label="d Dashboard" run={() => { void command('dashboard', true) }} />

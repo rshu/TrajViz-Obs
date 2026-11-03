@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from agent_trajviz.collect import __main__ as collect_main
 
+from trajviz_obs.compat import load_run
 from trajviz_obs.passthrough import OUTPUT_CAP, _BoundedCapture, attribution, brief, run_collect, run_converge_cli
 
 
@@ -170,6 +171,32 @@ def test_collect_bounds_storage_during_multibyte_stdout_and_stderr_writes(monkey
 def test_attribution_unavailable_is_honest(fixture_run):
     out = attribution(fixture_run, reference_root=None, agent=None, instance_id=None)
     assert out["available"] is False and out["reason"]
+
+
+def test_native_project_path_gets_reference_guidance_without_capability_blame(fixture_session, tmp_path, run_cli):
+    project = tmp_path / "-private-tmp-native-project"
+    project.mkdir()
+    source = project / "session.jsonl"
+    source.write_bytes(fixture_session.read_bytes())
+    original = source.read_bytes()
+    code, out = run_cli(["attribution", "--transcript", str(source)])
+    assert code == 0 and out["available"] is False
+    assert "No gold-grounded attribution" in out["reason"]
+    assert all(flag in out["reason"] for flag in ("--reference-root", "--agent", "--instance"))
+    assert out["agent"] == project.name and out["instance_id"] == "session"
+    assert not out["faults"] and not out["scorecard"] and out["primary"] is None
+    assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("agent", ["-invalid", "../outside", "", "agent/child"])
+def test_explicit_invalid_attribution_agent_keeps_native_validation(agent, fixture_session, tmp_path):
+    source = tmp_path / "-native-project" / "session.jsonl"
+    source.parent.mkdir()
+    source.write_bytes(fixture_session.read_bytes())
+    out = attribution(load_run(str(source)), reference_root=None, agent=agent, instance_id="case")
+    assert out["available"] is False
+    assert out["reason"] == "invalid agent id (must be a plain agent name)"
+    assert not out["faults"] and not out["scorecard"] and out["primary"] is None
 
 
 def test_brief_is_trajviz_text(fixture_run):

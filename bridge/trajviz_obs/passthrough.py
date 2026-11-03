@@ -26,7 +26,7 @@ from agent_trajviz.collect import __main__ as collect_main
 from agent_trajviz.converge import cli as converge_cli
 
 from .cli import register
-from .compat import EmptySession, install_attribution_guard, load_plugins, project_brief
+from .compat import EmptySession, attribution_identity_message, install_attribution_guard, load_plugins, project_brief
 from .views_cmd import _load, _session_args
 
 #: Most bytes of a pass-through's stdout or stderr returned inline (UTF-8).
@@ -157,7 +157,14 @@ def run_collect(argv: list[str]) -> dict:
 def attribution(run: Trajectory, *, reference_root: str | None, agent: str | None, instance_id: str | None) -> dict:
     """``agent_trajviz.attribution.diagnose`` of *run*, as TrajViz returns it."""
     install_attribution_guard()
-    return tv_attribution.diagnose(run, agent=agent, instance_id=instance_id, reference_root=reference_root)
+    result = tv_attribution.diagnose(run, agent=agent, instance_id=instance_id, reference_root=reference_root)
+    if agent is None and result.get("available") is False:
+        # Native Claude project folders begin with a hyphen. They are not
+        # benchmark agent identities, even though the public API infers one
+        # from any source's parent directory. Keep the refusal and all source
+        # fields intact; explain the missing reference layout to the user.
+        return {**result, "reason": attribution_identity_message(result.get("reason"))}
+    return result
 
 
 def brief(run: Trajectory) -> dict:

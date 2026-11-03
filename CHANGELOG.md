@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 — 2026-11-03
+
+- Keep OpenCode pane tabs, controls, session titles, and the footer readable at narrow widths.
+- Explain attribution reference-data requirements when a live session folder cannot identify the agent.
+- Show unavailable measurements and pending tool outcomes as unknown in analysis briefs.
+
 ## 0.3.0 — 2026-11-03
 
 - Upgrade both plugins to TrajViz 0.4.1, retaining all 36 views, schema 2 exports, and evidence-aware comparisons.

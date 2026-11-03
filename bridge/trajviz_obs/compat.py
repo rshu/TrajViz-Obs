@@ -417,6 +417,16 @@ def dashboard_server_options(port: int | None) -> dict[str, Any]:
                                 max_file_size=_serve.DEFAULT_MAX_FILE_SIZE, auth=_serve.auth_from_env())
 
 
+def attribution_identity_message(reason: str | None, *, browser: bool = False) -> str | None:
+    """Explain an invalid inferred project-folder identity without changing its refusal."""
+    if reason == "invalid agent id (must be a plain agent name)":
+        action = ("Open the agent / instance / reference-data overrides and set Agent, Instance id, "
+                  "and Reference data root to match the canonical reference run." if browser else
+                  "Supply --reference-root, --agent, and --instance for its matching canonical reference run.")
+        return "No gold-grounded attribution is available for this session. " + action
+    return reason
+
+
 def attribution_message(text: str | None) -> str | None:
     """Use public attribution terminology without rewriting paths or upstream API identifiers."""
     if text is None:

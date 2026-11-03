@@ -36,6 +36,23 @@ def test_preloaded_attribution_heading_and_instructions_use_public_terminology(f
     assert any(isinstance(block, gradio.Tab) and block.label == "Attribution" for block in app.blocks.values())
 
 
+def test_live_project_attribution_explains_inferred_identity_without_changing_explicit_validation(
+        fixture_session, tmp_path):
+    source = tmp_path / "-native-project" / "session.jsonl"
+    source.parent.mkdir()
+    source.write_bytes(fixture_session.read_bytes())
+    app = build_preloaded_insight(str(source))
+    run = _loaded_run(_loader(app), source)
+    manual = next(entry.fn for entry in app.fns.values() if entry.api_name == "on_diagnose")
+    automatic = next(entry.fn for entry in app.fns.values() if entry.api_name == "on_diagnose_autoload")
+    for markup in (manual(run.raw, "", "", "")[0], automatic(run.raw, "")[0]):
+        assert "No gold-grounded attribution" in markup
+        assert all(label in markup for label in ("Agent", "Instance id", "Reference data root"))
+    invalid = manual(run.raw, "../invalid", "case", "")[0]
+    assert "invalid agent id" in invalid and "Supply --reference-root" not in invalid
+    assert source.read_bytes() == fixture_session.read_bytes()
+
+
 def test_preload_sets_the_trajectory_file_to_the_transcript(fixture_session):
     app = build_preloaded_insight(str(fixture_session))
     files = [b for b in app.blocks.values() if isinstance(b, gradio.File) and str(b.label).startswith("Trajectory")]

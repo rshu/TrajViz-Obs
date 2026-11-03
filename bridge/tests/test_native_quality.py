@@ -57,7 +57,7 @@ def test_all_missing_native_usage_and_outcomes_are_unknown_without_changing_cano
     assert project_view(run, run.view("steps")).data[0]["tool_time_sum"] is None
     assert project_view(run, run.view("tool_outcomes")).data["calls"][0]["ok"] is None
     brief = project_brief(run)
-    assert "tokens_total: None" in brief and "?tok" in brief and "native_source_evidence:" in brief
+    assert "tokens_total: unknown" in brief and "?tok" in brief and "native_source_evidence:" in brief
     assert "step_tokens_min/max/avg:" not in brief
     assert run.to_dict(include_raw=True) == original and path.read_bytes() == before
 
@@ -241,8 +241,111 @@ def test_multiagent_native_brief_handles_an_unknown_child_without_fabricated_ins
     assert summaries["child"]["total_tokens"] is None
     assert summaries["child"]["total_duration_s"] is None
     brief = project_brief(run)
-    assert "None tok" in brief and "?tok" in brief and "native_source_evidence:" in brief
+    assert "unknown tok" in brief and "?tok" in brief and "native_source_evidence:" in brief
     assert "- insight:" not in brief
+
+
+def test_pending_native_brief_formats_generated_unknowns_without_rewriting_source(native_run):
+    from agent_trajviz.insight import assistant
+
+    phrase = "Source text keeps None failed, None errors, Nones, and (None%)."
+    pending = {"type": "tool", "name": "shell", "id": "pending", "state": {
+        "status": "running", "input": {"command": "echo controlled"}},
+        "time": {"created": BASE + 200, "ran": BASE + 300}}
+    path, run = native_run([{"type": "user", "id": "request", "text": phrase},
+                           message(content=[pending], completed=None)], session_time=False)
+    original = copy.deepcopy(run.to_dict(include_raw=True))
+    source = path.read_bytes()
+    builders = {name: getattr(assistant, name) for name in (
+        "_session_header", "_metrics_lines", "_agent_lines", "_error_step_lines", "_compose_brief")}
+    brief = project_brief(run)
+    assert "wall_clock: unknown" in brief
+    assert "tool_calls: 1 (unknown success, unknown failed)" in brief
+    assert "fresh_input_tokens: unknown (unknown)" in brief
+    assert "tokens_total: unknown" in brief and "avg_duration_s: unknown" in brief
+    assert "unknown tok, unknown, 1 tools, unknown errors, cache unknown, gen unknown tok/s" in brief
+    assert "Tool outcomes are incomplete; missing results are not evidence of success." in brief
+    assert "(no tool errors)" not in brief
+    assert phrase in brief  # No replacement over transcript previews or the complete brief.
+    assert builders == {name: getattr(assistant, name) for name in builders}
+    assert project_analysis(run).metrics["tool_fail"] is None
+    assert run.to_dict(include_raw=True) == original and path.read_bytes() == source
+
+
+def test_brief_preserves_a_measured_zero_elapsed_without_assistant_completion(native_run):
+    path, _ = native_run([message(tokens=usage(0, 0, 0, 0, 0), completed=None)])
+    document = json.loads(path.read_text())
+    document["session"]["time"]["updated"] = BASE
+    document["messages"][0]["time"]["created"] = BASE
+    path.write_text(json.dumps(document))
+    run = load_run(str(path))
+    brief = project_brief(run)
+    assert "wall_clock: 0s" in brief and "tokens_total: 0" in brief
+    assert "avg_duration_s: unknown" in brief  # Elapsed and per-model timing have separate evidence.
+
+
+def test_brief_preserves_measured_zero_failures_and_duration(native_run):
+    tool = {"type": "tool", "name": "shell", "id": "zero", "state": {
+        "status": "completed", "input": {"command": "true"}, "metadata": {"exit": 0}},
+        "time": {"created": BASE + 100, "ran": BASE + 100, "completed": BASE + 100}}
+    _, run = native_run([message(tokens=usage(0, 0, 0, 0, 0), content=[tool], completed=100)])
+    brief = project_brief(run)
+    assert "100.0% success, 0 failed" in brief
+    assert "tokens_total: 0" in brief and "avg_duration_s: 0.0" in brief
+    assert "0 tok, 0.0s, 1 tools, 0 errors" in brief
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_capped_brief_keeps_native_limits_and_does_not_sum_unknowns_as_zero(native_run, pending):
+    from agent_trajviz.insight import assistant
+
+    children = [{"session": {"id": f"child-{index}"}, "messages": [message(completed=None, content=[{
+        "type": "tool", "name": "shell", "id": f"pending-{index}",
+        "state": {"status": "running", "input": {"command": "echo controlled"}},
+        "time": {"created": BASE + 200, "ran": BASE + 300}}])], "children": []}
+                for index in range(assistant._AGENT_LINE_CAP + 2)]
+    if not pending:
+        for child in children:
+            child["messages"] = [message(tokens=usage())]
+    spawns = [{"type": "tool", "name": "subagent", "id": f"spawn-{index}", "state": {"status": "completed",
+              "metadata": {"sessionID": child["session"]["id"]}, "input": {}},
+               "time": {"created": BASE + 200, "ran": BASE + 300, "completed": BASE + 500}}
+              for index, child in enumerate(children)]
+    _, run = native_run([message(tokens=usage(), content=spawns)], children)
+    agents = project_brief(run).split("## AGENTS\n", 1)[1].split("\n## FILES", 1)[0]
+    assert len([line for line in agents.splitlines() if "assistant steps," in line
+                and "more sub-agents not listed" not in line]) == assistant._AGENT_LINE_CAP
+    omitted = next(line for line in agents.splitlines() if "more sub-agents not listed" in line)
+    if pending:
+        assert "unknown tok" in omitted and "unknown errors" in omitted
+        assert "- insight:" not in agents
+    else:
+        assert agents.strip() == "\n".join(assistant._agent_lines(project_analysis(run).agent_summaries))
+
+
+@pytest.mark.parametrize("session_id", ["A", "B"])
+def test_capture_brief_formats_unknowns_without_changing_authoritative_evidence(captured_sessions, session_id):
+    run = load_run(str(captured_sessions), session_id=session_id)
+    before = captured_sessions.read_bytes()
+    canonical = copy.deepcopy(run.to_dict(include_raw=True))
+    metrics = copy.deepcopy(run.metrics)
+    brief = project_brief(run)
+    assert "None" not in brief
+    assert "telemetry_evidence:" in brief and "native_source_evidence:" not in brief
+    assert "failure_chains: unknown" in brief
+    assert "file activity was not captured" in brief
+    assert any("?tok" in line for line in brief.splitlines() if line.startswith("0 user"))
+    if session_id == "A":
+        assert "tokens_total: 9" in brief and "tokens_cache_read: 0" in brief
+        assert "tokens_reasoning: 0" in brief
+    else:
+        assert "tokens_total: unknown" in brief and "tokens_input: 7" in brief
+        assert "fresh_input_tokens: 7 (unknown)" in brief
+        assert "unknown failed" in brief and "unknown errors" in brief
+        assert "Tool outcomes are incomplete; missing results are not evidence of success." in brief
+        assert "(no tool errors)" not in brief
+    assert run.metrics == metrics and run.to_dict(include_raw=True) == canonical
+    assert captured_sessions.read_bytes() == before
 
 
 def test_native_family_agent_coverage_uses_summary_identity_across_sessions_and_modes(native_run):

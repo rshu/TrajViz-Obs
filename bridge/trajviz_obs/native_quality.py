@@ -284,7 +284,7 @@ def project_view(run, view):
 
 
 def project_brief(run):
-    """The existing brief with native evidence-aware formatters scoped to this call."""
+    """The existing brief with evidence-aware formatters scoped to this call."""
     from agent_trajviz import llm
     from agent_trajviz.insight import assistant
 
@@ -298,33 +298,65 @@ def project_brief(run):
         copied.__kwdefaults__ = function.__kwdefaults__
         return functools.update_wrapper(copied, function)
 
-    if run.format == "otlp":
-        def captured_timeline_row(step):
-            text = assistant._timeline_row(step)
-            if step.get("_otel", {}).get("fields", {}).get("tokens.total") != "observed":
-                text = text.replace(f" {(step.get('tokens') or {}).get('total', 0)}tok ", " ?tok ", 1)
-            return text
+    captured = run.format == "otlp"
 
-        replacements = {"_timeline_lines": clone(assistant._timeline_lines, {"_timeline_row": captured_timeline_row})}
-        if run.view("file_interactions").availability.get("status") == "unavailable":
-            replacements["_file_lines_from_interactions"] = lambda _rows: ["Unavailable: file activity was not captured."]
-        if projection.data_quality["fields"]["tool_outcomes"]["status"] != "observed":
-            original_errors = assistant._error_step_lines
-            replacements["_error_step_lines"] = lambda rows: [*original_errors(rows),
-                "Tool outcomes are incomplete; missing results are not evidence of success."]
-        compose = clone(assistant._compose_brief, replacements)
-        return clone(assistant.build_analysis_brief_from_session, {"_compose_brief": compose})(projection)
+    def value(number, unit=""):
+        return "unknown" if number is None else f"{number}{unit}"
+
+    def session_lines(raw, steps, metrics, wall_fmt):
+        from .comparison_quality import _elapsed_seconds
+
+        # Captures retain the engine's authoritative availability. Native
+        # exports may also record a zero elapsed clock without model timing.
+        elapsed = metrics.get("wall_clock") if captured else _elapsed_seconds(run)
+        if elapsed is None:
+            wall_fmt = "unknown"
+        elif metrics.get("wall_clock") is None:
+            from agent_trajviz.insight.metrics import wall_clock_fmt
+
+            _, wall_fmt = wall_clock_fmt({"wall_clock": elapsed, "total_duration": None})
+        lines = assistant._session_header(raw, steps, metrics, wall_fmt)
+        for index, line in enumerate(lines):
+            if line.startswith("tool_calls: "):
+                lines[index] = (f"tool_calls: {value(metrics.get('tool_call_count'))} "
+                                f"({value(metrics.get('tool_success_rate'), '%')} success, "
+                                f"{value(metrics.get('tool_fail'))} failed)")
+        return lines
+
+    format_metrics = clone(assistant._metrics_lines, {
+        "_secs_or_na": lambda number: value(number, "s"),
+        "_pct_or_na": lambda number: value(number, "%"),
+        "_pct_from_fraction": lambda number: "unknown" if number is None else assistant._pct_from_fraction(number),
+    })
 
     def metric_lines(metrics, steps):
-        lines = assistant._metrics_lines(metrics, [step for step in _usage_steps(steps)
-                                                  if _observed(step, "tokens.total")])
-        lines.append("native_source_evidence: " + json.dumps(projection.data_quality, ensure_ascii=False))
-        lines.append("Null means unobserved. Partial totals sum observed source records; unavailable checks are not success.")
+        observed_steps = steps if captured else [step for step in _usage_steps(steps) if _observed(step, "tokens.total")]
+        lines = format_metrics(metrics, observed_steps)
+        scalars = {"avg_duration_s": "avg_duration", "median_duration_s": "median_duration",
+                   "p95_duration_s": "p95_duration", "max_duration_s": "max_duration",
+                   "avg_tokens_per_assistant_step": "avg_tokens_per_assistant_step",
+                   "avg_tokens_per_step_all_steps": "avg_tokens_per_step",
+                   "processed_tokens_per_second_incl_cache": "tokens_per_second",
+                   "tokens_per_tool": "tokens_per_tool", "output_tokens_per_sec": "output_tokens_per_sec"}
+        missing = {name for name, key in scalars.items() if metrics.get(key) is None}
+        missing.update(f"tokens_{key}" for key in TOKEN_LABELS if metrics["tokens"].get(key) is None)
+        for index, line in enumerate(lines):
+            name = line.partition(": ")[0]
+            if name in missing:
+                lines[index] = f"{name}: unknown"
+            elif name == "fresh_input_tokens":
+                share = value(metrics.get("non_cache_ratio"), "%")
+                lines[index] = f"fresh_input_tokens: {value(metrics.get('non_cache_tokens'))} ({share})"
+        if not captured:
+            lines.append("native_source_evidence: " + json.dumps(projection.data_quality, ensure_ascii=False))
+            lines.append("Unknown means unobserved. Partial totals sum observed source records; unavailable checks are not success.")
         return lines
 
     def timeline_row(step):
         text = assistant._timeline_row(step)
-        if step.get("role") == "assistant" and not _observed(step, "tokens.total"):
+        missing = (step.get("_otel", {}).get("fields", {}).get("tokens.total") != "observed" if captured else
+                   step.get("role") == "assistant" and not _observed(step, "tokens.total"))
+        if missing:
             text = text.replace(f" {(step.get('tokens') or {}).get('total', 0)}tok ", " ?tok ", 1)
         return text
 
@@ -336,9 +368,59 @@ def project_brief(run):
             return []
         return insights(rows)
 
-    compose = clone(assistant._compose_brief, {
+    format_agents = clone(assistant._agent_lines, {"generate_agent_insights": agent_insights})
+
+    def agent_lines(rows):
+        lines = format_agents(rows)
+        listed, omitted = rows, []
+        if len(rows) > assistant._AGENT_LINE_CAP:
+            def rank(number):
+                return float(number) if isinstance(number, (int, float)) else float("-inf")
+
+            ordered = sorted(rows[1:], key=lambda row: (rank(row.get("total_duration_s")),
+                                                       rank(row.get("total_tokens"))), reverse=True)
+            listed = [rows[0], *ordered[:assistant._AGENT_LINE_CAP - 1]]
+            omitted = ordered[assistant._AGENT_LINE_CAP - 1:]
+        for index, row in enumerate(listed):
+            # Rebuild only this generated numeric row. Labels and all later
+            # evidence/insight lines retain their original source wording.
+            lines[index] = (f"- {row.get('label')}: {value(row.get('step_count'))} assistant steps, "
+                            f"{value(row.get('total_tokens'))} tok, {value(row.get('total_duration_s'), 's')}, "
+                            f"{value(row.get('tool_call_count'))} tools, {value(row.get('error_count'))} errors, "
+                            f"cache {value(row.get('cache_efficiency_pct'), '%')}, "
+                            f"gen {value(row.get('output_tokens_per_sec'))} tok/s")
+        if omitted:
+            totals = {name: "unknown" if any(row.get(key) is None for row in omitted)
+                      else sum(int(row[key]) for row in omitted)
+                      for name, key in (("steps", "step_count"), ("tokens", "total_tokens"),
+                                        ("tools", "tool_call_count"), ("errors", "error_count"))}
+            lines[len(listed)] = assistant._AGENTS_OMITTED_LINE.format(
+                omitted=len(omitted), shown=len(listed) - 1, **totals)
+        return lines
+
+    def error_lines(steps):
+        lines = assistant._error_step_lines(steps)
+        if not _complete(projection.data_quality, "tool_outcomes"):
+            notice = "Tool outcomes are incomplete; missing results are not evidence of success."
+            return [notice] if lines == ["(no tool errors)"] else [*lines, notice]
+        return lines
+
+    def failure_lines(patterns, chains, chain_metrics):
+        lines = assistant._failure_lines(patterns, chains, chain_metrics)
+        lines[0] = (f"failure_chains: {value(chain_metrics.get('total_chains'))} "
+                    f"(longest {value(chain_metrics.get('longest_chain'))} steps, "
+                    f"{value(chain_metrics.get('chain_step_pct'), '%')} of assistant steps)")
+        return lines
+
+    replacements = {
+        "_session_header": session_lines,
         "_metrics_lines": metric_lines,
         "_timeline_lines": clone(assistant._timeline_lines, {"_timeline_row": timeline_row}),
-        "_agent_lines": clone(assistant._agent_lines, {"generate_agent_insights": agent_insights}),
-    })
+        "_agent_lines": agent_lines,
+        "_error_step_lines": error_lines,
+        "_failure_lines": failure_lines,
+    }
+    if captured and run.view("file_interactions").availability.get("status") == "unavailable":
+        replacements["_file_lines_from_interactions"] = lambda _rows: ["Unavailable: file activity was not captured."]
+    compose = clone(assistant._compose_brief, replacements)
     return clone(assistant.build_analysis_brief_from_session, {"_compose_brief": compose})(projection)

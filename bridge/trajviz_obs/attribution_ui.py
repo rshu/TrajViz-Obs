@@ -1,4 +1,4 @@
-"""Public wording for the bundled evaluation workspace, scoped to each app.
+"""Public attribution wording and reference-data guidance, scoped to each app.
 
 Only generated labels, status messages and errors change. Saved evidence,
 settings, remembered values, operation results and source paths keep their
@@ -7,13 +7,37 @@ native identities and contents.
 from __future__ import annotations
 
 import functools
+import inspect
 
-from .compat import attribution_message
+from .compat import attribution_identity_message, attribution_message
 
 _STATUS = {"on_awe_apply": 3, "on_awe_restore": -2, "on_awe_reset": -2}
 _WORKER_NOTE = ("For OpenCode subagent diagnoses, use `/obs attribution` for session-accurate child evidence. "
                 "The bundled evaluation workers can group child evidence by agent role.")
 _GRAPH_LABEL = ("aria-label='Numbered AWE provenance graph'", "aria-label='Numbered attribution provenance graph'")
+
+
+def _diagnosis_callback(original):
+    from agent_trajviz.insight.rendering import build_attribution_html
+
+    signature = inspect.signature(original)
+    automatic = original.__name__ == "on_diagnose_autoload"
+    invalid = "invalid agent id (must be a plain agent name)"
+    refused = build_attribution_html({"available": False, "reason": invalid})
+    guidance = build_attribution_html({"available": False, "reason": attribution_identity_message(invalid, browser=True)})
+
+    @functools.wraps(original)
+    def present(*args, **kwargs):
+        result = original(*args, **kwargs)
+        override = signature.bind(*args, **kwargs).arguments.get("agent_override", "")
+        # Only the generated refusal message changes. Explicit invalid
+        # overrides, evidence, source identities and verdicts stay native.
+        if (automatic or not str(override or "").strip()) and result[0] == refused:
+            result = (guidance, *result[1:])
+        return result
+
+    present._obs_attribution_identity = True
+    return present
 
 
 def _callback(original):
@@ -58,6 +82,11 @@ def adapt_attribution_workspace(app) -> None:
             component.children.insert(1, note)
     for entry in app.fns.values():
         original = entry.fn
+        if (callable(original) and getattr(original, "__module__", "") == "agent_trajviz.insight.ui.attribution_tab"
+                and getattr(original, "__name__", "") in {"on_diagnose", "on_diagnose_autoload"}
+                and not getattr(original, "_obs_attribution_identity", False)):
+            entry.fn = _diagnosis_callback(original)
+            continue
         if (callable(original) and getattr(original, "__module__", "") == "agent_trajviz.insight.ui.awe_tab"
                 and getattr(original, "__name__", "").startswith("on_awe_")
                 and not getattr(original, "_obs_attribution_workspace", False)):
