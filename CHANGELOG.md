@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3 — 2026-11-03
+
+- Render the Claude Code scorecard as a table by separating its heading from the host's command prefix.
+
 ## 0.3.2 — 2026-11-03
 
 - Keep Claude Code command output paths and model usage outside Markdown tables so numeric columns stay readable.

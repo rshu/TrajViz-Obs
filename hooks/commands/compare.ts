@@ -81,7 +81,9 @@ async function scorecard($: EngineInterface, ctx: CommandContext, spec: string |
   if (flags['no-self'] !== undefined) call.push('--no-self')
   const doc = await runBridge<ViewsDoc>($, call, { timeoutMs: COMPARE_TIMEOUT_MS })
   if ('empty' in doc) return EMPTY_TEXT
-  return `${doc.text}\n\nScorecard views written to ${doc.path}.`
+  // The host prefixes the first output line with the plugin name. Keep the
+  // table header on its own line so the terminal recognizes it as Markdown.
+  return `Scorecard\n\n${doc.text}\n\nScorecard views written to ${doc.path}.`
 }
 
 /**

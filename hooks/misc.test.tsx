@@ -176,7 +176,7 @@ test('compare of an empty session is the spec row', async ($, on) => {
   expect((await obs($, 'compare def')).text).toBe('Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.')
 })
 
-test('scorecard resolves every other run and separates its artifact footer from a table', async ($, on) => {
+test('scorecard resolves every other run and separates its table from the host prefix and artifact footer', async ($, on) => {
   const text = '| run | finished | steps |\n|---|---|---|\n| me | yes | 12 |'
   const { ran } = host(on, {
     bridge: { resolve: [resolved('b'), resolved('c')], scorecard: json({ path: `${ARTIFACTS}/compare/scorecard.json`, rows: [], text }) },
@@ -188,7 +188,9 @@ test('scorecard resolves every other run and separates its artifact footer from 
     [...RESOLVE, '--session', 'c'],
     ['scorecard', ...SESSION_ARGV, '--others', '/x/b.jsonl', '/x/c.jsonl', '--fuzzy-commands', '--labels', 'me,b,c', '--no-self'],
   ])
-  expect(out.text).toBe(`${text}\n\nScorecard views written to ${ARTIFACTS}/compare/scorecard.json.`)
+  expect(out.text).toBe(`Scorecard\n\n${text}\n\nScorecard views written to ${ARTIFACTS}/compare/scorecard.json.`)
+  const displayed = `trajviz-obs: ${out.text}`
+  expect(displayed.split('\n\n')[1]).toBe(text)
   const usage = 'Usage: /obs scorecard <session|path> [<session|path>...] [--fuzzy-commands] [--labels a,b] [--no-self]'
   expect((await obs($, 'scorecard')).text).toBe(usage)
   expect((await obs($, 'scorecard b --labels')).text).toBe(usage)
