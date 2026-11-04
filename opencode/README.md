@@ -6,22 +6,61 @@ Inspect session health, tools, subagents, context use, and step labels with `/ob
 
 Requires **OpenCode 2** (tested with **2.2.5**), [Bun](https://bun.sh), and [uv](https://docs.astral.sh/uv/) or **Python 3.11+**.
 
+### 1. Build the adapter and find its path
+
 ```sh
 git clone https://github.com/rshu/TrajViz-Obs.git
 cd TrajViz-Obs/opencode
 bun install --frozen-lockfile
 bun run build
+pwd
 ```
 
-Add the adapter's absolute directory to `opencode.json`:
+If you already have a checkout, start in its `opencode` directory and run the install/build commands there. Copy the absolute directory printed by `pwd`, pointing to this checkout's `opencode` subdirectory.
+
+### 2. Configure OpenCode
+
+For **every project** on macOS/Linux, use `~/.config/opencode/opencode.json`. If `opencode.jsonc` already exists in that directory, edit it instead. If neither file exists, create the directory and `opencode.json`:
+
+```sh
+mkdir -p ~/.config/opencode
+nano ~/.config/opencode/opencode.json
+```
+
+If you set `XDG_CONFIG_HOME`, use `$XDG_CONFIG_HOME/opencode` in place of `~/.config/opencode`.
+
+For a new file, paste the following and replace the example path with your `pwd` output:
 
 ```json
 {
+  "$schema": "https://opencode.ai/config.json",
   "plugins": ["/absolute/path/TrajViz-Obs/opencode"]
 }
 ```
 
-Restart OpenCode. The first `/obs` installs a private TrajViz runtime; opening a dashboard adds its dependencies. Initial setup needs network access. Update the checkout, repeat the install/build commands, and restart to update.
+Use **`plugins` (plural)** for OpenCode 2. In an existing file, preserve other settings and add this top-level field, or append the adapter path to its existing array. If TrajViz Obs is already listed, update that entry in place. Save in nano with **Ctrl+O**, **Enter**, then exit with **Ctrl+X**.
+
+Alternatively, enable it for **one project only** by putting the entry in `opencode.json` or `opencode.jsonc` in that project's root directory. See OpenCode's [configuration](https://opencode.ai/v2/docs/config) and [plugin](https://opencode.ai/v2/docs/plugins) guides.
+
+### 3. Restart and verify
+
+Close the TUI. From the project you want to observe, restart OpenCode's background server and reopen OpenCode:
+
+```sh
+opencode service restart
+opencode
+```
+
+For `opencode --standalone`, simply close and reopen that session. Complete an assistant response, then run:
+
+```text
+/obs
+/obs pane
+```
+
+The first `/obs` installs a private TrajViz runtime and needs network access. Opening a dashboard adds its dependencies. Use `/obs doctor` to check setup or `/obs help` to list commands.
+
+To update, pull the checkout, repeat `bun install --frozen-lockfile` and `bun run build` in its `opencode` directory, then repeat the restart step above.
 
 ## Use
 
@@ -37,7 +76,7 @@ For a saved OTLP capture, use `/obs sessions --session /path/to/capture`, then `
 
 ## Options
 
-Set options on the plugin entry:
+To set options, replace the adapter's existing string entry with an object:
 
 ```json
 {

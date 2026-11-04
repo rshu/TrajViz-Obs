@@ -87,7 +87,7 @@ Terminal screenshots are rendered from recorded output of real, controlled test 
 
 Use Claude Code's `/config` menu for plugin options. Model features default to `llm=session`, using Claude Code's client: `analysisModel=sonnet` for analysis and fixes, and `labelModel=haiku` for labeling. Set either model option to `session` to follow the main conversation's model.
 
-OpenCode uses [plugin options in `opencode.json`](opencode/README.md#options) and defaults to its selected model.
+OpenCode uses [options in its configuration file](opencode/README.md#options) and defaults to its selected model.
 
 <details>
 <summary>Use an external model provider</summary>
