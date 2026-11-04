@@ -16,18 +16,18 @@ bun run build
 pwd
 ```
 
-If you already have a checkout, start in its `opencode` directory and run the install/build commands there. Copy the absolute directory printed by `pwd`, pointing to this checkout's `opencode` subdirectory.
+If you already have a checkout, update it with `git pull --ff-only`, then run the install/build commands in its `opencode` directory. Copy the absolute directory printed by `pwd`, pointing to this checkout's `opencode` subdirectory.
 
-### 2. Configure OpenCode
+### 2. Configure Desktop or the terminal
 
-For **every project** on macOS/Linux, use `~/.config/opencode/opencode.json`. If `opencode.jsonc` already exists in that directory, edit it instead. If neither file exists, create the directory and `opencode.json`:
+OpenCode Desktop's built-in local server and the terminal use the same global configuration. For **every project** on macOS/Linux, use `~/.config/opencode/opencode.json`. If `opencode.jsonc` already exists in that directory, edit it instead. If neither file exists, create the directory and `opencode.json`:
 
 ```sh
 mkdir -p ~/.config/opencode
 nano ~/.config/opencode/opencode.json
 ```
 
-If you set `XDG_CONFIG_HOME`, use `$XDG_CONFIG_HOME/opencode` in place of `~/.config/opencode`.
+If OpenCode is launched with `XDG_CONFIG_HOME`, use `$XDG_CONFIG_HOME/opencode` in place of `~/.config/opencode`.
 
 For a new file, paste the following and replace the example path with your `pwd` output:
 
@@ -44,23 +44,37 @@ Alternatively, enable it for **one project only** by putting the entry in `openc
 
 ### 3. Restart and verify
 
-For **OpenCode Desktop**, quit and reopen the app. Check **Settings → Extensions → Plugins** for TrajViz Obs.
+#### OpenCode Desktop
 
-For the **terminal**, close the TUI. From the project you want to observe, restart OpenCode's background server and reopen OpenCode:
+Desktop commands and the pane require adapter **0.4.0+**, tested with **OpenCode Desktop 2.2.5**.
 
-```sh
-opencode service restart
-opencode
-```
-
-For standalone sessions, close and rerun `opencode --standalone`. With `--server`, restart the connected server and reconnect the TUI instead. Complete an assistant response, then run:
+1. Quit OpenCode Desktop completely (**Cmd+Q** on macOS), then reopen it.
+2. With Desktop's built-in local server selected, open **Settings → Extensions → Plugins**. Find **trajviz-obs** and make sure its switch is on; this enables the Desktop commands and pane.
+3. Open a project and session, complete an assistant response, then enter these commands one at a time in the chat composer:
 
 ```text
 /obs
 /obs pane
 ```
 
-The first `/obs` installs a private TrajViz runtime and needs network access. Opening a dashboard adds its dependencies. Use `/obs doctor` to check setup or `/obs help` to list commands.
+`/obs` opens the summary; `/obs pane` opens the live panel beside the conversation. Use **Expand** for a larger view. `/obs dashboard` opens a result with an **Open dashboard** button for the browser view.
+
+If the plugin is missing, check the global configuration and the absolute adapter path from step 1, then restart the app. If its Desktop UI fails to load, use **Reload** on the plugin's settings row. See OpenCode's [Desktop plugin guidance](https://opencode.ai/v2/docs/plugins#desktop).
+
+#### OpenCode terminal
+
+Close the TUI. From the project you want to observe, restart OpenCode's background server and reopen OpenCode:
+
+```sh
+opencode service restart
+opencode
+```
+
+For standalone sessions, close and rerun `opencode --standalone`. With `--server`, restart the connected server and reconnect the TUI instead. Complete an assistant response, then run `/obs` and `/obs pane`.
+
+In either interface, the first `/obs` installs a private TrajViz runtime and needs network access. Opening a dashboard adds its dependencies. Use `/obs doctor` to check setup or `/obs help` to list commands.
+
+### Update or remove
 
 To update, pull the checkout, repeat `bun install --frozen-lockfile` and `bun run build` in its `opencode` directory, then repeat the restart step above.
 
