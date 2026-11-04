@@ -25,6 +25,18 @@ describe('native pane data', () => {
     expect(sections(SNAPSHOT, 5, 32)[0]?.lines.join('\n')).toContain('71%')
   })
 
+  test('agent spawn origins retain step zero and omit unknown origins', () => {
+    const snapshot = structuredClone(SNAPSHOT)
+    for (const step of [0, 6]) {
+      snapshot.agents[0]!.spawned_by_step = step
+      expect(sections(snapshot, 4, 40)[0]?.lines).toContain(`Spawned at step #${step}`)
+    }
+    snapshot.agents[0]!.spawned_by_step = null
+    expect(sections(snapshot, 4, 40)[0]?.lines.some(line => line.startsWith('Spawned at step'))).toBe(false)
+    delete snapshot.agents[0]!.spawned_by_step
+    expect(sections(snapshot, 4, 40)[0]?.lines.some(line => line.startsWith('Spawned at step'))).toBe(false)
+  })
+
   test('unknown usage stays unknown; native reported cost includes a true zero', () => {
     const snapshot = structuredClone(SNAPSHOT)
     snapshot.context.current_pct = null

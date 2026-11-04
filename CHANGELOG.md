@@ -1,5 +1,10 @@
 # Changelog
 
+## OpenCode 0.4.1 / Claude Code 0.3.4 — 2026-11-04
+
+- Restore confirmed OpenCode subagent spawn steps in the Agents view and live pane.
+- Avoid blaming the first program in a failed compound shell command when the failing program is unknown.
+
 ## OpenCode 0.4.0 — 2026-11-04
 
 - Add native Desktop `/obs` commands, a live seven-tab pane, results, and a status pill.

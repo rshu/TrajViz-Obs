@@ -52,6 +52,27 @@ def test_snapshot_enrichment(tmp_session):  # title, prompts, agent label from m
     assert snap["transcript"]["session_id"] == tmp_session.id and snap["text"].startswith("Health: ")
 
 
+@pytest.mark.parametrize("spawned_by_step", [0, 6, None])
+def test_snapshot_keeps_observed_agent_spawn_origin(tmp_session, monkeypatch, spawned_by_step):
+    from trajviz_obs import snapshot as module
+
+    original = module.project_view
+
+    def project(run, view):
+        projected = original(run, view)
+        if projected.id != "agents":
+            return projected
+        rows = [{**row, "spawned_by_step": spawned_by_step if row["agent_id"] == "abc" else None}
+                for row in projected.data]
+        return tv.View(projected.id, projected.title, projected.kind, projected.description, rows,
+                       projected.availability)
+
+    monkeypatch.setattr(module, "project_view", project)
+    snap = _snapshot(tmp_session.transcript)
+    assert next(row for row in snap["agents"] if row["id"] == "abc")["spawned_by_step"] == spawned_by_step
+    assert all(row["spawned_by_step"] is None for row in snap["agents"] if row["id"] != "abc")
+
+
 def test_snapshot_directory_input_keeps_parent_enrichment(tmp_session, run_cli):
     code, file = run_cli(["snapshot", "--transcript", tmp_session.transcript])
     assert code == 0

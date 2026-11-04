@@ -175,6 +175,8 @@ class _Projection:
     def agent_summaries(self):
         from agent_trajviz.insight.metrics import effective_agent
 
+        from .opencode import NATIVE_KEY, spawn_origins
+
         grouped = defaultdict(list)
         for step in self.steps:
             # Agent summaries aggregate assistant work by effective identity;
@@ -182,7 +184,10 @@ class _Projection:
             if step.get("role") == "assistant":
                 grouped[effective_agent(step)].append(step)
         rows = copy.deepcopy(self._original.agent_summaries)
+        origins = spawn_origins(self.steps, self._original.raw) if NATIVE_KEY in self._original.raw else None
         for row in rows:
+            if origins is not None:
+                row["spawned_by_step"] = origins.get(row["agent_id"])
             quality = _coverage(grouped[row["agent_id"]])
             row["data_quality"] = quality
             for key, token in {"total_tokens": "total", "input_tokens": "input", "output_tokens": "output",

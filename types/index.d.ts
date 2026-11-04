@@ -103,6 +103,8 @@ export type Agent = {
   label: string
   type: string | null
   description: string | null
+  /** Observed spawning step in the parent trajectory, including step zero. */
+  spawned_by_step?: number | null
   steps: number
   tokens: number | null
   tool_calls: number

@@ -207,6 +207,7 @@ export function sections(snap: Snapshot | EmptySnapshot | undefined, tab: number
     case 4:
       result = [{ title: 'Agents', lines: snap.agents.length ? snap.agents.flatMap(row => [
         `${row.label}${row.type ? ` (${row.type})` : ''}`,
+        ...(typeof row.spawned_by_step === 'number' && Number.isSafeInteger(row.spawned_by_step) && row.spawned_by_step >= 0 ? [`Spawned at step #${row.spawned_by_step}`] : []),
         `${row.steps} steps · ${compact(row.tokens)} tokens · ${row.tool_calls} tools · ${failures(row.unknown_outcomes ? row.observed_errors ?? row.errors : row.errors, row.unknown_outcomes)} · ${duration(row.duration_s)}`,
         ...(row.description ? [row.description] : []),
       ]) : ['No agent activity recorded.'] }]

@@ -59,6 +59,50 @@ def _session(payload: dict) -> dict:
     return _dict(payload.get("session")) or _dict(payload.get("info"))
 
 
+def spawn_origins(steps: list[dict], raw: dict) -> dict[str, int]:
+    """Map confirmed native child sessions to their first spawning work step.
+
+    A tree entry alone is not a spawn: require the parent's native subagent
+    tool reference and the child's parsed ancestry as well. Forks and explicit
+    parent mismatches never acquire a link, even in imported captures.
+    """
+    source = _dict(raw.get(NATIVE_KEY))
+    if not source:
+        return {}
+    parents: dict[str, str] = {}
+    seen: set[str] = set()
+
+    def visit(doc: dict, parent: str, depth: int) -> None:
+        session = _session(doc)
+        sid = session.get("id")
+        if not isinstance(sid, str) or not sid or sid in seen or depth > MAX_DEPTH:
+            return
+        seen.add(sid)
+        if parent and (session.get("fork") or session.get("parentID", parent) != parent):
+            return
+        parents[sid] = parent
+        for child in _list(doc.get("children")):
+            if isinstance(child, dict):
+                visit(child, sid, depth + 1)
+
+    visit(source, "", 0)
+    children = {step.get("session_id"): step.get("parent_session_id") for step in steps
+                if step.get("role") == "assistant" and step.get("is_sub_agent")}
+    origins: dict[str, int] = {}
+    for step in steps:
+        index, parent = step.get("index"), step.get("session_id")
+        if step.get("role") != "assistant" or type(index) is not int or index < 0 or parent not in parents:
+            continue
+        for call in step.get("tool_calls", []):
+            if str(call.get("tool_name", "")).lower() not in _SPAWN_TOOLS:
+                continue
+            child = _dict(call.get("metadata")).get("sessionID")
+            if (isinstance(child, str) and child != parent and parents.get(child) == parent
+                    and children.get(child) == parent and call.get("session_id", parent) == parent):
+                origins[child] = min(origins.get(child, index), index)
+    return origins
+
+
 def _tokens(value: Any) -> dict:
     tokens = copy.deepcopy(_dict(value))
     cache = _dict(tokens.get("cache"))

@@ -366,6 +366,7 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
         "agents": [{"id": a["agent_id"], "label": _label(a["agent_id"], a["label"], agents_meta.get(a["agent_id"])),
                     "type": (m.agent_type or None) if (m := agents_meta.get(a["agent_id"])) else None,
                     "description": (m.description or None) if m else None,
+                    "spawned_by_step": a.get("spawned_by_step"),
                     "steps": a["step_count"], "tokens": a["total_tokens"], "tool_calls": a["tool_call_count"],
                     "errors": a["error_count"], "observed_errors": a.get("observed_errors", a["error_count"]),
                     "unknown_outcomes": a.get("unknown_outcomes", 0), "duration_s": a["total_duration_s"],

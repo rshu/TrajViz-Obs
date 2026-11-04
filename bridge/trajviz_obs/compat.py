@@ -110,6 +110,9 @@ def load_plugins() -> list[str]:
     loaded, error = _plugin_outcome()
     if error is not None:
         raise BridgeError("plugin_error", error)
+    from .shell_labels import install as install_shell_labels
+
+    install_shell_labels()
     _install_native_record_filter()
     from .opencode import install as install_opencode
 
@@ -393,7 +396,12 @@ def dashboard_window_callback(callback: Callable, transcript: str, window: int |
             return native_load(transcript, format_hint=format_hint,
                                **({"session_id": selected_session_id} if selected_session_id else {}))
         try:
-            return session_from_run(run, transcript)
+            session = session_from_run(run, transcript)
+            from .opencode import NATIVE_KEY
+
+            if NATIVE_KEY in run.raw:
+                session.agent_summaries = project_analysis(session.shown).agent_summaries
+            return session
         except Exception as exc:  # noqa: BLE001 - same visible failure contract as the native loader
             return SessionLoadError(code="analysis_error", message=(
                 f"The file loaded but could not be analysed ({type(exc).__name__}: {str(exc)[:160]})."))

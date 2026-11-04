@@ -5,14 +5,22 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import types
 import zipfile
 
 import agent_trajviz as tv
 import pytest
 
 from trajviz_obs.bundle_cmd import bundle_session
-from trajviz_obs.compat import EmptySession, load_plugins, load_run
-from trajviz_obs.opencode import NATIVE_KEY, normalize
+from trajviz_obs.compat import (
+    EmptySession,
+    dashboard_window_callback,
+    load_plugins,
+    load_run,
+    project_analysis,
+    project_view,
+)
+from trajviz_obs.opencode import NATIVE_KEY, normalize, spawn_origins
 
 BASE = 1_790_000_000_000
 
@@ -160,6 +168,118 @@ def test_forks_and_unconfirmed_sessions_are_not_counted_as_subagents(source):
     result = normalize(raw)
     assert not any(m["info"]["isSubAgent"] for m in result["messages"])
     assert len(result["_load_warnings"]) >= 2 and result[NATIVE_KEY] == raw
+
+
+def spawn_call(child="ses_child", *, tid="spawn"):
+    return {"type": "tool", "id": tid, "name": "subagent", "time": {
+        "created": BASE + 200, "ran": BASE + 300, "completed": BASE + 3500},
+        "state": {"status": "completed", "input": {"prompt": "Review"},
+                  "metadata": {"sessionID": child}}}
+
+
+def spawn_family(origin=0):
+    child = native("ses_child", [assistant(created=3000, completed=3200)])
+    child["session"]["parentID"] = "ses_root"
+    prefix = [assistant(f"before-{i}", created=i * 100, completed=i * 100 + 50) for i in range(origin)]
+    return native(messages=[*prefix, assistant("spawn", created=origin * 100 + 100,
+                                             completed=3500, content=[spawn_call()])], children=[child])
+
+
+@pytest.mark.parametrize("origin", [0, 6])
+def test_confirmed_spawn_origin_is_projected_without_mutating_canonical_records(tmp_path, run_cli, origin):
+    raw = spawn_family(origin)
+    path = tmp_path / "spawn.json"
+    path.write_text(json.dumps(raw))
+    run = load_run(str(path))
+    canonical = copy.deepcopy(run.to_dict(include_raw=True))
+    before = path.read_bytes()
+    assert next(row for row in run._analysis.agent_summaries if row["agent_id"])["spawned_by_step"] is None
+    rows = project_analysis(run).agent_summaries
+    child = next(row for row in rows if row["agent_id"] == "ses_child")
+    assert child["spawned_by_step"] == origin
+    view = project_view(run, run.view("agents"))
+    assert view.data == rows
+    import jsonschema
+
+    jsonschema.validate(view.to_dict(), tv.view_schema("agents"))
+    out = tmp_path / "views"
+    code, _ = run_cli(["json", "--transcript", str(path), "--out", str(out)])
+    assert code == 0
+    exported = json.loads((out / "agents.json").read_text())
+    assert next(row for row in exported["data"] if row["agent_id"] == "ses_child")["spawned_by_step"] == origin
+    assert run.to_dict(include_raw=True) == canonical and path.read_bytes() == before
+    assert not any(key in run.raw for key in ("_claude_code_sub_agents", "_codex_sub_agents", "_otlp_sub_agents"))
+
+
+def test_nested_spawns_link_each_child_to_its_own_parent_step(tmp_path):
+    raw = spawn_family()
+    child = raw["children"][0]
+    grandchild = native("ses_grandchild", [assistant(created=3300, completed=3400)])
+    grandchild["session"]["parentID"] = "ses_child"
+    child["children"] = [grandchild]
+    child["messages"][0]["content"] = [spawn_call("ses_grandchild", tid="nested")]
+    path = tmp_path / "nested.json"
+    path.write_text(json.dumps(raw))
+    run = load_run(str(path))
+    by_message = {step["message_id"]: step["index"] for step in run.steps}
+    rows = {row["agent_id"]: row for row in project_analysis(run).agent_summaries}
+    assert rows["ses_child"]["spawned_by_step"] == by_message["ses_root:spawn"] == 0
+    assert rows["ses_grandchild"]["spawned_by_step"] == by_message["ses_child:a"] == 1
+    assert rows[""]["spawned_by_step"] is None
+
+
+@pytest.mark.parametrize("invalid", ["missing_reference", "missing_child", "parent_mismatch", "fork", "unrelated"])
+def test_unconfirmed_or_conflicting_native_relationship_never_gains_a_spawn_link(tmp_path, invalid):
+    raw = spawn_family()
+    if invalid == "missing_reference":
+        raw["messages"][0]["content"][0]["state"]["metadata"] = {}
+    elif invalid == "missing_child":
+        raw["children"] = []
+    elif invalid == "parent_mismatch":
+        raw["children"][0]["session"]["parentID"] = "ses_unrelated"
+    elif invalid == "fork":
+        raw["children"][0]["session"]["fork"] = {"sessionID": "ses_root"}
+    else:
+        raw["messages"][0]["content"][0]["state"]["metadata"]["sessionID"] = "ses_unrelated"
+    path = tmp_path / "unconfirmed.json"
+    path.write_text(json.dumps(raw))
+    run = load_run(str(path))
+    assert spawn_origins(run.steps, run.raw) == {}
+    assert all(row["spawned_by_step"] is None for row in project_analysis(run).agent_summaries)
+
+
+def test_repeated_or_resumed_child_reference_keeps_first_confirmed_spawn(tmp_path):
+    raw = spawn_family()
+    raw["messages"].append(assistant("resume", created=1000, completed=3500,
+                                      content=[spawn_call(tid="resume-child")]))
+    path = tmp_path / "resumed.json"
+    path.write_text(json.dumps(raw))
+    run = load_run(str(path))
+    assert len([row for row in run.steps if row.get("is_sub_agent")]) == 1
+    assert spawn_origins(run.steps, run.raw) == {"ses_child": 0}
+    assert spawn_origins(list(reversed(run.steps)), run.raw) == {"ses_child": 0}
+    assert spawn_origins(run.steps, {}) == {}
+
+
+def _native_dashboard_callback(upload_obj, dark=False, selected_format="", session_id=None):
+    return do_load(upload_obj, dark, selected_format, session_id=session_id)  # noqa: F821
+
+
+@pytest.mark.parametrize("origin", [0, 6])
+def test_native_dashboard_load_renders_spawn_step_navigation(tmp_path, origin):
+    from agent_trajviz.insight.ui import load as ui_load
+
+    path = tmp_path / "dashboard-spawn.json"
+    path.write_text(json.dumps(spawn_family(origin)))
+    callback = types.FunctionType(_native_dashboard_callback.__code__, {"do_load": ui_load.do_load}, "_do_load",
+                                  _native_dashboard_callback.__defaults__)
+    callback.__module__ = ui_load.__name__
+    wrapped = dashboard_window_callback(callback, str(path), None)
+    # Use the real LoadedSession and dashboard packers, including native cards.
+    packed = wrapped(str(path))
+    html = packed["agent_summary_html"]
+    assert f"Spawned at step #{origin}" in html
+    assert "class='insight-step-link'" in html and f"tvGotoWorkflowStep({origin}" in html
 
 
 def test_duplicate_messages_do_not_duplicate_usage_or_tool_calls(source):
