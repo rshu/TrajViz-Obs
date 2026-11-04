@@ -4,7 +4,8 @@ import { Backend } from './backend.js'
 import { Obs, type RunInput } from './rpc.js'
 import { runCommand } from './commands.js'
 import { cancelModel } from './llm.js'
-import { safeText } from './tui-model.js'
+import { errorMessage } from './tui-model.js'
+import { CommandJobs } from './jobs.js'
 
 const optionsSchema = z.object({
   python: z.string().optional(), trajvizSource: z.string().min(1).optional(), cacheRoot: z.string().min(1).optional(),
@@ -22,6 +23,7 @@ export default Plugin.define({
   async setup(ctx) {
     const backend = new Backend(ctx, optionsSchema.parse(ctx.options))
     const jobs = new Map<string, AbortController>()
+    const asyncJobs = new CommandJobs({ cancelWork: runID => { jobs.get(runID)?.abort(); cancelModel(backend, runID) } })
     const lifetime = new AbortController()
     const tasks = new Set<Promise<unknown>>()
     const track = <T>(task: Promise<T>): Promise<T> => { tasks.add(task); void task.then(() => tasks.delete(task), () => tasks.delete(task)); return task }
@@ -35,17 +37,19 @@ export default Plugin.define({
         // RPC's JSON codec rejects present-but-undefined optional properties.
         return JSON.parse(JSON.stringify(result)) as typeof result
       }
-      catch (error) { return { text: signal.aborted ? 'Cancelled.' : `obs: ${safeText(error instanceof Error ? error.message : String(error))}` } }
-      finally { jobs.delete(input.runID) }
+      catch (error) { return { text: signal.aborted ? 'Cancelled.' : `obs: ${errorMessage(error)}` } }
+      finally { jobs.delete(input.runID); if (signal.aborted) cancelModel(backend, input.runID) }
     }
     const rpc = await ctx.rpc.register(Obs, {
       run: (input, call) => track(run(input, call.signal)),
+      start: async (input, call) => { call.signal.throwIfAborted(); return asyncJobs.start(input, fixed => track(run(fixed))) },
+      poll: async input => asyncJobs.poll(input),
       sync: input => track(backend.sync(input.source, input.requestID)),
       resolve: input => track(backend.resolve(input.sessionID, input.selector, input.captureSessionID)),
       snapshot: (input, call) => track(backend.withSources(input.useSynced, () => backend.snapshot(input.sessionID, AbortSignal.any([call.signal,lifetime.signal]), input.selector, input.captureSessionID))),
-      cancel: async input => { const job = jobs.get(input.runID); job?.abort(); const plan = cancelModel(backend, input.runID); return {cancelled: Boolean(job) || plan} },
+      cancel: async input => { const job = jobs.get(input.runID); job?.abort(); const plan = cancelModel(backend, input.runID); const retained = asyncJobs.cancel(input.runID); return {cancelled: Boolean(job) || plan || retained} },
     })
-    backend.progress = (runID, text) => rpc.events.emit('progress', {runID, text})
+    backend.progress = async (runID, text) => { asyncJobs.progress(runID, text); await rpc.events.emit('progress', {runID, text}) }
     backend.requestCapture = request => rpc.events.emit('capture', request)
     // Read-only data for the agent. This tool never calls another model or runs a diagnostic shell command.
     const tool = await ctx.tool.transform(editor => {
@@ -63,7 +67,7 @@ export default Plugin.define({
               let text = typeof data.brief === 'string' ? data.brief : JSON.stringify(data)
               if (Buffer.byteLength(text) > 65536) text = JSON.stringify({ path: data.path, note: 'Full output exceeds 64 KiB. Request a smaller limit or open the saved view.' })
               return { content: text }
-            } catch (error) { return { content: `obs: ${safeText(error instanceof Error ? error.message : String(error))}` } }
+            } catch (error) { return { content: `obs: ${errorMessage(error)}` } }
           }))
         },
       })
@@ -78,11 +82,12 @@ export default Plugin.define({
           if (event.type === 'session.deleted') await backend.stop('dashboard', data.sessionID)
           await rpc.events.emit('changed', {sessionID:data.sessionID})
         }
-      } catch (error) { if (!lifetime.signal.aborted) console.error('TrajViz event observation stopped:', error instanceof Error ? error.message : String(error)) }
+      } catch (error) { if (!lifetime.signal.aborted) console.error('TrajViz event observation stopped:', errorMessage(error)) }
     })()
     tasks.add(observing)
     return async () => {
       lifetime.abort()
+      asyncJobs.close()
       for (const job of jobs.values()) job.abort()
       cancelModel(backend)
       const closed = backend.close()

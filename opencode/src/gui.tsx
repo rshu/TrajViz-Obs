@@ -7,7 +7,7 @@ import { GuiController, type GuiOrigin } from './gui-controller.js'
 import { Obs } from './rpc.js'
 import { parseArgs, tokenize, quoteArgument } from './shared/args.js'
 import { validateArguments } from './command-args.js'
-import { safeText, TABS, compact, duration, failures, metrics, sections, statusText } from './tui-model.js'
+import { errorMessage as errorText, safeText, TABS, compact, duration, failures, metrics, sections, statusText } from './tui-model.js'
 import { agentFailureTone, healthRowTone, healthStatusLabel, metricTone, resultFragments } from './presentation.js'
 
 const PANEL = 'main'
@@ -33,7 +33,6 @@ const css = `
 @container obs-content (min-width:650px){.obs-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.obs-card{padding:10px}.obs-value{font-size:18px}}
 @media(max-width:480px){.obs-header,.obs-scroll{padding:12px}.obs-grid{gap:7px}.obs-result{width:100%;max-height:65vh}.obs-command{flex-wrap:wrap}.obs-value{font-size:18px}}
 `
-const errorText = (error: unknown) => safeText(error instanceof Error ? error.message : String(error))
 const asRecord = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const stamp = (value: string) => { const date = new Date(value); return Number.isNaN(date.getTime()) ? '—' : date.toLocaleTimeString() }
 

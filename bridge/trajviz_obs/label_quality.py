@@ -26,8 +26,8 @@ def annotate_label(step: dict, record: dict) -> dict:
 def label_coverage(document: dict) -> dict | None:
     """Coverage of classified assistant labels; legacy unannotated sidecars stay unchanged."""
     steps = [step for step in document.get("steps", []) if isinstance(step, dict)
-             and step.get("role", "assistant") == "assistant" and step.get("phase") != "unknown"
-             and step.get("action") != "unknown"]
+             and step.get("role", "assistant") == "assistant" and step.get("phase", "unknown") != "unknown"
+             and step.get("action", "unknown") != "unknown"]
     if not any("tokens_observed" in step or "duration_observed" in step for step in steps):
         return None
     fields = {}

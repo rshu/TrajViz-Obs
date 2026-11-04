@@ -8,6 +8,7 @@ import { record } from './collect.js'
 import { analyzeSelection, parseArgs, valueArgv } from './shared/args.js'
 import type { CommandResult, RunInput } from './rpc.js'
 import { inspectSource } from './source-info.js'
+import { errorMessage } from './tui-model.js'
 
 type Prompt = { index: number; system: string; prompt: string; max_tokens: number; timeout_s: number; delay_s?: number }
 type Plan = { feature: string; hash: string; plan: {calls:number;approx_input_tokens:number}; prompts?: Prompt[]; path: string }
@@ -128,7 +129,7 @@ export async function runModel(backend: Backend, input: RunInput, signal: AbortS
         replies.push({ index: prompt.index, text: result.text })
       } catch (error) {
         signal.throwIfAborted()
-        replies.push({ index: prompt.index, error: error instanceof Error ? error.message : String(error) })
+        replies.push({ index: prompt.index, error: errorMessage(error) })
       }
     }
     const file = path.join(artifacts, 'replies', `${randomUUID()}.json`)

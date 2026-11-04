@@ -3,7 +3,7 @@ import { captureSession } from './collect.js'
 import { Obs, type CommandResult, type RunInput } from './rpc.js'
 import { analyzeSelection, parseArgs, passArgs, quoteOption } from './shared/args.js'
 import { validateArguments } from './command-args.js'
-import { commandText, safeText, TABS } from './tui-model.js'
+import { commandText, errorMessage as message, safeText, TABS } from './tui-model.js'
 import type { Snapshot, EmptySnapshot } from './types.js'
 
 /** An origin never changes servers while an operation is in flight. */
@@ -22,8 +22,13 @@ export type GuiHooks = {
   notice(text: string, error?: boolean): void
 }
 const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
-const message = (error: unknown) => safeText(error instanceof Error ? error.message : String(error))
 const display = (text: string) => { const clean = safeText(text); return clean.length > 64_000 ? clean.slice(0, 64_000) + '\n\nDisplay clipped. Export the full result with /obs json.' : clean }
+const pause = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+  signal.throwIfAborted()
+  const abort = () => { clearTimeout(timer); reject(signal.reason) }
+  const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, 1000)
+  signal.addEventListener('abort', abort, { once: true })
+})
 
 /** Browser-only coordinator; source reads and RPC always use the same authenticated server client. */
 export class GuiController {
@@ -69,13 +74,48 @@ export class GuiController {
   private signal(controller: AbortController) { return this.lifetime ? AbortSignal.any([controller.signal, this.lifetime]) : controller.signal }
   private async location(origin: GuiOrigin, client: OpenCodeClient, signal: AbortSignal): Promise<LocationRef> {
     const location = origin.location()
-    if (location) return location
+    if (location) return { ...location }
     if (origin.id !== 'home') throw new Error('Session location is still loading. Try again when the session is ready.')
     return { directory: (await client.location.get(undefined, { signal })).directory }
   }
   private async sync(client: OpenCodeClient, id: string, signal: AbortSignal): Promise<void> {
     const source = await captureSession(client, id, signal)
     await client.rpc(Obs).sync({ source }, { location: { directory: source.directory }, signal })
+  }
+  private cancelRemote(client: OpenCodeClient, runID: string, location?: LocationRef): void {
+    try {
+      void client.rpc(Obs).cancel({ runID }, { location, signal: AbortSignal.timeout(5000) }).catch(() => {})
+    } catch { /* A disposed client cannot delay local cancellation or unload. */ }
+  }
+  private async remote(job: GuiJob, client: OpenCodeClient, input: RunInput,
+                       options: { location: LocationRef; signal: AbortSignal }): Promise<CommandResult> {
+    const rpc = client.rpc(Obs), { signal, location } = options
+    const check = () => {
+      signal.throwIfAborted()
+      if (job.origin.client() !== client) throw new Error('The server reconnected. Run the command again to refresh its result.')
+    }
+    let startError: unknown
+    try {
+      // Every phase starts once. An ambiguous acknowledgement can be recovered
+      // by polling its existing identity, never by repeating paid work.
+      check()
+      try { await rpc.start(input, options) }
+      catch (error) { check(); startError = error }
+      for (;;) {
+        check()
+        const state = await rpc.poll({ sessionID: input.sessionID, runID: input.runID,
+          ...(input.confirmationID === undefined ? {} : { confirmationID: input.confirmationID }) }, options)
+        check()
+        if (state.state === 'finished') return state.result
+        if (state.state === 'expired') throw startError ?? new Error('The obs result expired or the server restarted. Start a new command to retry.')
+        startError = undefined
+        if (state.progress) { job.text = display(state.progress); this.hooks.changed() }
+        await pause(signal)
+      }
+    } catch (error) {
+      if (!signal.aborted) this.cancelRemote(client, input.runID, location)
+      throw error
+    }
   }
   start(origin: GuiOrigin, raw: string, model?: RunInput['model']): { id: string; done: Promise<void> } {
     if (this.closed) throw new Error('TrajViz Obs is reloading.')
@@ -120,14 +160,14 @@ export class GuiController {
         }
       }
       const input = { sessionID: origin.id, args, runID: job.id, model, useSynced: true }
-      let result = await rpc.run(input, options)
+      let result = await this.remote(job, client, input, options)
       if (result.confirmation) {
         job.text = display(result.text); this.hooks.changed()
         let accepted = false
         try { accepted = await Promise.race([this.hooks.confirm(result.confirmation, signal), new Promise<false>(resolve => signal.addEventListener('abort', () => resolve(false), { once: true }))]) }
-        finally { if (!accepted || signal.aborted) await rpc.cancel({ runID: job.id }, { location }).catch(() => {}) }
+        finally { if (!accepted || signal.aborted) this.cancelRemote(client, job.id, location) }
         signal.throwIfAborted()
-        result = accepted ? await rpc.run({ ...input, confirmationID: result.confirmation.id }, options) : { text: `${result.text}\nCancelled: no model call was made.` }
+        result = accepted ? await this.remote(job, client, { ...input, confirmationID: result.confirmation.id }, options) : { text: `${result.text}\nCancelled: no model call was made.` }
       }
       signal.throwIfAborted()
       if (this.closed) return
@@ -178,14 +218,13 @@ export class GuiController {
     const id = this.view(origin).running, job = id ? this.active.get(id) : undefined
     if (!id || !job) { this.hooks.notice('No obs command is running.'); return }
     job.controller.abort()
-    try { await job.client.rpc(Obs).cancel({ runID: id }, { location: job.location }) }
-    catch { /* The local abort also cancels requests when a server has disconnected. */ }
+    this.cancelRemote(job.client, id, job.location)
   }
   dispose() {
     this.closed = true
     for (const timer of this.timers.values()) clearTimeout(timer)
     for (const controller of this.refreshes.values()) controller.abort()
-    for (const [id, job] of this.active) { job.controller.abort(); void job.client.rpc(Obs).cancel({ runID: id }, { location: job.location }).catch(() => {}) }
+    for (const [id, job] of this.active) { job.controller.abort(); this.cancelRemote(job.client, id, job.location) }
     this.timers.clear(); this.refreshes.clear(); this.active.clear()
   }
 }

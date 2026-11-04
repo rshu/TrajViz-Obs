@@ -6,7 +6,7 @@ import { captureSession } from './collect.js'
 import { Obs, type CommandResult } from './rpc.js'
 import { analyzeSelection, parseArgs, passArgs, quoteOption } from './shared/args.js'
 import { validateArguments } from './command-args.js'
-import { TABS, commandText, compact as compactNumber, duration, failures, metrics, safeText, sections, statusText, type Section } from './tui-model.js'
+import { TABS, commandText, compact as compactNumber, duration, errorMessage as errorText, failures, metrics, safeText, sections, statusText, type Section } from './tui-model.js'
 import { agentFailureTone, healthRowTone, healthStatusLabel, metricTone, resultFragments, type Tone } from './presentation.js'
 import { TerminalCharts, TerminalText, terminalPalette } from './tui-charts.js'
 import type { EmptySnapshot, Snapshot } from './types.js'
@@ -25,7 +25,6 @@ type UIState = {
 type Panel = { name: string; sessionID: string; width: number; focused: boolean; focus(): void; close(): void; toggleFullscreen(): void }
 const PANEL = 'trajviz-obs'
 const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
-const errorText = (error: unknown): string => safeText(error instanceof Error ? error.message : String(error))
 const displayResult = (text: string): string => {
   const clean = safeText(text)
   return clean.length > 64_000 ? `${clean.slice(0, 64_000)}\n\nDisplay clipped. Use /obs json for full session data.` : clean

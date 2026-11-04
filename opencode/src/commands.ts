@@ -63,6 +63,7 @@ function valueOptions(flags: Record<string, string | true>, names: readonly stri
 }
 
 function attributionText(doc: Doc): string {
+  if (doc.mode === 'trajectory_only' && typeof doc.text === 'string') return doc.text
   // Availability messages are plugin prose; source exports retain native content.
   const publicText = (value: unknown) => (typeof value === 'string' ? value : json(value) ?? '').replace(/\bdecaf(?:[-_]attribution)?\b/gi, 'attribution')
   if (!doc.available) return publicText(doc.reason || 'Attribution is not available for this session.')

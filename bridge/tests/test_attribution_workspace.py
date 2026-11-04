@@ -57,6 +57,7 @@ def test_workspace_retains_callback_contracts_and_distinct_tab():
     notes = [block for block in page.blocks.values() if "obs-attribution-worker-note" in (block.elem_classes or [])]
     assert len(notes) == 1 and notes[0] in workspace.children
     assert "/obs attribution" in notes[0].value and "group child evidence by agent role" in notes[0].value
+    assert "--reference-root DIR --agent opencode --instance ID" in notes[0].value
     assert any(getattr(entry.fn, "__name__", "") == "on_awe_operation" for entry in page.fns.values())
 
 

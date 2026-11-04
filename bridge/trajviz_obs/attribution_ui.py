@@ -12,7 +12,8 @@ import inspect
 from .compat import attribution_defaults, attribution_identity_message, attribution_message
 
 _STATUS = {"on_awe_apply": 3, "on_awe_restore": -2, "on_awe_reset": -2}
-_WORKER_NOTE = ("For OpenCode subagent diagnoses, use `/obs attribution` for session-accurate child evidence. "
+_WORKER_NOTE = ("For reference-based OpenCode subagent diagnoses, use "
+                "`/obs attribution --reference-root DIR --agent opencode --instance ID` for session-accurate child evidence. "
                 "The bundled evaluation workers can group child evidence by agent role.")
 _GRAPH_LABEL = ("aria-label='Numbered AWE provenance graph'", "aria-label='Numbered attribution provenance graph'")
 
@@ -36,11 +37,10 @@ def _diagnosis_callback(original):
             agent, instance = attribution_defaults("opencode", raw, str(override or "").strip() or None,
                 str(bound.arguments.get("inst_override") or "").strip() or None)
             if automatic:
-                # Autoload closes over the same native manual callback. Keep
-                # its output shape and reset fields while supplying defaults.
-                diagnose = inspect.getclosurevars(original).nonlocals["on_diagnose"]
-                html, status = diagnose(raw, agent or "", instance or "", bound.arguments.get("root_override", ""))
-                result = html, status, "", ""
+                # Reference attribution is optional in 0.4.2. Preserve the
+                # native autoload's no-diagnosis/reset behavior; only its
+                # identity prefills need the OpenCode session defaults.
+                result = (*original(*args, **kwargs)[:2], agent or "", instance or "")
             else:
                 bound.arguments.update(agent_override=agent or "", inst_override=instance or "")
                 result = original(*bound.args, **bound.kwargs)

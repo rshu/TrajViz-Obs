@@ -9,7 +9,7 @@ const CWD = '/Users/me/p'
 const CACHE = `${HOME}/.cache/trajviz-obs`
 const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE_PATH = `${CACHE}/state.json`
-const STATE_JSON = JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.4.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.4.1', createdAt: 1 })
+const STATE_JSON = JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.4.2', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.4.2', createdAt: 1 })
 const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 24 }, rateLimits: [], cost: { usd: 1.25 } }
 const NOW = 1_761_150_000_000

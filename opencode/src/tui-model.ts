@@ -56,6 +56,14 @@ export function safeText(text: string): string {
     .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '�')
 }
 
+/** SDK failures may be plain objects; show their message without exposing data. */
+export function errorMessage(error: unknown): string {
+  if (typeof error === 'object' && error !== null) {
+    return 'message' in error && typeof error.message === 'string' ? safeText(error.message) || 'Unknown error.' : 'Unknown error.'
+  }
+  return typeof error === 'function' ? 'Unknown error.' : safeText(String(error))
+}
+
 export function compact(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return '—'
   if (Math.abs(value) < 999.5) return String(Math.round(value))

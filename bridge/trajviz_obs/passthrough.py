@@ -4,9 +4,9 @@
 its output captured: a JSON report goes to ``<artifacts>/converge/<n>.json`` (the next free number), any other
 output (``--output summary``, a usage or input error) comes back as text. ``collect -- ARGS…`` runs
 ``agent-trajviz-collect`` the same way and returns what it printed. Both answer the tool's own exit status in
-``exit``; the bridge itself exits 0. ``attribution`` is TrajViz's attribution result (``available`` false
-with a reason when the attribution setup or reference data is missing); ``brief`` is the statistics brief TrajViz's
-LLM features reason over.
+``exit``; the bridge itself exits 0. ``attribution`` inspects the loaded recording locally by default;
+explicit reference options select certified attribution, with an unavailable reason when its evidence is
+missing. ``brief`` is the statistics brief TrajViz's LLM features reason over.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from .compat import (
     EmptySession,
     attribution_defaults,
     attribution_identity_message,
+    check_supported,
     install_attribution_guard,
     load_plugins,
     project_brief,
@@ -162,7 +163,12 @@ def run_collect(argv: list[str]) -> dict:
 
 
 def attribution(run: Trajectory, *, reference_root: str | None, agent: str | None, instance_id: str | None) -> dict:
-    """``agent_trajviz.attribution.diagnose`` of *run*, as TrajViz returns it."""
+    """Inspect the loaded recording; explicit reference options select certified attribution."""
+    check_supported()
+    if reference_root is None and agent is None and instance_id is None:
+        from .inspection import inspect_session
+
+        return inspect_session(run)
     install_attribution_guard()
     inferred_agent = agent is None
     agent, instance_id = attribution_defaults(run.format, run.raw, agent, instance_id)
@@ -199,7 +205,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("collect", help="agent-trajviz-collect, its output returned.")
     p.add_argument("args", nargs=argparse.REMAINDER, metavar="-- ARGS", help="The collect CLI's arguments.")
 
-    p = sub.add_parser("attribution", help="Failure attribution (with an explanation when it cannot run).")
+    p = sub.add_parser("attribution", help="Inspect recorded evidence; reference options select failure attribution.")
     _session_args(p)
     p.add_argument("--reference-root", default=None, metavar="DIR",
                    help="The attribution reference set (default: TRAJVIZ_REFERENCE_ROOT).")

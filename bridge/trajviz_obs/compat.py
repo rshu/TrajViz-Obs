@@ -1,6 +1,6 @@
 """Version-checked compatibility shims for TrajViz internals.
 
-The plugin ships against the published ``agent-trajviz>=0.4.1,<0.5``. These integrations need internal seams:
+The plugin ships against the published ``agent-trajviz>=0.4.2,<0.5``. These integrations need internal seams:
 
 1. **The real context window everywhere.** ``context_pressure(window_limit=)`` and the ``context_*`` views take
    an override, but the issues, the brief and the export do not. :func:`load_run` writes the window
@@ -49,8 +49,8 @@ from .native_records import normalize_native_records
 #: The installed TrajViz version.
 TRAJVIZ_VERSION: str = agent_trajviz.__version__
 
-#: Supported releases: ``>=0.4.1,<0.5`` as ``[lowest, first unsupported)``.
-_SUPPORTED = ((0, 4, 1), (0, 5, 0))
+#: Supported releases: ``>=0.4.2,<0.5`` as ``[lowest, first unsupported)``.
+_SUPPORTED = ((0, 4, 2), (0, 5, 0))
 
 #: ``LoadError`` codes that mean "no assistant step yet" for the session being written.
 _EMPTY_CODES = frozenset({"unknown_format", "no_steps"})
@@ -82,12 +82,12 @@ def _release(version: str) -> tuple[int, int, int] | None:
 
 
 def check_supported() -> None:
-    """Refuse a TrajViz outside ``>=0.4.1,<0.5``, whose internals the shims were not written against."""
+    """Refuse a TrajViz outside ``>=0.4.2,<0.5``, whose internals the shims were not written against."""
     release = _release(TRAJVIZ_VERSION)
     if release is None or not _SUPPORTED[0] <= release < _SUPPORTED[1]:
         raise BridgeError("unsupported_trajviz",
-                          f"agent-trajviz {TRAJVIZ_VERSION} is installed; this bridge needs >=0.4.1,<0.5.",
-                          version=TRAJVIZ_VERSION, required=">=0.4.1,<0.5")
+                          f"agent-trajviz {TRAJVIZ_VERSION} is installed; this bridge needs >=0.4.2,<0.5.",
+                          version=TRAJVIZ_VERSION, required=">=0.4.2,<0.5")
 
 
 @functools.cache
@@ -477,12 +477,15 @@ def _install_attribution_projection() -> None:
     original = native.project_native
     if getattr(original, "_trajviz_obs_thread_identity", False):
         return
-    if set(inspect.signature(original).parameters) != {"run", "agent", "instance_id"}:
+    parameters = inspect.signature(original).parameters
+    if (set(parameters) != {"run", "agent", "instance_id", "verify_source"}
+            or parameters["verify_source"].kind is not inspect.Parameter.KEYWORD_ONLY
+            or parameters["verify_source"].default is not True):
         raise BridgeError("unsupported_trajviz", "TrajViz's attribution projection changed; update the plugin.")
 
     @functools.wraps(original)
-    def project(run, agent, instance_id):
-        result = original(run, agent, instance_id)
+    def project(run, agent, instance_id, *, verify_source=True):
+        result = original(run, agent, instance_id, verify_source=verify_source)
         if run.format == "opencode":
             rows = {row["index"]: row for row in run.steps}
             for step in result.steps:

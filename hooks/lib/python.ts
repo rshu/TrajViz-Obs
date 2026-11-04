@@ -9,7 +9,7 @@ import { cacheRoot, isWindows } from './paths'
 import { readSession, updateSession } from './state'
 
 /** The manifest's default `trajvizSource`. */
-export const DEFAULT_SOURCE = 'agent-trajviz==0.4.1'
+export const DEFAULT_SOURCE = 'agent-trajviz==0.4.2'
 
 /** The interpreters tried on PATH, in order, when no override is set. */
 export const PYTHON_CANDIDATES: readonly string[] = ['python3.13', 'python3.12', 'python3.11', 'python3', 'python']

@@ -1,9 +1,20 @@
 import { describe, expect, test } from 'bun:test'
 import { SNAPSHOT } from '../../hooks/testdata/snapshot.js'
 import { PARTIAL_SNAPSHOT, UNKNOWN_SNAPSHOT, ZERO_SNAPSHOT } from '../../hooks/testdata/quality.js'
-import { TABS, commandText, compact, duration, latestPhaseLabel, metrics, percent, safeText, sections, statusText, trend } from '../src/tui-model.js'
+import { TABS, commandText, compact, duration, errorMessage, latestPhaseLabel, metrics, percent, safeText, sections, statusText, trend } from '../src/tui-model.js'
 
 describe('native pane data', () => {
+  test('native SDK error objects show only their sanitized message', () => {
+    const error = { type: 'rpc.internal', message: '\u001b[31mRPC call failed\u001b[0m\u0007', data: { secret: 'must never be displayed' } }
+    expect(errorMessage(error)).toBe('RPC call failed')
+    expect(errorMessage(new Error('Native generation failed'))).toBe('Native generation failed')
+    expect(errorMessage('Plain failure')).toBe('Plain failure')
+    expect(errorMessage(42)).toBe('42')
+    expect(errorMessage(null)).toBe('null')
+    expect(errorMessage(undefined)).toBe('undefined')
+    expect(errorMessage({ message: 7, data: error.data })).toBe('Unknown error.')
+    expect(errorMessage({ data: error.data })).toBe('Unknown error.')
+  })
   test('text and chart overviews retain the latest labeled phase by step rather than array order', () => {
     const snapshot = structuredClone(SNAPSHOT)
     snapshot.phases = [{ name: 'verify\u001b[31m fix\u001b[0m', start: 5, end: 9 }, { name: 'understand', start: 0, end: 4 }]

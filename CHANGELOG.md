@@ -1,5 +1,12 @@
 # Changelog
 
+## OpenCode 0.5.2 / Claude Code 0.3.6 — 2026-11-04
+
+- Sync both plugins and their managed runtimes with TrajViz 0.4.2.
+- Add reference-free trajectory inspection to `/obs attribution`, retaining explicit reference-based diagnoses.
+- Update native projection, optional reference actions, and label coverage for the 0.4.2 API.
+- Keep long Desktop commands responsive beyond the host's 60-second RPC timeout and display native SDK errors clearly.
+
 ## OpenCode 0.5.1 / Claude Code 0.3.5 — 2026-11-04
 
 - Compile the OpenCode terminal entry so tarball installs load without a consumer JSX configuration.

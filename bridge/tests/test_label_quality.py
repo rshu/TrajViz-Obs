@@ -95,6 +95,27 @@ def test_existing_label_payload_adds_timing_coverage_notice_without_changing_lab
     assert sidecar.read_bytes() == before
 
 
+def test_missing_classification_fields_are_unknown_in_both_summary_and_measurement_coverage(tmp_path):
+    from trajviz_obs.compare_cmd import label_views_payload
+
+    known = {**_rows()[1], "index": 0}
+    document = {"taxonomy_version": "2", "steps": [known, {**_rows()[0], "index": 1}, {**_rows()[0], "index": 2}]}
+    del document["steps"][1]["phase"]
+    del document["steps"][2]["action"]
+    sidecar = tmp_path / "missing-fields.json"
+    sidecar.write_text(json.dumps(document))
+    before = copy.deepcopy(document), sidecar.read_bytes()
+    summary = tv.label_views(sidecar)["labels_summary"].data
+    assert (summary["classified"], summary["unknown"]) == (1, 2)
+    for field in label_coverage(document).values():
+        assert field["observed"] == field["total"] == 1 and field["status"] == "observed"
+    payload = label_views_payload(str(sidecar), None)
+    coverage = payload["views"]["label_timeline"]["availability"]["fields"]
+    assert all(field["total"] == 1 and field["status"] == "observed" for field in coverage.values())
+    assert "notice" not in payload
+    assert (document, sidecar.read_bytes()) == before
+
+
 @pytest.fixture
 def labels_for_run(tmp_path):
     rows = [{**row, "session_id": "controlled-session", "raw_index": index + 5}

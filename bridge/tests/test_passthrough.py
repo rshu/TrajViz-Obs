@@ -168,9 +168,11 @@ def test_collect_bounds_storage_during_multibyte_stdout_and_stderr_writes(monkey
                for key in ("stdout", "stderr"))
 
 
-def test_attribution_unavailable_is_honest(fixture_run):
+def test_default_attribution_inspects_the_loaded_recording(fixture_run):
     out = attribution(fixture_run, reference_root=None, agent=None, instance_id=None)
-    assert out["available"] is False and out["reason"]
+    assert out["available"] is True and out["mode"] == "trajectory_only"
+    assert out["outcome"]["status"] == "unknown"
+    assert "Task outcome: unknown" in out["text"]
 
 
 def test_native_project_path_gets_reference_guidance_without_capability_blame(fixture_session, tmp_path, run_cli):
@@ -179,7 +181,7 @@ def test_native_project_path_gets_reference_guidance_without_capability_blame(fi
     source = project / "session.jsonl"
     source.write_bytes(fixture_session.read_bytes())
     original = source.read_bytes()
-    code, out = run_cli(["attribution", "--transcript", str(source)])
+    code, out = run_cli(["attribution", "--transcript", str(source), "--reference-root", str(tmp_path)])
     assert code == 0 and out["available"] is False
     assert "No gold-grounded attribution" in out["reason"]
     assert all(flag in out["reason"] for flag in ("--reference-root", "--agent", "--instance"))
@@ -196,7 +198,7 @@ def test_native_opencode_attribution_uses_source_identity_instead_of_cache_names
         "messages": [{"id": "a", "type": "assistant", "content": [{"type": "text", "text": "Done"}]}],
         "children": []}))
     before = source.read_bytes()
-    code, out = run_cli(["attribution", "--transcript", str(source)])
+    code, out = run_cli(["attribution", "--transcript", str(source), "--reference-root", str(tmp_path)])
     assert code == 0 and out["available"] is False
     assert out["agent"] == "opencode" and out["instance_id"] == "ses_native"
     assert "--agent opencode" in out["reason"] and "--instance" in out["reason"]

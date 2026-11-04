@@ -44,6 +44,7 @@ After the session's first assistant response:
 | Task | Command |
 | --- | --- |
 | Inspect diagnostics | `/obs issues`, `/obs agents`, `/obs view` |
+| Inspect recorded workflow evidence | `/obs attribution` |
 | Open a live pane | `/obs pane`; close with `/obs pane close` |
 | Export data | `/obs json --with-trajectory`, `/obs bundle` |
 | Compare runs | `/obs compare <session-id>`, `/obs converge` |
@@ -57,7 +58,7 @@ Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path
 
 Saved OTLP captures can contain several sessions. List them with `/obs sessions --session /path/to/capture`, then select one with `/obs --session /path/to/capture --session-id <id>`. JSON, JSONL, bundle manifests, directories, and ZIP captures are supported. This imports saved telemetry; it does not enable live telemetry collection.
 
-Both plugins use TrajViz **0.4.1**, including all **36 views**, bundled attribution, and Codex, Pi, and compressed DeepSeek session imports. `/obs view data_quality` explains missing or partial evidence; unavailable measurements appear as unknown. JSON view exports use schema version **2**. Bundles preserve a complete OTLP capture; use `/obs json --with-trajectory` to export only the selected session. Other imported formats may bundle a portable `trajectory.json` that can also be loaded separately.
+Both plugins use TrajViz **0.4.2**, including all **36 views**, bundled attribution, and Codex, Pi, and compressed DeepSeek session imports. `/obs view data_quality` explains missing or partial evidence; unavailable measurements appear as unknown. JSON view exports use schema version **2**. Bundles preserve a complete OTLP capture; use `/obs json --with-trajectory` to export only the selected session. Other imported formats may bundle a portable `trajectory.json` that can also be loaded separately.
 
 Watch refreshes an open pane after turns. `/obs statusline on` pins a summary under the prompt. Use `/obs watch off` and `/obs statusline off` to stop automatic refreshes.
 
@@ -110,13 +111,13 @@ Labeling uses `LABEL_BASE_URL`, `LABEL_API_KEY`, and `LABEL_MODEL`, falling back
 </details>
 
 <details>
-<summary>Attribution reference data</summary>
+<summary>Inspection and attribution</summary>
 
-The attribution engine is included. Use `/obs attribution --reference-root /path/to/reference-data`, adding `--agent NAME` and `--instance ID` when needed to identify the matching canonical run. The reference data must include the task's reference patch and test outcome. In the dashboard, use the **Attribution** overrides to set the same values.
+`/obs attribution` inspects recorded findings, file and test activity, and recovery evidence without reference data or model calls. For a reference-based failure diagnosis, use `/obs attribution --reference-root /path/to/reference-data`, adding `--agent NAME` and `--instance ID` when needed. The reference data must include the task's reference patch and test outcome; the dashboard also provides reference overrides.
 
-For a default folder, set `TRAJVIZ_REFERENCE_ROOT` in the host/server launch environment before starting it. Verdicts require the matching canonical session; missing reference evidence produces an explanation instead of capability blame.
+To use a default reference folder, set `TRAJVIZ_REFERENCE_ROOT` before starting the host/server, then pass `--agent NAME` or `--instance ID` to select reference diagnosis. Verdicts require the matching canonical session; missing reference evidence produces an explanation instead of capability blame.
 
-The **Attribution workspace** opens saved results, evidence graphs, and reports independently of the current session. Its evaluation settings and operations run only when explicitly selected. For OpenCode subagent diagnoses, use `/obs attribution`; bundled evaluation workers can group child evidence by agent role.
+The **Attribution workspace** opens saved results, evidence graphs, and reports. Its evaluation settings and operations run only when explicitly selected. For OpenCode subagent reference diagnoses, use `/obs attribution` with matching reference options; bundled evaluation workers can group child evidence by agent role.
 
 </details>
 
@@ -124,7 +125,7 @@ The **Attribution workspace** opens saved results, evidence graphs, and reports 
 
 Overview, diagnostic views, and exports run locally without model calls. `/obs analyze`, `/obs fixes`, and `/obs label` send redacted prompts to a model and may incur usage charges. They show a call plan first; interactive sessions ask before more than four calls. Labeling defaults to at most 50 steps.
 
-The dashboard's AI sidebar and fix button use the connection selected in **Settings**, independently of `llm`. Environment values provide defaults. API keys stay in the current dashboard session; remembered browser settings exclude keys. Opening the sidebar starts model analysis; follow-up questions and fixes also send trajectory excerpts.
+The dashboard's AI analysis panel has its own **Settings**, independently of `llm`; environment values provide defaults. Keys stay in the current dashboard session, and remembered details exclude keys. Choose **Analyze trajectory** to start, or ask a question; opening the panel makes no model call. **Test API key** sends a small request without trajectory data.
 
 Exports and cached analysis contain session data and stay on the host unless shared. Dashboards bind to `127.0.0.1` and stop on request or plugin unload.
 
@@ -133,7 +134,7 @@ Exports and cached analysis contain session data and stay on the host unless sha
 Run `/obs doctor` to check setup or `/obs setup` to install dependencies. If `/obs` is missing, check the Claude Code debug log for disabled function hooks or an API mismatch. If the dashboard is empty, export `/obs bundle` and load its ZIP manually. Over SSH, forward the displayed port; set `openBrowser=false` to disable browser opening.
 
 - Timing is estimated from transcripts; workflow-spawned work and subagent finish times may be incomplete.
-- Operation-based OTLP captures support observed metrics and diagnostics; transcript alignment and capability attribution require supported native transcripts.
+- Operation-based OTLP captures support observed metrics and inspection; transcript alignment and reference-based capability diagnosis require supported native transcripts.
 - Imported sessions require manual refresh after their inputs change. Claude Code files above **32 MiB** also require manual refresh; OpenCode has [live-capture limits](opencode/README.md#options). Insight analyzes at most the first **2,000 steps**; `/obs json --with-trajectory` retains the full parsed trajectory.
 - Real-session validation covers **macOS**. Linux and Windows still need platform-specific end-to-end testing.
 

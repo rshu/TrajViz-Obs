@@ -83,6 +83,25 @@ describe('OpenCode obs command contract', () => {
     expect((await fixture({ brief: { empty: true } }).execute('brief')).text).toContain('Nothing to analyze yet')
   })
 
+  test('reference-free attribution displays evidence while preserving the inspection report', async () => {
+    const doc = { available: true, mode: 'trajectory_only', text: 'Attribution inspection\nObserved failures: 1\nRecovery: observed\nOutcome: unknown',
+      summary: { failures: 1 }, failures: [{ step: 2 }], recovery: { observed: true }, coverage: { patch: false }, outcome: null,
+      limitations: ['Reference patch and canonical test outcomes were not supplied.'] }
+    const result = await fixture({ attribution: doc }).execute('attribution')
+    expect(result.text).toBe(doc.text)
+    expect(result.text).not.toContain('no verdict')
+    expect(result.data).toEqual(doc)
+    const { available: _available, ...upstreamReport } = doc
+    expect((await fixture({ attribution: upstreamReport }).execute('attribution')).text).toBe(doc.text)
+    const evidence = { ...doc, text: 'Attribution · trajectory inspection\nFile: /tmp/DECAF/test.py\nCommand: grep DECAF /tmp/DECAF/test.py\nExcerpt: DECAF assertion failed' }
+    const preserved = await fixture({ attribution: evidence }).execute('attribution')
+    expect(preserved.text).toBe(evidence.text)
+    expect(preserved.data).toEqual(evidence)
+    const reference = await fixture({ attribution: { available: true, mode: 'reference', blame_status: 'primary', primary: 'code_editing' } }).execute('attribution --reference-root /controlled/reference')
+    expect(reference.text).toContain('Attribution (reference): primary')
+    expect(reference.text).toContain('Primary failure: code_editing')
+  })
+
   test('diagnostic shortcuts and full views preserve paging, options and selection', async () => {
     for (const [sub, view] of Object.entries({ issues: 'issues', health: 'health', patterns: 'hotspots', agents: 'agents', context: 'context_pressure', timeline: 'workflow' })) {
       const { execute, calls } = fixture({ view: { view: { id: view, title: 'View title' }, path: '/tmp/view.json', rows_total: 3, inline: { table: 'Full evidence' } } })

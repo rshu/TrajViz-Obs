@@ -13,10 +13,16 @@ const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 function connection(server = 'server-a', id = 'ses_shared') {
   const snapshot = structuredClone(SNAPSHOT)
   snapshot.title = server
+  const completed = new Map<string, CommandResult>()
+  const phase = (input: { runID: string; confirmationID?: string }) => JSON.stringify([input.runID, input.confirmationID ?? ''])
   const rpc = {
     sync: mock(async (_input: unknown, _options?: Options) => ({ sessionID: id })),
     resolve: mock(async (_input: unknown, _options?: Options): Promise<{ sessionID: string; path?: string }> => ({ sessionID: id })),
     run: mock(async (_input: RunInput, _options?: Options): Promise<CommandResult> => ({ text: 'Done', snapshot: structuredClone(snapshot), sessionID: id })),
+    start: mock(async (input: RunInput, options?: Options) => { completed.set(phase(input), await rpc.run(input, options)); return { accepted: true as const } }),
+    poll: mock(async (input: { sessionID: string; runID: string; confirmationID?: string }, _options?: Options): Promise<
+      { state: 'finished'; result: CommandResult } | { state: 'pending'; progress?: string } | { state: 'expired' }
+    > => { const result = completed.get(phase(input)); return result ? { state: 'finished', result } : { state: 'expired' } }),
     snapshot: mock(async (_input: unknown, _options?: Options) => structuredClone(snapshot)),
     cancel: mock(async (_input: unknown, _options?: Options) => ({ cancelled: true })),
     events: { on: mock((_name: string, _listener: unknown) => () => {}) },
@@ -36,6 +42,16 @@ function connection(server = 'server-a', id = 'ses_shared') {
 function controller() {
   const hooks = { changed: mock(() => {}), notice: mock((_text: string, _error?: boolean) => {}), confirm: mock(async (_question: unknown, _signal: AbortSignal) => true) }
   return { hooks, ui: new GuiController(hooks) }
+}
+
+async function fastPolling(run: (elapsed: () => number) => Promise<void>) {
+  const original = globalThis.setTimeout
+  let elapsed = 0
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void, milliseconds?: number, ...args: unknown[]) => milliseconds === 1000
+    ? original(() => { elapsed += milliseconds; callback(...args) }, 0)
+    : original(callback, milliseconds, ...args)) as typeof setTimeout
+  try { await run(() => elapsed) }
+  finally { globalThis.setTimeout = original }
 }
 
 describe('Desktop command coordination', () => {
@@ -183,6 +199,196 @@ describe('Desktop command coordination', () => {
     } finally { ui.dispose() }
   })
 
+  test('declining confirmation completes locally when remote cleanup never responds', async () => {
+    const h = connection(), { ui, hooks } = controller()
+    h.rpc.run.mockResolvedValueOnce({ text: 'Plan', confirmation: { id: 'five', title: 'Run?', message: 'Five calls' } })
+    h.rpc.cancel.mockImplementationOnce(async () => new Promise(() => {}))
+    hooks.confirm.mockResolvedValueOnce(false)
+    try {
+      const job = ui.start(h.origin, 'label --max-steps 5')
+      const outcome = await Promise.race([job.done.then(() => 'finished'), new Promise(resolve => setTimeout(() => resolve('blocked'), 100))])
+      expect(outcome).toBe('finished')
+      expect(ui.jobs.get(job.id)?.pending).toBe(false)
+      expect(ui.jobs.get(job.id)?.text).toContain('Cancelled: no model call was made.')
+      expect(ui.view(h.origin).running).toBeUndefined()
+      expect(h.rpc.start).toHaveBeenCalledTimes(1)
+      expect(h.rpc.cancel.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal)
+      expect(h.rpc.cancel.mock.calls[0]?.[1]?.location?.directory).toBe('/server-a/project')
+    } finally { ui.dispose() }
+  })
+
+  test('short Desktop requests can observe generation beyond the host sixty-second deadline', async () => {
+    await fastPolling(async elapsed => {
+      const h = connection(), { ui } = controller()
+      h.rpc.start.mockResolvedValue({ accepted: true })
+      h.rpc.poll.mockImplementation(async () => elapsed() >= 61_000
+        ? { state: 'finished', result: { text: 'Long analysis completed' } }
+        : { state: 'pending', progress: 'Generating analysis…' })
+      try {
+        const job = ui.start(h.origin, 'analyze what changed')
+        await job.done
+        expect(elapsed()).toBeGreaterThan(60_000)
+        expect(h.rpc.start).toHaveBeenCalledTimes(1)
+        expect(h.rpc.run).toHaveBeenCalledTimes(0)
+        expect(h.rpc.poll.mock.calls.length).toBeGreaterThan(60)
+        expect(h.rpc.poll.mock.calls.every(([input, options]) => input.sessionID === h.origin.id
+          && options?.location?.directory === '/server-a/project' && options.signal instanceof AbortSignal)).toBe(true)
+        expect(ui.jobs.get(job.id)?.text).toBe('Long analysis completed')
+        expect(h.rpc.cancel).toHaveBeenCalledTimes(0)
+      } finally { ui.dispose() }
+    })
+  })
+
+  test('a lost start acknowledgement recovers by polling without restarting paid work', async () => {
+    const h = connection(), { ui } = controller()
+    h.rpc.start.mockRejectedValueOnce(new Error('Transport response was lost'))
+    h.rpc.poll.mockResolvedValueOnce({ state: 'finished', result: { text: 'Already completed' } })
+    try {
+      const job = ui.start(h.origin, 'analyze recovery')
+      await job.done
+      expect(h.rpc.start).toHaveBeenCalledTimes(1)
+      expect(h.rpc.poll.mock.calls[0]?.[0]).toEqual({ sessionID: h.origin.id, runID: job.id })
+      expect(h.rpc.run).toHaveBeenCalledTimes(0)
+      expect(h.rpc.cancel).toHaveBeenCalledTimes(0)
+      expect(ui.jobs.get(job.id)?.text).toBe('Already completed')
+    } finally { ui.dispose() }
+  })
+
+  test('expired server work never triggers a new start or a model replay', async () => {
+    const h = connection(), { ui } = controller()
+    h.rpc.start.mockResolvedValueOnce({ accepted: true })
+    h.rpc.poll.mockResolvedValueOnce({ state: 'expired' })
+    try {
+      const job = ui.start(h.origin, 'fixes --limit 1')
+      await job.done
+      expect(h.rpc.start).toHaveBeenCalledTimes(1)
+      expect(h.rpc.poll).toHaveBeenCalledTimes(1)
+      expect(h.rpc.run).toHaveBeenCalledTimes(0)
+      expect(ui.jobs.get(job.id)?.text).toContain('result expired')
+      expect(ui.view(h.origin).running).toBeUndefined()
+    } finally { ui.dispose() }
+  })
+
+  test('confirmation resumes one separate server phase with the captured identity and model', async () => {
+    const h = connection(), { ui, hooks } = controller()
+    h.rpc.start.mockResolvedValue({ accepted: true })
+    h.rpc.poll.mockImplementation(async input => input.confirmationID
+      ? { state: 'finished', result: { text: 'Confirmed result' } }
+      : { state: 'finished', result: { text: 'Plan', confirmation: { id: 'plan-five', title: 'Run?', message: 'Five calls' } } })
+    try {
+      const model = { providerID: 'provider', id: 'selected-model' }
+      const job = ui.start(h.origin, 'label --max-steps 5', model)
+      await job.done
+      expect(hooks.confirm).toHaveBeenCalledTimes(1)
+      expect(h.rpc.start).toHaveBeenCalledTimes(2)
+      expect(h.rpc.start.mock.calls[0]?.[0]).toEqual({ sessionID: h.origin.id, args: 'label --max-steps 5', runID: job.id, model, useSynced: true })
+      expect(h.rpc.start.mock.calls[1]?.[0]).toEqual({ ...h.rpc.start.mock.calls[0]![0], confirmationID: 'plan-five' })
+      expect(h.rpc.poll.mock.calls.map(([input]) => input.confirmationID)).toEqual([undefined, 'plan-five'])
+      expect(h.rpc.run).toHaveBeenCalledTimes(0)
+      expect(ui.jobs.get(job.id)?.text).toBe('Confirmed result')
+    } finally { ui.dispose() }
+  })
+
+  test('reconnect while a confirmation is open cannot start its paid continuation', async () => {
+    const h = connection(), newer = connection('new-server'), { ui, hooks } = controller()
+    h.rpc.start.mockResolvedValue({ accepted: true })
+    h.rpc.poll.mockResolvedValueOnce({ state: 'finished', result: { text: 'Plan',
+      confirmation: { id: 'stale-plan', title: 'Run?', message: 'Five calls' } } })
+    hooks.confirm.mockImplementationOnce(async () => { h.reconnect(newer.client as unknown as OpenCodeClient); return true })
+    try {
+      const job = ui.start(h.origin, 'label --max-steps 5')
+      await job.done
+      expect(hooks.confirm).toHaveBeenCalledTimes(1)
+      expect(h.rpc.start).toHaveBeenCalledTimes(1)
+      expect(h.rpc.run).toHaveBeenCalledTimes(0)
+      expect(h.rpc.cancel.mock.calls[0]?.[0]).toEqual({ runID: job.id })
+      expect(newer.rpc.start).toHaveBeenCalledTimes(0)
+      expect(newer.rpc.cancel).toHaveBeenCalledTimes(0)
+      expect(ui.jobs.get(job.id)?.text).toContain('server reconnected')
+    } finally { ui.dispose() }
+  })
+
+  test('a late result from a reconnected server never opens a stale confirmation', async () => {
+    const h = connection(), newer = connection('new-server'), { ui, hooks } = controller()
+    h.rpc.start.mockResolvedValueOnce({ accepted: true })
+    h.rpc.poll.mockImplementationOnce(async () => {
+      h.reconnect(newer.client as unknown as OpenCodeClient)
+      return { state: 'finished', result: { text: 'Old plan', confirmation: { id: 'old', title: 'Run?', message: 'Five calls' } } }
+    })
+    try {
+      const job = ui.start(h.origin, 'label --max-steps 5')
+      await job.done
+      expect(hooks.confirm).toHaveBeenCalledTimes(0)
+      expect(h.rpc.start).toHaveBeenCalledTimes(1)
+      expect(h.rpc.cancel).toHaveBeenCalledTimes(1)
+      expect(newer.rpc.start).toHaveBeenCalledTimes(0)
+      expect(ui.jobs.get(job.id)?.text).toContain('server reconnected')
+    } finally { ui.dispose() }
+  })
+
+  test('poll failure cancels only its original server and immutable location', async () => {
+    const h = connection(), newer = connection('new-server'), { ui } = controller()
+    const location = { directory: '/original/project' }
+    h.origin.location = () => location
+    let ready!: () => void, fail!: (error: Error) => void
+    const waiting = new Promise<void>(resolve => { ready = resolve })
+    h.rpc.start.mockResolvedValueOnce({ accepted: true })
+    h.rpc.poll.mockImplementationOnce(async () => { ready(); return new Promise((_resolve, reject) => { fail = reject }) })
+    try {
+      const job = ui.start(h.origin, 'analyze failure')
+      await waiting
+      location.directory = '/moved/project'
+      h.reconnect(newer.client as unknown as OpenCodeClient)
+      fail(new Error('Server unavailable'))
+      await job.done
+      expect(h.rpc.cancel).toHaveBeenCalledTimes(1)
+      expect(h.rpc.cancel.mock.calls[0]?.[1]?.location?.directory).toBe('/original/project')
+      expect(newer.rpc.poll).toHaveBeenCalledTimes(0)
+      expect(newer.rpc.cancel).toHaveBeenCalledTimes(0)
+      expect(h.rpc.start).toHaveBeenCalledTimes(1)
+      expect(ui.jobs.get(job.id)?.text).toBe('Server unavailable')
+    } finally { ui.dispose() }
+  })
+
+  test('cancel during the polling interval stops future polls immediately', async () => {
+    const h = connection(), { ui } = controller()
+    let ready!: () => void
+    const waiting = new Promise<void>(resolve => { ready = resolve })
+    h.rpc.start.mockResolvedValueOnce({ accepted: true })
+    h.rpc.poll.mockImplementation(async () => { ready(); return { state: 'pending', progress: 'Working' } })
+    h.rpc.cancel.mockImplementationOnce(async () => new Promise(() => {}))
+    try {
+      const job = ui.start(h.origin, 'analyze cancellation')
+      await waiting; await tick()
+      const outcome = await Promise.race([ui.cancel(h.origin).then(() => 'cancelled'), new Promise(resolve => setTimeout(() => resolve('blocked'), 100))])
+      expect(outcome).toBe('cancelled')
+      await job.done; await tick()
+      expect(h.rpc.start).toHaveBeenCalledTimes(1)
+      expect(h.rpc.poll).toHaveBeenCalledTimes(1)
+      expect(h.rpc.cancel).toHaveBeenCalledTimes(1)
+      expect(h.rpc.cancel.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal)
+      expect(ui.jobs.get(job.id)?.text).toBe('Obs command cancelled.')
+      expect(ui.view(h.origin).running).toBeUndefined()
+    } finally { ui.dispose() }
+  })
+
+  test('disposing pending work stops polling and cancels its original server job', async () => {
+    const h = connection(), { ui } = controller()
+    let ready!: () => void
+    const waiting = new Promise<void>(resolve => { ready = resolve })
+    h.rpc.start.mockResolvedValueOnce({ accepted: true })
+    h.rpc.poll.mockImplementation(async () => { ready(); return { state: 'pending' } })
+    h.rpc.cancel.mockImplementationOnce(async () => new Promise(() => {}))
+    const job = ui.start(h.origin, 'analyze cleanup')
+    await waiting; await tick()
+    ui.dispose(); await job.done; await tick()
+    expect(h.rpc.start).toHaveBeenCalledTimes(1)
+    expect(h.rpc.poll).toHaveBeenCalledTimes(1)
+    expect(h.rpc.cancel.mock.calls[0]?.[0]).toEqual({ runID: job.id })
+    expect(h.rpc.cancel.mock.calls[0]?.[1]?.location?.directory).toBe('/server-a/project')
+    expect(ui.jobs.get(job.id)?.pending).toBe(false)
+  })
+
   test('cancellation during source capture prevents the backend command', async () => {
     const h = connection(), { ui } = controller()
     let started!: () => void
@@ -328,6 +534,8 @@ describe('built Desktop GUI contract', () => {
       expect(h.contributions.get('command')?.[0]?.slash).toEqual({ name: 'obs', arguments: true })
       expect(h.contributions.get('panel')?.[0]).toMatchObject({ id: 'main', region: 'side', mobile: { kind: 'menu' } })
       await h.command('/obs issues --limit 3')
+      expect(h.a.rpc.start).toHaveBeenCalledTimes(1)
+      expect(h.a.rpc.poll).toHaveBeenCalledTimes(1)
       expect(h.a.rpc.run.mock.calls[0]?.[0]).toMatchObject({ args: 'issues --limit 3', model: { providerID: 'composer-provider', id: 'composer-model', variant: 'high' } })
       expect(h.dialogs).toHaveBeenCalledTimes(1)
       const render = h.dialogs.mock.calls[0]?.[0] as (dialog: { close(): void }) => NativeNode

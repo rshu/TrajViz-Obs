@@ -11,7 +11,7 @@ import type { CommandContext } from './index'
 import { EMPTY_TEXT, errorRow, captureSessionSpec, sessionSpec } from './overview'
 import { fmtWhen } from './sessions'
 
-/** `doctor` answers at once; `attribution` loads the run and a reference set, `collect` reads other tools' logs: the plan's 600 s. */
+/** `doctor` answers at once; attribution and collectors can load a complete run: the plan's 600 s. */
 const DOCTOR_TIMEOUT_MS = 120_000
 const PASS_TIMEOUT_MS = 600_000
 
@@ -24,8 +24,8 @@ type Empty = { empty: true; reason: string }
 /** A capability row, as `agent_trajviz.attribution.diagnose` gives it. */
 type CapabilityScore = { capability: string; assessed: boolean; blamed: boolean; weight: number; tier: string | null; top_error: string | null }
 
-/** `agent_trajviz.attribution.diagnose`'s result: the fields the row draws. */
-export type AttributionDoc = {
+/** Reference diagnosis fields used by the native text formatter. */
+type ReferenceAttributionDoc = {
   available: boolean
   reason: string | null
   mode: string
@@ -36,6 +36,13 @@ export type AttributionDoc = {
   scorecard: CapabilityScore[]
   faults: { capability?: unknown; error_type?: unknown; confidence?: unknown }[]
   notes: string[]
+}
+
+type TrajectoryAttributionDoc = { available: boolean; mode: 'trajectory_only'; text: string }
+export type AttributionDoc = ReferenceAttributionDoc | TrajectoryAttributionDoc
+
+function isTrajectoryAttribution(doc: AttributionDoc): doc is TrajectoryAttributionDoc {
+  return doc.mode === 'trajectory_only' && 'text' in doc && typeof doc.text === 'string'
 }
 
 /** The bridge's `doctor` document. */
@@ -59,11 +66,11 @@ function attributionReason(reason: string | null, fallback: string): string {
 }
 
 /**
- * The attribution result as the row: its reason when it could not run (the
- * usual case for a live session), else the verdict, the primary failure, the
- * blamed capabilities, the faults and TrajViz's notes.
+ * Reference-free inspection supplies its own bounded text. Reference diagnosis
+ * draws availability, verdict, primary failure, capabilities, faults and notes.
  */
 export function attributionText(doc: AttributionDoc): string {
+  if (isTrajectoryAttribution(doc)) return doc.text
   if (!doc.available) return attributionReason(doc.reason, 'Attribution is not available here.')
   const who = doc.agent || doc.instance_id ? ` of ${str(doc.agent)}/${str(doc.instance_id)}` : ''
   const lines = [`Attribution (${doc.mode})${who}: ${doc.blame_status ?? 'no verdict'}`]

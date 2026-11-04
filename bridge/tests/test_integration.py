@@ -57,7 +57,12 @@ def test_every_subcommand_runs_on_fixture(run_cli, fixture_session, synthetic_se
     assert ok(["schemas", "--out", str(tmp_path / "schemas")])["files"]
     assert Path(ok(["bundle", "--transcript", str(fixture_session), "--artifacts", str(tmp_artifacts)])["path"]).is_file()
     assert ok(["brief", *session])["brief"]
-    assert ok(["attribution", *session])["available"] is False
+    inspection = ok(["attribution", *session])
+    assert inspection["available"] and inspection["mode"] == "trajectory_only"
+    assert inspection["outcome"]["status"] == "unknown" and "Recording coverage:" in inspection["text"]
+    reference = ok(["attribution", *session, "--reference-root", str(tmp_path / "no-reference"),
+                    "--agent", "claude_code", "--instance", "case"])
+    assert reference["available"] is False and reference["reason"]
 
     plan = ok(["llm-prompt", *session, "--feature", "analyze"])
     answer = ok(["llm-apply", *session, "--feature", "analyze",

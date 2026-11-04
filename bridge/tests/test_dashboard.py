@@ -31,9 +31,11 @@ def test_preloaded_app_has_load_event(fixture_session):
 def test_preloaded_attribution_heading_and_instructions_use_public_terminology(fixture_session):
     app = build_preloaded_insight(str(fixture_session))
     components = json.dumps(app.get_config_file()["components"], default=str)
-    assert "Capability failure attribution" in components
+    assert "Reference-based attribution (optional)" in components
+    assert any(isinstance(block, gradio.Button) and block.value == "Inspect trajectory" for block in app.blocks.values())
     assert "decaf" not in components.lower()
-    assert any(isinstance(block, gradio.Tab) and block.label == "Attribution" for block in app.blocks.values())
+    assert {"Attribution workspace", "Trajectory", "Saved runs & evaluation"} <= {
+        block.label for block in app.blocks.values() if isinstance(block, gradio.Tab)}
 
 
 def test_live_project_attribution_explains_inferred_identity_without_changing_explicit_validation(
@@ -45,9 +47,15 @@ def test_live_project_attribution_explains_inferred_identity_without_changing_ex
     run = _loaded_run(_loader(app), source)
     manual = next(entry.fn for entry in app.fns.values() if entry.api_name == "on_diagnose")
     automatic = next(entry.fn for entry in app.fns.values() if entry.api_name == "on_diagnose_autoload")
-    for markup in (manual(run.raw, "", "", "")[0], automatic(run.raw, "")[0]):
-        assert "No gold-grounded attribution" in markup
-        assert all(label in markup for label in ("Agent", "Instance id", "Reference data root"))
+    markup, status = manual(run.raw, "", "", "")
+    assert "No gold-grounded attribution" in status
+    assert "no gold reference" in markup and "reference data" in markup and "Diagnose failure" in markup
+    html, status, *_ = automatic(run.raw, "")
+    assert html == "" and "Optional:" in status and "Diagnose failure" in status
+    inspect = next(entry.fn for entry in app.fns.values() if entry.api_name == "on_inspect_trajectory")
+    _html, _status, report = inspect(run)
+    assert report["mode"] == "trajectory_only" and report["available"]
+    assert report["outcome"]["status"] == "unknown"
     invalid = manual(run.raw, "../invalid", "case", "")[0]
     assert "invalid agent id" in invalid and "Supply --reference-root" not in invalid
     assert source.read_bytes() == fixture_session.read_bytes()

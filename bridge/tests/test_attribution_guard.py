@@ -216,7 +216,7 @@ def test_cli_and_browser_use_the_bundled_guard(seam, fixture_session, monkeypatc
     assert len(calls) == 2 and calls[-1]["expected_sha"] == run.sha256
 
 
-def test_opencode_browser_manual_and_autoload_share_native_default_identities(seam, tmp_path, monkeypatch):
+def test_opencode_browser_autoload_prefills_identity_without_reference_diagnosis(seam, tmp_path, monkeypatch):
     calls = []
 
     def unavailable(**kwargs):
@@ -236,8 +236,11 @@ def test_opencode_browser_manual_and_autoload_share_native_default_identities(se
     raw = {**run.raw, "_source_path": str(source), "_source_sha256": run.sha256}
     original = json.dumps(raw, sort_keys=True)
     callbacks["on_diagnose"](raw, "", "", str(tmp_path))
+    assert len(calls) == 1
     automatic = callbacks["on_diagnose_autoload"](raw, str(tmp_path))
-    assert automatic[-2:] == ("", "")
+    assert automatic[-2:] == ("opencode", "ses_native")
+    assert automatic[0] == "" and "Optional:" in automatic[1]
+    assert len(calls) == 1  # Loading inspection never starts optional reference attribution.
     assert all((call["agent"], call["instance_id"]) == ("opencode", "ses_native") for call in calls)
     callbacks["on_diagnose"](raw, "explicit-agent", "explicit-case", str(tmp_path))
     assert (calls[-1]["agent"], calls[-1]["instance_id"]) == ("explicit-agent", "explicit-case")
@@ -245,7 +248,8 @@ def test_opencode_browser_manual_and_autoload_share_native_default_identities(se
     assert json.dumps(raw, sort_keys=True) == original
 
 
-def test_bundled_opencode2_family_retains_read_shell_and_child_evidence(seam, tmp_path):
+@pytest.mark.parametrize("verify_source", [True, False])
+def test_bundled_opencode2_family_retains_read_shell_and_child_evidence(seam, tmp_path, verify_source):
     compat.install_attribution_guard()
     from agent_trajviz.awe.native import project_native
 
@@ -273,7 +277,11 @@ def test_bundled_opencode2_family_retains_read_shell_and_child_evidence(seam, tm
     _benchmark(tmp_path, "opencode")
     run = compat.load_run(str(source))
     before = source.read_bytes(), json.dumps(run.steps, sort_keys=True)
-    projected = project_native(run, "opencode", "case")
+    projected = project_native(run, "opencode", "case", verify_source=verify_source)
+    if not verify_source:
+        assert projected.source["identity_basis"] == "loaded_snapshot" and not projected.source["files"]
+    else:
+        assert projected.source["files"] and "adapter_sha256" in projected.source
     calls = {(step.native_tool, step.canonical_action) for step in projected.steps if step.type == "tool_call"}
     assert {("read", "read"), ("Bash", "run_test")} <= calls
     assert {step.subagent_id for step in projected.steps if step.subagent_id} == {"ses_child", "ses_second"}
