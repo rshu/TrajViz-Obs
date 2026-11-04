@@ -1,3 +1,4 @@
+/** Presentation-only facts shared by the terminal and Desktop renderers. */
 import type { Agent, EmptySnapshot, HealthRow, Snapshot } from './types.js'
 import { safeText } from './tui-model.js'
 

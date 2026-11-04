@@ -54,6 +54,22 @@ function host(options: Record<string, unknown> = {}, onSession = true) {
 }
 
 describe('OpenCode command adapter', () => {
+  test('completed results retain their captured facts after later live refreshes', async () => {
+    const h = host()
+    try {
+      await h.command('overview')
+      const state = [...h.memory.values()][0] as { jobs:Record<string,{snapshot?:typeof SNAPSHOT}>; snapshots:Record<string,typeof SNAPSHOT> }
+      const job = Object.values(state.jobs)[0]!
+      const original = job.snapshot!.counts.assistant_steps
+      const newer = structuredClone(SNAPSHOT)
+      newer.counts.assistant_steps = original + 100
+      h.rpc.snapshot.mockResolvedValueOnce(newer)
+      await h.command('watch on')
+      expect(state.snapshots.ses_current!.counts.assistant_steps).toBe(original+100)
+      expect(job.snapshot!.counts.assistant_steps).toBe(original)
+    } finally { h.cleanup() }
+  })
+
   test('fresh history requests work with the pane closed and watch disabled', async () => {
     const h = host({watch:false},false)
     try {

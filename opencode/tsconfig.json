@@ -5,5 +5,5 @@
     "jsx": "preserve", "jsxImportSource": "@opentui/solid", "types": ["bun", "node"]
   },
   "include": ["src", "test"],
-  "exclude": ["src/gui.tsx"]
+  "exclude": ["src/gui.tsx", "src/gui-charts.tsx"]
 }

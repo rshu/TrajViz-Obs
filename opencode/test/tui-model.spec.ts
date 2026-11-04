@@ -1,9 +1,19 @@
 import { describe, expect, test } from 'bun:test'
 import { SNAPSHOT } from '../../hooks/testdata/snapshot.js'
 import { PARTIAL_SNAPSHOT, UNKNOWN_SNAPSHOT, ZERO_SNAPSHOT } from '../../hooks/testdata/quality.js'
-import { TABS, commandText, compact, duration, metrics, percent, safeText, sections, statusText, trend } from '../src/tui-model.js'
+import { TABS, commandText, compact, duration, latestPhaseLabel, metrics, percent, safeText, sections, statusText, trend } from '../src/tui-model.js'
 
 describe('native pane data', () => {
+  test('text and chart overviews retain the latest labeled phase by step rather than array order', () => {
+    const snapshot = structuredClone(SNAPSHOT)
+    snapshot.phases = [{ name: 'verify\u001b[31m fix\u001b[0m', start: 5, end: 9 }, { name: 'understand', start: 0, end: 4 }]
+    expect(latestPhaseLabel(snapshot)).toBe('Latest phase: verify fix')
+    expect(sections(snapshot, 0, 60).flatMap(section => section.lines).filter(line => line.startsWith('Latest phase:'))).toEqual(['Latest phase: verify fix'])
+    snapshot.phases = []
+    expect(latestPhaseLabel(snapshot)).toBeNull()
+    expect(sections(snapshot, 0, 60).flatMap(section => section.lines).some(line => line.startsWith('Latest phase:'))).toBe(false)
+  })
+
   test('every tab keeps its diagnostic data and full issue evidence', () => {
     expect(TABS).toEqual(['Overview', 'Tools', 'Issues', 'Patterns', 'Agents', 'Context', 'Timeline'])
     for (let tab = 0; tab < TABS.length; tab++) {

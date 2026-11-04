@@ -1,5 +1,11 @@
 # Changelog
 
+## OpenCode 0.5.0 — 2026-11-04
+
+- Add token, timing, context, tool-ranking, and agent-activity charts to the terminal and Desktop panes.
+- Share bounded chart calculations across both interfaces, preserving missing samples and measured zeros.
+- Improve terminal color cues and use Desktop's active theme colors for diagnostic states.
+
 ## OpenCode 0.4.2 — 2026-11-04
 
 - Highlight Desktop health, failures, metrics, and agent relationships with theme-aware text colors.

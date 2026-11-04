@@ -1,16 +1,18 @@
 import { Plugin } from '@opencode/plugin/tui'
-import { ErrorBoundary, For, Show, createEffect, onMount } from 'solid-js'
+import { ErrorBoundary, For, Match, Show, Switch, createEffect, createSignal, onMount } from 'solid-js'
 import { useTerminalDimensions } from '@opentui/solid'
 import type { ScrollBoxRenderable } from '@opentui/core'
 import { captureSession } from './collect.js'
 import { Obs, type CommandResult } from './rpc.js'
 import { analyzeSelection, parseArgs, passArgs, quoteOption } from './shared/args.js'
 import { validateArguments } from './command-args.js'
-import { TABS, commandText, metrics, safeText, sections, statusText } from './tui-model.js'
+import { TABS, commandText, compact as compactNumber, duration, failures, metrics, safeText, sections, statusText, type Section } from './tui-model.js'
+import { agentFailureTone, healthRowTone, healthStatusLabel, metricTone, resultFragments, type Tone } from './presentation.js'
+import { TerminalCharts, TerminalText, terminalPalette } from './tui-charts.js'
 import type { EmptySnapshot, Snapshot } from './types.js'
 
 type SnapshotDoc = Snapshot | EmptySnapshot
-type Job = { args: string; sessionID: string; targetID?: string; text: string; pending: boolean; url?: string; path?: string }
+type Job = { args: string; sessionID: string; targetID?: string; text: string; pending: boolean; url?: string; path?: string; snapshot?: SnapshotDoc; data?: unknown }
 type UIState = {
   tab: number
   selected: Record<string, string>
@@ -173,8 +175,9 @@ export function setup(context: Plugin.Context): () => void {
     } catch (error) { notice(`Browser unavailable: ${errorText(error)}. URL: ${value}`, true) }
   }
 
-  const Action = (props: { label: string; run(): void }): ReturnType<typeof Text> => <text fg={context.theme.text.base} onMouseDown={props.run}>{`[${props.label}]`}</text>
-  const Text = (props: { children: string; muted?: boolean }) => <text fg={props.muted ? context.theme.text.muted : context.theme.text.base} wrapMode="word" flexShrink={0}>{safeText(props.children)}</text>
+  const palette = () => terminalPalette(context.theme)
+  const Action = (props: { label: string; run(): void }): ReturnType<typeof Text> => <text fg={palette().tone('info')} onMouseDown={props.run}>{`[${props.label}]`}</text>
+  const Text = (props: { children: string; muted?: boolean; tone?: Tone }) => <TerminalText palette={palette()} muted={props.muted} tone={props.tone}>{props.children}</TerminalText>
 
   function showResult(runID: string): void {
     context.ui.dialog.set({ size: 'large', centered: true })
@@ -184,6 +187,8 @@ export function setup(context: Plugin.Context): () => void {
   function Result(props: { runID: string }) {
     const job = () => state.jobs[props.runID]
     const terminal = useTerminalDimensions()
+    const [width, setWidth] = createSignal(24)
+    const snapshot = () => { const value = job()?.snapshot; return value && !value.empty ? value : undefined }
     let scroll: ScrollBoxRenderable | undefined
     const livePane = () => {
       const current = job()
@@ -206,8 +211,9 @@ export function setup(context: Plugin.Context): () => void {
     ] }))
     return <box flexDirection="column" gap={1} padding={1}>
       <Text>{`TrajViz Obs · ${(job()?.args || 'overview').slice(0, 100)}`}</Text>
-      <scrollbox ref={scroll} height={Math.max(3, Math.min(24, terminal().height - 14))} scrollX={false}>
-        <Text>{job()?.text || 'Loading…'}</Text>
+      <scrollbox ref={scroll} height={Math.max(3, Math.min(24, terminal().height - 14))} scrollX={false} contentOptions={{gap:1}} onSizeChange={() => setWidth(Math.max(8,(scroll?.width ?? 26)-2))}>
+        <TerminalText palette={palette()} fragments={resultFragments(job()?.text || 'Loading…',job()?.snapshot,job()?.data)}/>
+        <Show when={snapshot()}><TerminalCharts snapshot={snapshot()!} width={width()} palette={palette()} mode="overview" compact/></Show>
       </scrollbox>
       <box flexDirection="row" flexWrap="wrap" gap={2}>
         <Show when={job()?.pending}><Action label="c Cancel" run={() => { void cancel(job()?.sessionID) }} /></Show>
@@ -278,7 +284,7 @@ export function setup(context: Plugin.Context): () => void {
       update(draft => {
         if (base !== 'home' && !SESSIONLESS.has(parsed.sub)) draft.selected[base] = target
         if (result.snapshot && generations.get(target) === generation) { draft.snapshots[target] = result.snapshot; delete draft.errors[target] }
-        draft.jobs[runID] = { args, sessionID: base, ...(!SESSIONLESS.has(parsed.sub) ? { targetID: target } : {}), text: displayResult(commandText(result)), pending: false, url: result.url, path: result.path }
+        draft.jobs[runID] = { args, sessionID: base, ...(!SESSIONLESS.has(parsed.sub) ? { targetID: target } : {}), text: displayResult(commandText(result)), pending: false, url: result.url, path: result.path, snapshot: result.snapshot, data: result.data }
         if (result.tab) { const tab = TABS.findIndex(name => name.toLowerCase() === result.tab?.toLowerCase()); if (tab >= 0) draft.tab = tab }
       })
       if (presentation === 'pane' && !result.snapshot) await refresh(target)
@@ -339,12 +345,47 @@ export function setup(context: Plugin.Context): () => void {
     await execute(args, base, 'dialog')
   }
 
+  function DiagnosticSection(props: { section: Section; snapshot?: Snapshot; width: number; compact: boolean }) {
+    const trend = () => !!props.snapshot && props.section.title.startsWith('Trends')
+    const shownIssues = () => props.snapshot?.issues.slice(0,props.section.title==='Top issues'?3:undefined) ?? []
+    const moreIssues = () => Math.max(0,(props.snapshot?.counts.issues ?? props.snapshot?.issues.length ?? 0)-shownIssues().length)
+    return <box flexDirection="column" flexShrink={0}>
+      <Show when={!trend()}><Text tone="info">{props.section.title}</Text></Show>
+      <Switch fallback={<Text muted={props.section.title==='Notes'}>{props.section.lines.join('\n')}</Text>}>
+        <Match when={trend()}><TerminalCharts snapshot={props.snapshot!} width={props.width} palette={palette()} mode="overview" compact={props.compact}/></Match>
+        <Match when={props.snapshot && props.section.title==='Health'}>
+          <For each={props.snapshot?.health??[]}>{row=><Text tone={healthRowTone(props.snapshot!,row)}>{`${row.metric}: ${row.label} · ${healthStatusLabel(row.status)}`}</Text>}</For>
+        </Match>
+        <Match when={props.snapshot && ['Top issues','Issues'].includes(props.section.title)}>
+          <For each={shownIssues()} fallback={<Text>{props.section.lines.join('\n')}</Text>}>{(issue,index)=><box flexDirection="column" flexShrink={0}>
+            <Text tone={issue.kind==='error'?'danger':'warning'}>{`${index()+1}. ${issue.title}${props.section.title==='Issues'?` · steps ${issue.steps.join(', ')||'—'}`:''}`}</Text>
+            <Show when={props.section.title==='Issues'}><For each={[issue.evidence,issue.detail,issue.why].filter(Boolean)}>{line=><Text>{line}</Text>}</For></Show>
+          </box>}</For>
+          <Show when={props.section.title==='Top issues' && shownIssues().length}><Text muted>Open Issues for evidence and affected steps.</Text></Show>
+          <Show when={moreIssues()>0}><Text muted>{`${moreIssues()} more · /obs issues for details`}</Text></Show>
+        </Match>
+        <Match when={props.snapshot && props.section.title==='Agents'}>
+          <For each={props.snapshot?.agents??[]} fallback={<Text>No agent activity recorded.</Text>}>{agent=><box flexDirection="column" flexShrink={0}>
+            <Text tone="agent">{`${agent.label}${agent.type?` (${agent.type})`:''}`}</Text>
+            <Show when={typeof agent.spawned_by_step==='number' && Number.isSafeInteger(agent.spawned_by_step) && agent.spawned_by_step>=0}><Text tone="info">{`Spawned at step #${agent.spawned_by_step}`}</Text></Show>
+            <Text>{`${agent.steps} steps · ${compactNumber(agent.tokens)} tokens · ${agent.tool_calls} tools · ${duration(agent.duration_s)}`}</Text>
+            <Text tone={agentFailureTone(agent)}>{failures(agent.unknown_outcomes?agent.observed_errors??agent.errors:agent.errors,agent.unknown_outcomes)}</Text>
+            <Show when={agent.description}><Text muted>{agent.description!}</Text></Show>
+          </box>}</For>
+        </Match>
+      </Switch>
+    </box>
+  }
+
   function Pane(props: { panel: Panel }) {
     let scroll: ScrollBoxRenderable | undefined
     const id = () => selected(props.panel.sessionID)
     const snapshot = () => state.snapshots[id()]
+    const known = () => { const value = snapshot(); return value && !value.empty ? value : undefined }
     const terminal = useTerminalDimensions()
     const compact = () => terminal().height < 34
+    const short = () => terminal().height < 24
+    const provenance = () => `${id()===props.panel.sessionID?'Current session':'Saved session'}${state.files[id()]?.captureSessionID?` · ${state.files[id()]!.captureSessionID}`:''}${known()?.title?` · ${known()!.title}`:''}`
     const selectTab = (tab: number) => { update(draft => { draft.tab = tab }); scroll?.scrollTo(0) }
     onMount(() => props.panel.focus())
     createEffect(() => { const target = id(); if (!state.snapshots[target] && !state.errors[target]) void refresh(target) })
@@ -367,30 +408,30 @@ export function setup(context: Plugin.Context): () => void {
     }))
     return <box flexDirection="column" flexGrow={1} minHeight={0} padding={1} gap={1} onMouseDown={() => props.panel.focus()}>
       <box id="obs-pane-tabs" flexDirection="row" flexWrap="wrap" flexShrink={0} columnGap={1} rowGap={0}>
-        <For each={TABS}>{(name, index) => <text fg={context.theme.text.base} onMouseDown={() => selectTab(index())}>{`${state.tab === index() ? '▸' : ''}${index() + 1} ${name}`}</text>}</For>
+        <For each={TABS}>{(name, index) => <text fg={palette().tone(state.tab===index()?'info':'neutral')} onMouseDown={() => selectTab(index())}>{`${state.tab === index() ? '▸' : ''}${index() + 1} ${name}`}</text>}</For>
       </box>
       <box id="obs-pane-actions" flexDirection="row" flexWrap="wrap" flexShrink={0} columnGap={2} rowGap={0}>
         <Action label="r Refresh" run={() => { void refresh(id()) }} />
-        <Action label={`w Watch ${settings.watch ? 'on' : 'off'}`} run={() => { void command('watch') }} />
-        <Action label="d Dashboard" run={() => { void command('dashboard', true) }} />
-        <Action label="f Fullscreen" run={() => props.panel.toggleFullscreen()} />
+        <Action label={short()?'w Watch':`w Watch ${settings.watch ? 'on' : 'off'}`} run={() => { void command('watch') }} />
+        <Action label={short()?'d Web':'d Dashboard'} run={() => { void command('dashboard', true) }} />
+        <Action label={short()?'f Full':'f Fullscreen'} run={() => props.panel.toggleFullscreen()} />
         <Action label="x Close" run={() => props.panel.close()} />
       </box>
-      <Text muted>{`${id() === props.panel.sessionID ? 'Current session' : 'Saved session'}${state.files[id()]?.captureSessionID ? ` · ${state.files[id()]!.captureSessionID}` : ''}${snapshot() && !snapshot()!.empty && (snapshot() as Snapshot).title ? ` · ${(snapshot() as Snapshot).title}` : ''}`}</Text>
-      <scrollbox ref={scroll} flexGrow={1} minHeight={0} scrollX={false} contentOptions={{ gap: 1 }}>
-        <Show when={state.errors[id()]}><Text>{`Unable to refresh: ${state.errors[id()]}. Press r to retry.`}</Text></Show>
+      <Text muted>{short()?id()===props.panel.sessionID?'Current session':'Saved session':provenance()}</Text>
+      <scrollbox id="obs-pane-body" ref={scroll} flexGrow={1} minHeight={0} scrollX={false} contentOptions={{ gap: 1 }}>
+        <Show when={short()}><Text muted>{provenance()}</Text></Show>
+        <Show when={state.errors[id()]}><Text tone="danger">{`Unable to refresh: ${state.errors[id()]}. Press r to retry.`}</Text></Show>
         <Show when={state.tab === 0 && snapshot() && !snapshot()!.empty}>
           <box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={compact() ? 0 : 1}>
             <For each={metrics(snapshot() as Snapshot)}>{metric => <box flexDirection="column" width={Math.max(16, Math.floor((props.panel.width - 6) / 2))}>
-              <Show when={!compact()} fallback={<Text>{`${metric.label}: ${metric.value}`}</Text>}>
-                <Text muted>{metric.label}</Text><Text>{metric.value}</Text><Show when={metric.detail}><Text muted>{metric.detail!}</Text></Show>
+              <Show when={!compact()} fallback={<Text tone={metricTone(known()!,metric.label)}>{`${metric.label}: ${metric.value}`}</Text>}>
+                <Text muted>{metric.label}</Text><Text tone={metricTone(known()!,metric.label)}>{metric.value}</Text><Show when={metric.detail}><Text muted>{metric.detail!}</Text></Show>
               </Show>
             </box>}</For>
           </box>
         </Show>
-        <For each={sections(snapshot(), state.tab, props.panel.width - 4)}>{section => <box flexDirection="column">
-          <Text>{section.title}</Text><Text muted={section.title === 'Notes'}>{section.lines.join('\n')}</Text>
-        </box>}</For>
+        <Show when={known() && [1,4,5].includes(state.tab)}><TerminalCharts snapshot={known()!} width={props.panel.width-4} palette={palette()} mode={state.tab===1?'tools':state.tab===4?'agents':'context'} compact={compact()}/></Show>
+        <For each={sections(snapshot(), state.tab, props.panel.width - 4)}>{section => <DiagnosticSection section={section} snapshot={known()} width={props.panel.width-4} compact={compact()}/>}</For>
       </scrollbox>
       <Text muted>{snapshot() && !snapshot()!.empty ? `Updated ${localTime((snapshot() as Snapshot).generated_at)} · ${(snapshot() as Snapshot).counts.assistant_steps} steps · watch ${settings.watch ? 'on' : 'off'} · ↑↓ scroll` : 'Dashboard provides the full interactive workflow.'}</Text>
     </box>
@@ -404,7 +445,7 @@ export function setup(context: Plugin.Context): () => void {
   const stopFooter = context.ui.slot({ append: 'prompt.footer.status', render: input => {
     const id = () => input.sessionID ? selected(input.sessionID) : undefined
     createEffect(() => { const target = id(); if (settings.statusline && target && !state.snapshots[target] && !state.errors[target]) void refresh(target) })
-    return <Show when={settings.statusline}><text fg={context.theme.text.muted}>{safeText(id() ? statusText(state.snapshots[id()!]) : 'obs: open a session')}</text></Show>
+    return <Show when={settings.statusline}><text fg={palette().muted}>{safeText(id() ? statusText(state.snapshots[id()!]) : 'obs: open a session')}</text></Show>
   } })
   context.keymap.layer(() => ({ mode: 'global', commands: [{ id: 'trajviz-obs.command', title: 'TrajViz Obs', description: 'Visualize and diagnose session activity', group: 'TrajViz Obs', palette: true, slash: { name: 'obs', arguments: true }, run: input => command(input) }] }))
 

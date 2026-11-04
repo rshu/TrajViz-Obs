@@ -88,6 +88,8 @@ After an assistant response, run `/obs` for a summary, `/obs pane` for the live 
 
 The panel has Overview, Tools, Issues, Patterns, Agents, Context, and Timeline tabs. See the [demo screenshots](../README.md#demo). `/obs pane close` closes it. `/obs watch off` disables automatic refresh; `/obs statusline on` adds a compact status summary. `/obs cancel` cancels a running command.
 
+Overview charts show tokens, step timing, and context. Tools ranks calls and outcomes; Agents shows activity by work step. Charts follow OpenCode's theme and distinguish missing measurements from zero. Set `NO_COLOR=1` for monochrome terminal charts.
+
 Focus the panel to switch tabs with **1–7**. In Desktop, use **Expand** for a larger view; the panel's command field runs additional `/obs` commands. In the terminal, scroll with **↑↓**, **PgUp/PgDn**, or **Home/End**, and toggle fullscreen with **f**.
 
 Use `/obs help` for all commands. Diagnostics, exports, comparisons, analysis, fixes, step labeling, and attribution follow the [shared usage guide](https://github.com/rshu/TrajViz-Obs#use). `/obs sessions` lists this project's saved sessions; session commands accept `--session <id|prefix|path>`.

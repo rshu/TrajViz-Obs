@@ -69,6 +69,13 @@ export function compact(value: number | null | undefined): string {
 export const percent = (value: number | null | undefined): string =>
   value == null || !Number.isFinite(value) ? '—' : `${value.toFixed(0)}%`
 
+/** The latest labeled phase, shared by text and chart overviews. */
+export function latestPhaseLabel(snapshot: Pick<Snapshot, 'phases'>): string | null {
+  const latest = snapshot.phases.reduce<Snapshot['phases'][number] | undefined>(
+    (a, b) => !a || b.end >= a.end ? b : a, undefined)
+  return latest ? `Latest phase: ${safeText(latest.name)}` : null
+}
+
 export function duration(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return '—'
   const s = Math.max(0, value)
@@ -237,7 +244,7 @@ export function sections(snap: Snapshot | EmptySnapshot | undefined, tab: number
       break
     default: {
       const tokenValues = snap.series.tokens.steps.map((_, i) => sumMeasured([snap.series.tokens.fresh[i], snap.series.tokens.cache_read[i], snap.series.tokens.cache_write[i], snap.series.tokens.output[i]]))
-      const latest = snap.phases.reduce<Snapshot['phases'][number] | undefined>((a, b) => !a || b.end >= a.end ? b : a, undefined)
+      const phase = latestPhaseLabel(snap)
       result = [
         { title: 'Health', lines: [snap.health.map(row => `${row.metric.replaceAll('_', ' ')} ${row.status}`).join(' · ')] },
         { title: 'Top issues', lines: snap.issues.length ? [
@@ -249,7 +256,7 @@ export function sections(snap: Snapshot | EmptySnapshot | undefined, tab: number
           `Tokens/step ${trend(tokenValues, columns - 16)}`,
           `Step time   ${trend(snap.series.durations.seconds, columns - 16)}`,
           `Context     ${trend(snap.series.context.occupancy, columns - 16)}`,
-          ...(latest ? [`Latest phase: ${latest.name}`] : []),
+          ...(phase ? [phase] : []),
         ] },
       ]
       const quality = qualityLines(snap)

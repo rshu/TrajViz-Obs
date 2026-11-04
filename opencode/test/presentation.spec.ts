@@ -1,14 +1,25 @@
 import { describe, expect, test } from 'bun:test'
 import { SNAPSHOT } from '../../hooks/testdata/snapshot.js'
 import { PARTIAL_SNAPSHOT, UNKNOWN_SNAPSHOT, ZERO_SNAPSHOT } from '../../hooks/testdata/quality.js'
-import { agentFailureTone, failureTone, healthRowTone, healthTone, metricTone, resultFragments } from '../src/gui-presentation.js'
+import { agentFailureTone, failureTone, healthRowTone, healthStatusLabel, healthTone, metricTone, resultFragments } from '../src/presentation.js'
 import { safeText } from '../src/tui-model.js'
 
 const joined = (fragments: ReturnType<typeof resultFragments>): string => fragments.map(fragment => fragment.text).join('')
 const unclassified = (fragments: ReturnType<typeof resultFragments>): boolean =>
   fragments.every(fragment => !fragment.tone || fragment.tone === 'neutral')
 
-describe('Desktop diagnostic presentation', () => {
+describe('Diagnostic presentation', () => {
+  test('status labels remain readable and sanitize unknown labels without prototype lookups', () => {
+    expect(healthStatusLabel('good')).toBe('Good')
+    expect(healthStatusLabel('warn')).toBe('Warning')
+    expect(healthStatusLabel('bad')).toBe('Needs attention')
+    for (const status of ['constructor', 'toString', '__proto__']) {
+      expect(healthStatusLabel(status)).toBe(status)
+      expect(healthTone(status)).toBe('neutral')
+    }
+    expect(healthStatusLabel('\u001b[31mfuture\u001b[0m')).toBe('future')
+  })
+
   test('health statuses carry their source meaning while unknown statuses stay neutral', () => {
     expect(healthTone('good')).toBe('success')
     expect(healthTone('ok')).toBe('success')

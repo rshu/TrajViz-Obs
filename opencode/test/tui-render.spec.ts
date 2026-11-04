@@ -11,15 +11,18 @@ test('native wrapped pane navigation keeps every control above the session body'
     import { setup } from './src/tui.tsx'
     import { SNAPSHOT } from '../hooks/testdata/snapshot.ts'
     const frames = []
-    for (const width of [120, 80, 60, 32]) {
+    for (const width of [120, 80, 60, 32]) for (const height of [18, 28]) for (let tab=0;tab<7;tab++) {
       let renderPane
       const noop = () => {}
       const panel = { name: 'trajviz-obs', sessionID: 'render-test', width, focused: true,
         focus: noop, close: noop, toggleFullscreen: noop }
       const storage = (key, { initial }) => {
         const value = structuredClone(initial)
-        if (key === 'ui-v1') value.snapshots['render-test'] = {
-          ...structuredClone(SNAPSHOT), title: 'A long controlled session title stays readable when navigation and titles wrap.',
+        if (key === 'ui-v1') {
+          value.tab=tab
+          value.snapshots['render-test'] = {
+            ...structuredClone(SNAPSHOT), title: 'A long controlled session title stays readable when navigation and titles wrap.',
+          }
         }
         const [state, set] = createStore(value)
         return [state, change => set(produce(change))]
@@ -36,14 +39,18 @@ test('native wrapped pane navigation keeps every control above the session body'
       }
       const cleanup = setup(context)
       const view = await testRender(() => renderPane(panel), {
-        width, height: 28, screenMode: 'alternate-screen', consoleMode: 'disabled',
+        width, height, screenMode: 'alternate-screen', consoleMode: 'disabled',
       })
       try {
         await view.renderOnce()
         await view.flush()
         const body = view.renderer.root.getChildren()[0]
         const rows = body.getChildren().filter(child => ['obs-pane-tabs', 'obs-pane-actions'].includes(child.id))
-        frames.push({ width, frame: view.captureCharFrame(), rows: rows.map(row => ({
+        const scroll=body.getChildren().find(child=>child.id==='obs-pane-body')
+        const first=view.captureCharFrame()
+        scroll.scrollTo(scroll.scrollHeight)
+        await view.renderOnce();await view.flush()
+        frames.push({ width, height, tab, frame:first, end:view.captureCharFrame(), bodyHeight:scroll.height, rows: rows.map(row => ({
           id: row.id, top: row.y, bottom: row.y + row.height,
           children: row.getChildren().map(child => ({ top: child.y, bottom: child.y + child.height })),
         })) })
@@ -55,10 +62,10 @@ test('native wrapped pane navigation keeps every control above the session body'
   const output = execFileSync(process.execPath, ['--preload', '@opentui/solid/preload', '--eval', code], {
     cwd, encoding: 'utf8', timeout: 30_000,
   })
-  const frames = JSON.parse(output) as { width: number; frame: string; rows: {
+  const frames = JSON.parse(output) as { width: number; height:number; tab:number; frame: string; end:string; bodyHeight:number; rows: {
     id: string; top: number; bottom: number; children: { top: number; bottom: number }[];
   }[] }[]
-  expect(frames.map(frame => frame.width)).toEqual([120, 80, 60, 32])
+  expect(frames).toHaveLength(56)
   for (const frame of frames) {
     expect(frame.rows.map(row => row.id)).toEqual(['obs-pane-tabs', 'obs-pane-actions'])
     for (const row of frame.rows) for (const child of row.children) {
@@ -68,8 +75,10 @@ test('native wrapped pane navigation keeps every control above the session body'
     expect(frame.rows[0]!.bottom).toBeLessThanOrEqual(frame.rows[1]!.top)
     expect(frame.frame).toContain('[x Close]')
     expect(frame.frame).toContain('Current session')
-    expect(frame.frame.replace(/\s/g, '')).toContain('A long controlled session title stays readable when navigation and titles wrap.'.replace(/\s/g, ''))
+    if(frame.height===28)expect(frame.frame.replace(/\s/g, '')).toContain('A long controlled session title stays readable when navigation and titles wrap.'.replace(/\s/g, ''))
+    expect(frame.bodyHeight).toBeGreaterThan(0)
     expect(frame.frame).toContain('↑↓ scroll')
     expect(frame.frame).not.toContain('Unable to draw')
+    expect(frame.end).not.toContain('Unable to draw')
   }
 })

@@ -74,9 +74,13 @@ Terminal screenshots are rendered from recorded output of real, controlled test 
 ![OpenCode 2 live overview with session metrics, health, and issues in light mode](assets/demo-opencode-overview-light.png)
 
 <details>
-<summary>OpenCode 2: main agent and subagent breakdown</summary>
+<summary>OpenCode 2: agents and Desktop charts</summary>
 
 ![OpenCode 2 Agents tab with per-agent steps, tokens, tools, and duration](assets/demo-opencode-agents.png)
+
+Desktop pane with token and timing charts from a real coding session:
+
+![OpenCode Desktop token and timing charts in light mode](assets/demo-opencode-desktop-light.jpg)
 
 </details>
 
