@@ -13,7 +13,7 @@ Visualize and diagnose Claude Code and OpenCode 2 sessions with [TrajViz](https:
 
 For **OpenCode 2**, follow the [OpenCode installation guide](opencode/README.md). The instructions below install the Claude Code plugin.
 
-Requires Claude Code with function hooks (mods) and process execution, plus [uv](https://docs.astral.sh/uv/) or **Python 3.11+**. Validated on Claude Code **2.1.309**; hosts limited to shell hooks and Markdown commands cannot run this plugin.
+Requires Claude Code with function hooks (mods) and process execution, plus [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Validated on Claude Code **2.1.309**; hosts limited to shell hooks and Markdown commands cannot run this plugin.
 
 In Claude Code:
 
@@ -26,10 +26,11 @@ Confirm the marketplace and installation scope, then restart Claude Code. The fi
 To update:
 
 ```sh
+claude plugin marketplace update trajviz-obs
 claude plugin update trajviz-obs@trajviz-obs
 ```
 
-Restart Claude Code after updating.
+Run the update from the project where you use the plugin. It selects that project's most specific installation; add `--scope user`, `--scope project`, or `--scope local` to choose explicitly. Restart Claude Code after updating.
 
 ## Use
 
@@ -85,14 +86,14 @@ Terminal screenshots are rendered from recorded output of real, controlled test 
 
 ## Configure
 
-Use Claude Code's `/config` menu for plugin options. Model features default to `llm=session`, using Claude Code's client: `analysisModel=sonnet` for analysis and fixes, and `labelModel=haiku` for labeling. Set either model option to `session` to follow the main conversation's model.
+Use `/plugin configure trajviz-obs@trajviz-obs` or Claude Code's `/config` menu for plugin options. Model features default to `llm=session`, using Claude Code's client: `analysisModel=sonnet` for analysis and fixes, and `labelModel=haiku` for labeling. Set either model option to `session` to follow the main conversation's model.
 
 OpenCode uses [options in its configuration file](opencode/README.md#options) and defaults to its selected model.
 
 <details>
 <summary>Use an external model provider</summary>
 
-Set `llm=env` and add these values to the launch environment or the project's `.env`:
+Set `llm=env` and add these values to the host/server launch environment or the project's `.env`. Existing launch values take precedence; `.env` loading applies to `ANALYZE_*` and `LABEL_*` settings:
 
 ```dotenv
 ANALYZE_BASE_URL=https://provider.example/v1
@@ -107,7 +108,9 @@ Labeling uses `LABEL_BASE_URL`, `LABEL_API_KEY`, and `LABEL_MODEL`, falling back
 <details>
 <summary>Attribution reference data</summary>
 
-The attribution engine is included. Set `TRAJVIZ_REFERENCE_ROOT=/path/to/reference-data` with the task's reference patch and test outcome, then use `/obs attribution` or the dashboard's **Attribution** tab. Verdicts require the matching canonical session; missing reference evidence produces an explanation instead of capability blame.
+The attribution engine is included. Use `/obs attribution --reference-root /path/to/reference-data`, adding `--agent NAME` and `--instance ID` when needed to identify the matching canonical run. The reference data must include the task's reference patch and test outcome. In the dashboard, use the **Attribution** overrides to set the same values.
+
+For a default folder, set `TRAJVIZ_REFERENCE_ROOT` in the host/server launch environment before starting it. Verdicts require the matching canonical session; missing reference evidence produces an explanation instead of capability blame.
 
 The **Attribution workspace** opens saved results, evidence graphs, and reports independently of the current session. Its evaluation settings and operations run only when explicitly selected. For OpenCode subagent diagnoses, use `/obs attribution`; bundled evaluation workers can group child evidence by agent role.
 
@@ -115,7 +118,7 @@ The **Attribution workspace** opens saved results, evidence graphs, and reports 
 
 ## Data and model use
 
-Overview, diagnostic views, and exports run locally without model calls. `/obs analyze`, `/obs fixes`, and `/obs label` send redacted prompts to a model and may incur usage charges. They show the planned calls and model first; interactive sessions ask before more than four calls. Labeling defaults to at most 50 steps.
+Overview, diagnostic views, and exports run locally without model calls. `/obs analyze`, `/obs fixes`, and `/obs label` send redacted prompts to a model and may incur usage charges. They show a call plan first; interactive sessions ask before more than four calls. Labeling defaults to at most 50 steps.
 
 The dashboard's AI sidebar and fix button use the connection selected in **Settings**, independently of `llm`. Environment values provide defaults. API keys stay in the current dashboard session; remembered browser settings exclude keys. Opening the sidebar starts model analysis; follow-up questions and fixes also send trajectory excerpts.
 
@@ -138,7 +141,7 @@ cd TrajViz-Obs
 claude --plugin-dir .
 ```
 
-Load the local plugin once to generate Claude Code's API declarations. Checks also require Node.js and TypeScript 5.4+:
+Load the local plugin once to generate Claude Code's API declarations. The following development checks require uv, Node.js, and TypeScript 5.4+:
 
 ```sh
 uv sync --project bridge --locked --extra dev

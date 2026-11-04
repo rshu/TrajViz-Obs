@@ -4,7 +4,7 @@ Inspect session health, tools, subagents, context use, and step labels with `/ob
 
 ## Install
 
-Requires **OpenCode 2** (tested with **2.2.5**), [Bun](https://bun.sh), and [uv](https://docs.astral.sh/uv/) or **Python 3.11+**.
+Requires **OpenCode 2** (tested with **2.2.5**), [Bun](https://bun.sh) **1.3.0+**, and either [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**.
 
 ### 1. Build the adapter and find its path
 
@@ -51,7 +51,7 @@ opencode service restart
 opencode
 ```
 
-For `opencode --standalone`, simply close and reopen that session. Complete an assistant response, then run:
+For standalone sessions, close and rerun `opencode --standalone`. With `--server`, restart the connected server and reconnect the TUI instead. Complete an assistant response, then run:
 
 ```text
 /obs
@@ -61,6 +61,8 @@ For `opencode --standalone`, simply close and reopen that session. Complete an a
 The first `/obs` installs a private TrajViz runtime and needs network access. Opening a dashboard adds its dependencies. Use `/obs doctor` to check setup or `/obs help` to list commands.
 
 To update, pull the checkout, repeat `bun install --frozen-lockfile` and `bun run build` in its `opencode` directory, then repeat the restart step above.
+
+To disable the adapter, remove its entry from the configuration you edited and repeat the restart step.
 
 ## Use
 
@@ -91,11 +93,13 @@ To set options, replace the adapter's existing string entry with an object:
 
 `python` overrides interpreter discovery; `trajvizSource` overrides the TrajViz requirement. `cacheRoot` moves the private runtime and session artifacts. Dashboards bind to localhost and stop with `/obs dashboard stop`, `/obs converge stop`, or plugin unload.
 
-The TUI reads full history from its connected server. Headless tool calls discover OpenCode's local service; custom servers can set `serverUrl` to a loopback URL on that server's host and `serverPasswordEnv` (default `OPENCODE_PASSWORD`). History before compaction is retained. Forks remain separate runs; confirmed subagent sessions appear in the parent trajectory.
+The TUI reads full history from its connected server. Headless tool calls discover OpenCode's local service; custom servers can set `serverUrl` to a loopback URL on that server's host and `serverPasswordEnv` (default `OPENCODE_PASSWORD`). Set the named password variable in that server's launch environment. History before compaction is retained. Forks remain separate runs; confirmed subagent sessions appear in the parent trajectory.
 
 Live captures are limited to 32 MiB and 64 sessions in one family. For larger inputs, export the session and use `--session /path/to/export.json`.
 
 ## Development
+
+From the checkout's `opencode` directory (packaging also requires Node.js/npm):
 
 ```sh
 bun run typecheck
