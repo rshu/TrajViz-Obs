@@ -1,6 +1,6 @@
 {
   "name": "trajviz-obs-opencode",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "TrajViz session observability for OpenCode 2",
   "type": "module",
   "license": "MIT",
@@ -11,7 +11,7 @@
   },
   "exports": {
     ".": "./src/server.ts",
-    "./tui": "./src/tui.tsx",
+    "./tui": "./dist/tui.js",
     "./gui-experimental": "./dist/gui-experimental.cjs",
     "./rpc": "./src/rpc.ts"
   },
@@ -19,6 +19,7 @@
     "src/**/*.ts",
     "src/**/*.tsx",
     "dist/gui-experimental.cjs",
+    "dist/tui.js",
     "runtime/bridge/**/*.py",
     "README.md",
     "LICENSE"
@@ -29,7 +30,7 @@
     "prepack": "bun run build",
     "pretypecheck": "bun scripts/package.mjs",
     "pretest": "bun run build",
-    "build": "bun scripts/package.mjs && bun run --bun vite build"
+    "build": "bun scripts/package.mjs && bun run --bun vite build && bun run --bun vite build --config vite.tui.config.ts"
   },
   "dependencies": {
     "@opencode/plugin": "2.2.2",

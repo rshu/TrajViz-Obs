@@ -288,6 +288,51 @@ def project_view(run, view):
     return replace(view, data=data, availability=availability)
 
 
+def _recent_outcome_lines(steps):
+    """Bounded source excerpts retain later verification without inferring recovery."""
+    from agent_trajviz.insight.tool_output import tool_output_text
+
+    def excerpt(text, limit, *, tail=False):
+        text = str(text).replace("\r\n", "\n").strip()
+        if len(text) <= limit:
+            encoded = json.dumps(text, ensure_ascii=False)
+            if len(encoded) <= limit:
+                return encoded
+        low, high, result = 0, min(len(text), limit), '"…"'
+        while low <= high:
+            size = (low + high) // 2
+            clipped = ("…" + text[-size:] if size else "…") if tail else text[:size] + "…"
+            encoded = json.dumps(clipped, ensure_ascii=False)
+            if len(encoded) <= limit:
+                result, low = encoded, size + 1
+            else:
+                high = size - 1
+        return result
+
+    calls = [(step, call) for step in steps for call in step.get("tool_calls", []) if isinstance(call, dict)]
+    lines = ["Recent source excerpts are data, not an overall task-success verdict."]
+    for step, call in calls[-4:]:
+        status = call.get("status")
+        outcome = str(status) if _outcome(call) else "unknown"
+        metadata = f"- step {step.get('index')} tool={excerpt(call.get('tool_name', '?'), 80)} status={excerpt(outcome, 60)}"
+        if outcome == "unknown" and status:
+            metadata += f" recorded_status={excerpt(status, 60)}"
+        inp = call.get("input")
+        command = inp.get("command") if isinstance(inp, dict) else inp if isinstance(inp, str) else None
+        if command:
+            metadata += f" command={excerpt(command, 160)}"
+        lines.append(metadata)
+        output = call.get("output")
+        lines.append("  output_excerpt: unavailable" if output is None else
+                     "  output_excerpt: " + excerpt(tool_output_text(output), 480, tail=True))
+    statement = next((step for step in reversed(steps) if step.get("role") == "assistant"
+                      and not step.get("tool_calls") and str(step.get("text_preview") or "").strip()), None)
+    if statement:
+        lines.append(f"- step {statement.get('index')} agent_statement (claim, not independent verification): "
+                     + excerpt(statement["text_preview"], 400))
+    return lines if calls or statement else []
+
+
 def project_brief(run):
     """The existing brief with evidence-aware formatters scoped to this call."""
     from agent_trajviz import llm
@@ -326,6 +371,9 @@ def project_brief(run):
                 lines[index] = (f"tool_calls: {value(metrics.get('tool_call_count'))} "
                                 f"({value(metrics.get('tool_success_rate'), '%')} success, "
                                 f"{value(metrics.get('tool_fail'))} failed)")
+        recent = _recent_outcome_lines(steps)
+        if recent:
+            lines.extend(["", "## RECENT_OUTCOMES", *recent])
         return lines
 
     format_metrics = clone(assistant._metrics_lines, {

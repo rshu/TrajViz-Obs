@@ -133,7 +133,7 @@ export function metrics(snap: Snapshot): { label: string; value: string; detail?
   const cacheTotal = sumMeasured([snap.tokens.input, snap.tokens.cache_read, snap.tokens.cache_write])
   const cacheHealth = snap.health.find(row => /cache[\s_]*efficien/i.test(row.metric))
   return [
-    { label: 'Steps', value: compact(snap.counts.assistant_steps), detail: `${compact(snap.counts.prompts)} prompts` },
+    { label: 'Steps', value: compact(snap.counts.assistant_steps), detail: `${compact(snap.counts.prompts)} prompt${snap.counts.prompts === 1 ? '' : 's'}` },
     { label: 'Tools', value: compact(snap.tools.calls), detail: `${percent(snap.tools.success_rate)} success · ${failures(snap.tools.failed, snap.tools.unknown)}` },
     { label: 'Tokens', value: compact(snap.tokens.total), detail: `${compact(snap.tokens.output)} output` },
     { label: 'Context', value: percent(snap.context.current_pct), detail: `peak ${percent(snap.context.peak_pct)} of ${compact(snap.context.window)}` },

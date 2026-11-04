@@ -183,12 +183,13 @@ test('sync refuses a source from a different server location', async () => {
   expect(backend.sources.size).toBe(0)
 })
 
-test('snapshot cost comes from the exact pinned family and preserves a reported zero', async () => {
+test('snapshot preserves bridge-reported family cost and a reported zero', async () => {
   const { backend, source } = await fixture()
   const seen: string[] = []
+  const reported = [0, 3]
   backend.runtime.run = async <T>(argv: readonly string[]) => {
     seen.push(argv[argv.indexOf('--transcript') + 1]!)
-    return { empty: false, context: { window: 200000 } } as unknown as T
+    return { empty: false, context: { window: 200000 }, engine_usage: { context: { window: 200000 }, cost: { usd: reported.shift() } } } as unknown as T
   }
   await backend.sync(source)
   const zero = await backend.withSources(true, () => backend.snapshot('ses_root')) as Snapshot
@@ -200,7 +201,7 @@ test('snapshot cost comes from the exact pinned family and preserves a reported 
   expect(seen[0]).not.toBe(seen[1])
 })
 
-test('unknown child cost stays unknown instead of appearing free', async () => {
+test('snapshot never invents a cost absent from the bridge result', async () => {
   const { backend, source } = await fixture()
   backend.runtime.run = async <T>() => ({ empty: false, context: { window: 200000 } }) as unknown as T
   const child = { ...source, session: { id: 'ses_child' }, children: [] }
@@ -220,7 +221,7 @@ test('a pinned request keeps source metrics and cost consistent during another s
   backend.runtime.run = async <T>(argv: readonly string[]) => {
     const native = JSON.parse(await readFile(argv[argv.indexOf('--transcript') + 1]!, 'utf8'))
     loadedCost = native.session.cost
-    return { empty: false, context: { window: 200000 } } as unknown as T
+    return { empty: false, context: { window: 200000 }, engine_usage: { context: { window: 200000 }, cost: { usd: loadedCost } } } as unknown as T
   }
   await backend.sync(old)
   const pending = backend.withSources(true, async () => {

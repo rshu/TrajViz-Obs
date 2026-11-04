@@ -1,5 +1,14 @@
 # Changelog
 
+## OpenCode 0.5.1 / Claude Code 0.3.5 — 2026-11-04
+
+- Compile the OpenCode terminal entry so tarball installs load without a consumer JSX configuration.
+- Preserve recorded OpenCode family costs across saved JSON, ZIP, and portable imports.
+- Retain a Desktop result's selected session when opening its live pane.
+- Include recent tool outcomes in analysis briefs, and display `/obs brief` as readable text.
+- Use native OpenCode attribution identities and explain unsupported OTLP scorecards accurately.
+- Improve terminal chart contrast and clarify timing that excludes recorded subagent waits.
+
 ## OpenCode 0.5.0 — 2026-11-04
 
 - Add token, timing, context, tool-ranking, and agent-activity charts to the terminal and Desktop panes.

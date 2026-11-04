@@ -55,7 +55,7 @@ export const PANE_USAGE_TIMEOUT_MS = 500
 export type PaneEvent = RenderInput<'Pane'>
 
 /** Captured figures suffice; live Context reads can also include the breakdown. */
-export type PaneUsage = Pick<SessionUsage, 'context' | 'cost'>
+export type PaneUsage = Partial<Pick<SessionUsage, 'context' | 'cost'>>
 
 /** What the render hook hands `renderPane` beyond the state: the options (for a refresh) and the engine's usage. */
 export type PaneExtras = {
@@ -289,14 +289,14 @@ function contextBody({ els, e, snap, columns, usage }: Body): RenderElement {
   const now = c.current_occupancy === null ? 'now ?' : `now ${fmtPct(c.current_pct)} (${fmtCompact(c.current_occupancy)})`
   const peak = c.peak_occupancy === null ? 'peak ?' : `peak ${fmtPct(c.peak_pct)} (${fmtCompact(c.peak_occupancy)})`
   const drop = c.largest_drop === null ? '' : ` · largest drop ${fmtCompact(c.largest_drop)}`
-  const rows = usage?.context.breakdown?.categories ?? []
+  const rows = usage?.context?.breakdown?.categories ?? []
   const width = Math.max(0, ...rows.map(r => r.name.length))
   return (
     <Box flexDirection="column" gap={1}>
       <Text>{`${window} · ${now} · ${peak} · ${fmtInt(c.compaction_count)} compactions${drop}`}</Text>
       {ContextBlock({ els, surface: e.surface, snap, columns })}
       <Box flexDirection="column">
-        <Text weight="semibold">{`engine context${usage?.context.percent !== undefined ? ` · ${fmtPct(usage.context.percent)} of ${fmtCompact(usage.context.window)}` : ''}`}</Text>
+        <Text weight="semibold">{`engine context${usage?.context?.percent !== undefined ? ` · ${fmtPct(usage.context.percent)} of ${fmtCompact(usage.context.window)}` : ''}`}</Text>
         {rows.length ? (
           rows.map(r => <Text dimColor={r.kind !== 'used'}>{`${r.name.padEnd(width)}  ${fmtCompact(r.tokens)}`}</Text>)
         ) : (

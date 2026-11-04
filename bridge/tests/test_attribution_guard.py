@@ -216,6 +216,35 @@ def test_cli_and_browser_use_the_bundled_guard(seam, fixture_session, monkeypatc
     assert len(calls) == 2 and calls[-1]["expected_sha"] == run.sha256
 
 
+def test_opencode_browser_manual_and_autoload_share_native_default_identities(seam, tmp_path, monkeypatch):
+    calls = []
+
+    def unavailable(**kwargs):
+        calls.append(kwargs)
+        return native_attribution.AttributionResult(False, agent=kwargs["agent"], instance_id=kwargs["instance_id"],
+                                                    reason="Reference fixture not configured")
+
+    source = tmp_path / "opaque-cache-generation" / "source-hash.json"
+    source.parent.mkdir()
+    source.write_text(json.dumps({"source_format": "opencode_v2", "schema_version": 1,
+        "session": {"id": "ses_native"}, "messages": [{"id": "a", "type": "assistant",
+        "content": [{"type": "text", "text": "Done"}]}], "children": []}))
+    monkeypatch.setattr(native_attribution, "diagnose", unavailable)
+    page = dashboard_cmd.build_preloaded_insight(str(source))
+    callbacks = {getattr(entry.fn, "__name__", ""): entry.fn for entry in page.fns.values()}
+    run = compat.load_run(str(source))
+    raw = {**run.raw, "_source_path": str(source), "_source_sha256": run.sha256}
+    original = json.dumps(raw, sort_keys=True)
+    callbacks["on_diagnose"](raw, "", "", str(tmp_path))
+    automatic = callbacks["on_diagnose_autoload"](raw, str(tmp_path))
+    assert automatic[-2:] == ("", "")
+    assert all((call["agent"], call["instance_id"]) == ("opencode", "ses_native") for call in calls)
+    callbacks["on_diagnose"](raw, "explicit-agent", "explicit-case", str(tmp_path))
+    assert (calls[-1]["agent"], calls[-1]["instance_id"]) == ("explicit-agent", "explicit-case")
+    assert all(call["expected_sha"] == run.sha256 and call["source_path"] == str(source) for call in calls)
+    assert json.dumps(raw, sort_keys=True) == original
+
+
 def test_bundled_opencode2_family_retains_read_shell_and_child_evidence(seam, tmp_path):
     compat.install_attribution_guard()
     from agent_trajviz.awe.native import project_native

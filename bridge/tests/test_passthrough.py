@@ -188,6 +188,25 @@ def test_native_project_path_gets_reference_guidance_without_capability_blame(fi
     assert source.read_bytes() == original
 
 
+def test_native_opencode_attribution_uses_source_identity_instead_of_cache_names(tmp_path, run_cli):
+    source = tmp_path / "66877-207d2c40-5459-45bb-ad31-7abaf34d2e08" / "source-content-hash.json"
+    source.parent.mkdir()
+    source.write_text(json.dumps({"source_format": "opencode_v2", "schema_version": 1,
+        "session": {"id": "ses_native", "model": {"providerID": "deepseek", "id": "native-model"}},
+        "messages": [{"id": "a", "type": "assistant", "content": [{"type": "text", "text": "Done"}]}],
+        "children": []}))
+    before = source.read_bytes()
+    code, out = run_cli(["attribution", "--transcript", str(source)])
+    assert code == 0 and out["available"] is False
+    assert out["agent"] == "opencode" and out["instance_id"] == "ses_native"
+    assert "--agent opencode" in out["reason"] and "--instance" in out["reason"]
+    assert "Native session id: ses_native" in out["reason"]
+    assert not out["faults"] and not out["scorecard"] and out["primary"] is None
+    explicit = attribution(load_run(str(source)), reference_root=None, agent="opencode_gpt", instance_id="reference-task")
+    assert explicit["agent"] == "opencode_gpt" and explicit["instance_id"] == "reference-task"
+    assert source.read_bytes() == before
+
+
 @pytest.mark.parametrize("agent", ["-invalid", "../outside", "", "agent/child"])
 def test_explicit_invalid_attribution_agent_keeps_native_validation(agent, fixture_session, tmp_path):
     source = tmp_path / "-native-project" / "session.jsonl"

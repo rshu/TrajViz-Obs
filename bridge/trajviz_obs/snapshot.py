@@ -22,6 +22,7 @@ from agent_trajviz import Trajectory
 
 from .cli import register
 from .compat import TRAJVIZ_VERSION, EmptySession, input_path, load_run, project_view, window_info
+from .opencode import _SPAWN_TOOLS, NATIVE_KEY, _number
 from .sessions import _positive_int, capture_session_id
 from .sidecars import AgentMeta, TranscriptFacts, agent_meta, scan_transcript
 from .text import render_overview
@@ -75,6 +76,35 @@ def downsample(values: list[float | None], n: int) -> list[float | None]:
         present = [v for v in values[start:start + size] if v is not None]
         out.append(max(present) if present else None)
     return out
+
+
+def _native_cost(run: Trajectory) -> float | None:
+    """Reported OpenCode cost for the exact confirmed family, never estimated."""
+    if not isinstance(run.raw.get(NATIVE_KEY), dict):
+        return None
+    manifest = run.raw.get("session_manifest")
+    if not isinstance(manifest, list) or not manifest:
+        return None
+    total = 0.0
+    for member in manifest:
+        info = member.get("info") if isinstance(member, dict) else None
+        value = info.get("cost") if isinstance(info, dict) else None
+        if not _number(value) or value < 0:
+            return None
+        if member.get("depth") and info.get("parentID", member.get("parent_session_id")) != member.get("parent_session_id"):
+            return None
+        total += value
+        if not math.isfinite(total):
+            return None
+    known = {member["info"].get("id") for member in manifest}
+    for step in run.steps:
+        for call in step.get("tool_calls", []):
+            metadata = call.get("metadata")
+            child = metadata.get("sessionID") if isinstance(metadata, dict) else None
+            if (str(call.get("tool_name", "")).lower() in _SPAWN_TOOLS and isinstance(child, str) and child
+                    and child != step.get("session_id") and child not in known):
+                return None
+    return total
 
 
 def _clip(text: str, limit: int) -> str:
@@ -386,6 +416,8 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
         "artifacts": _artifacts(artifacts),
         "text": "",
     }
+    if (cost := _native_cost(run)) is not None:
+        snap["engine_usage"] = {"cost": {"usd": cost}}
     if snap["availability"].get("context_pressure", {}).get("status") == "unavailable":
         for key in ("current_occupancy", "current_pct", "peak_occupancy", "peak_pct", "compaction_count", "largest_drop"):
             snap["context"][key] = None

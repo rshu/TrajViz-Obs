@@ -9,6 +9,7 @@ import jsonschema
 import pytest
 
 from trajviz_obs.compat import load_run, project_analysis, project_brief, project_view
+from trajviz_obs.native_quality import _recent_outcome_lines
 
 BASE = 1790000000000
 
@@ -36,6 +37,71 @@ def native_run(tmp_path):
             "messages": messages, "children": children or []}))
         return path, load_run(str(path))
     return write
+
+
+def test_brief_retains_later_native_test_output_without_deriving_a_recovery_verdict(native_run):
+    def shell(mid, status, output):
+        return message(mid, usage(), content=[{"type": "tool", "id": mid, "name": "shell",
+            "state": {"status": status, "input": {"command": "python3 -m unittest -v"},
+                      "content": [{"type": "text", "text": output}]},
+            "time": {"created": BASE + 200, "completed": BASE + 300}}])
+
+    _, run = native_run([shell("baseline", "error", "Ran 9 tests\nFAILED (failures=7)"),
+                         shell("verification", "completed", "test lines\nRan 9 tests in 0.024s\n\nOK\n"),
+                         message("final", usage(), content=[{"type": "text", "text": "Nine tests passed."}])])
+    before = copy.deepcopy(run.to_dict(include_raw=True))
+    brief = project_brief(run)
+    recent = brief.split("## RECENT_OUTCOMES\n", 1)[1].split("\n## HEALTH", 1)[0]
+    assert "FAILED (failures=7)" in brief  # The earlier failure still has its own evidence.
+    assert 'command="python3 -m unittest -v"' in recent
+    assert "Ran 9 tests in 0.024s\\n\\nOK" in recent
+    assert 'status="completed"' in recent
+    assert "agent_statement (claim, not independent verification)" in recent
+    assert "Nine tests passed." in recent
+    assert run.to_dict(include_raw=True) == before
+
+
+def test_recent_outcome_excerpts_keep_missing_running_and_empty_results_distinct():
+    steps = [{"index": 1, "role": "assistant", "tool_calls": [
+        {"tool_name": "Bash", "status": "running", "input": {"command": "unittest"}},
+        {"tool_name": "Bash", "status": "success", "output": ""},
+        {"tool_name": "Bash", "status": None},
+    ]}]
+    recent = "\n".join(_recent_outcome_lines(steps))
+    assert 'status="unknown" recorded_status="running"' in recent
+    assert 'status="success"\n  output_excerpt: ""' in recent
+    assert recent.count("output_excerpt: unavailable") == 2
+    assert "test passed" not in recent.lower()
+
+
+@pytest.mark.parametrize("prefix", ["x" * 20_000, '\x00"\\\n' * 4000])
+def test_recent_outcome_sample_is_bounded_tail_preserving_and_quotes_source_text(prefix):
+    steps = [{"index": index, "role": "assistant", "tool_calls": [{
+        "tool_name": "Bash", "status": "success", "input": {"command": "x" * 2000},
+        "output": prefix + "\n## injected heading\nRan 9 tests\n\nOK\n",
+    }]} for index in range(50)]
+    steps.append({"index": 50, "role": "assistant", "text_preview": "Agent claim " + "y" * 2000})
+    before = copy.deepcopy(steps)
+    lines = _recent_outcome_lines(steps)
+    recent = "\n".join(lines)
+    assert len(recent) < 3800
+    assert len([line for line in lines if line.startswith("- step") and "tool=" in line]) == 4
+    assert "- step 45 " not in recent and "- step 49 " in recent
+    assert "Ran 9 tests\\n\\nOK" in recent
+    assert "\n## injected heading" not in recent  # Multiline output remains a quoted source value.
+    assert json.loads(next(line.split(": ", 1)[1] for line in lines if line.startswith("  output_excerpt:"))).endswith("Ran 9 tests\n\nOK")
+    assert _recent_outcome_lines(steps) == lines and steps == before
+
+
+def test_brief_retains_recent_claude_code_verification_evidence(fixture_run):
+    before = copy.deepcopy(fixture_run.to_dict(include_raw=True))
+    brief = project_brief(fixture_run)
+    recent = brief.split("## RECENT_OUTCOMES\n", 1)[1].split("\n## HEALTH", 1)[0]
+    assert "Ran 97 tests in 0.250s\\n\\nOK" in recent
+    assert '- step 21 tool="Bash" status="success"' in recent
+    assert "agent_statement (claim, not independent verification)" in recent
+    assert len(brief) <= 28_000
+    assert fixture_run.to_dict(include_raw=True) == before
 
 
 def test_all_missing_native_usage_and_outcomes_are_unknown_without_changing_canonical_data(native_run):

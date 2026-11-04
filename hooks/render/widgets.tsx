@@ -100,7 +100,7 @@ function kpis(snap: Snapshot, usage?: Snapshot['engine_usage']): Kpi[] {
     { label: 'Wall clock', value: fmtSecs(timing.wall_clock_s), sub: `avg ${fmtSecs(timing.avg_step_s)} · p95 ${fmtSecs(timing.p95_step_s)}` },
   ]
   if (usage?.cost) out.push({ label: 'Cost', value: `$${usage.cost.usd.toFixed(2)}` })
-  const live = usage?.context.percent
+  const live = usage?.context?.percent
   const fill = live !== undefined ? fmtPct(live) : context.window === null ? '?' : fmtPct(context.current_pct)
   const sub = context.window === null ? (context.window_note ?? 'window unknown') : `peak ${fmtPct(context.peak_pct)} of ${fmtCompact(context.window)}`
   out.push({ label: 'Context', value: fill, sub })

@@ -124,6 +124,7 @@ export function setup(ctx: GuiContext): () => void {
     const livePane = () => {
       const current = job(), session = active()
       if (!current || !session || current.origin.key !== session.key) { notice('Return to the result’s session to open its live pane.'); return }
+      if (current.target && !controller.restoreResult(origin(session), current.id)) { notice('This result is no longer available. Run its command again.'); return }
       props.close(); openPane(session); void controller.refresh(origin(session))
     }
     return <div class="obs-ui obs-result">

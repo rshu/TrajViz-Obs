@@ -225,7 +225,7 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
     const extras = valueOptions(flags, sub === 'attribution' ? ['reference-root', 'agent', 'instance'] : [], 'Usage: /obs attribution [--reference-root DIR] [--agent A] [--instance I]')
     if (typeof extras === 'string') return { text: extras }
     const source = await session(), doc = await run<Doc>([sub, ...source.argv, ...extras])
-    return { text: empty(doc) ? EMPTY : sub === 'attribution' ? attributionText(doc) : string(doc.text ?? json(doc)), data: doc, sessionID: source.sessionID }
+    return { text: empty(doc) ? EMPTY : sub === 'attribution' ? attributionText(doc) : typeof doc.brief === 'string' ? doc.brief : string(doc.text ?? json(doc)), data: doc, sessionID: source.sessionID }
   }
   if (sub === 'setup') {
     const extras = parseExtras(flags.extras), source = flags.source

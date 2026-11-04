@@ -86,6 +86,34 @@ describe('Desktop command coordination', () => {
     } finally { ui.dispose() }
   })
 
+  test('an older result restores its own captured session before reopening the live pane', async () => {
+    const h = connection(), other = connection('other-server'), { ui } = controller()
+    h.rpc.resolve.mockResolvedValueOnce({ sessionID: 'capture_A', path: '/server/capture.json' })
+    h.rpc.run.mockResolvedValueOnce({ text: 'Captured A', sessionID: 'capture_A', snapshot: h.snapshot })
+    try {
+      const first = ui.start(h.origin, 'overview --session /server/capture.json --session-id A')
+      await first.done
+      h.rpc.resolve.mockResolvedValueOnce({ sessionID: 'capture_B', path: '/server/capture.json' })
+      h.rpc.run.mockResolvedValueOnce({ text: 'Captured B', sessionID: 'capture_B', snapshot: h.snapshot })
+      await ui.start(h.origin, 'overview --session /server/capture.json --session-id B').done
+      expect(ui.target(h.origin).id).toBe('capture_B')
+      expect(ui.restoreResult(other.origin, first.id)).toBe(false)
+      expect(ui.target(h.origin).id).toBe('capture_B')
+      expect(ui.restoreResult(h.origin, first.id)).toBe(true)
+      expect(ui.target(h.origin)).toEqual({ id: 'capture_A', selector: '/server/capture.json', captureSessionID: 'A' })
+      expect(ui.target(h.origin)).not.toBe(ui.jobs.get(first.id)?.target)
+      await ui.refresh(h.origin)
+      expect(h.rpc.snapshot.mock.calls.at(-1)?.[0]).toEqual({ sessionID: h.origin.id, selector: '/server/capture.json', captureSessionID: 'A', useSynced: true })
+      expect(ui.jobs.get(first.id)?.text).toBe('Captured A')
+      const help = ui.start(h.origin, 'help')
+      expect(ui.restoreResult(h.origin, help.id)).toBe(false)
+      await help.done
+      expect(ui.restoreResult(h.origin, help.id)).toBe(false)
+      expect(ui.target(h.origin).id).toBe('capture_A')
+      expect(ui.restoreResult(h.origin, 'expired-result')).toBe(false)
+    } finally { ui.dispose() }
+  })
+
   test('a late refresh cannot overwrite a newer explicit overview', async () => {
     const h = connection(), { ui } = controller()
     let started!: () => void, finish!: (snapshot: typeof SNAPSHOT) => void

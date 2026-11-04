@@ -198,7 +198,7 @@ export type Snapshot = {
   generated_at: string
   duration_ms: number
   /** Engine usage captured with this snapshot, never the usage of a later turn. */
-  engine_usage?: { context: { window: number; percent?: number }; cost?: { usd: number } }
+  engine_usage?: { context?: { window: number; percent?: number }; cost?: { usd: number } }
   transcript: TranscriptInfo
   trajviz: TrajvizInfo
   title: string | null

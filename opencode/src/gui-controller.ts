@@ -45,6 +45,13 @@ export class GuiController {
   snapshot(origin: GuiOrigin) { return this.view(origin).snapshots[this.target(origin).id] }
   error(origin: GuiOrigin) { return this.view(origin).errors[this.target(origin).id] }
   selectTab(origin: GuiOrigin, tab: number) { this.view(origin).tab = Math.max(0, Math.min(TABS.length - 1, tab)); this.hooks.changed() }
+  restoreResult(origin: GuiOrigin, id: string): boolean {
+    const job = this.jobs.get(id)
+    if (this.closed || !job || job.pending || !job.target || job.origin.key !== origin.key) return false
+    this.view(origin).selected = { ...job.target }
+    this.hooks.changed()
+    return true
+  }
   follow(origin: GuiOrigin, args: string): string {
     const parsed = parseArgs(args)
     if (SESSIONLESS.has(parsed.sub) || ['watch', 'statusline', 'cancel'].includes(parsed.sub) || parsed.flags.session !== undefined || parsed.sub === 'analyze' && analyzeSelection(args).session !== undefined) return args

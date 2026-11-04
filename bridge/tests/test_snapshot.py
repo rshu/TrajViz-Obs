@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import agent_trajviz as tv
 import pytest
 from conftest import make_session
 
+from trajviz_obs.bundle_cmd import bundle_session
 from trajviz_obs.compat import load_run
 from trajviz_obs.sidecars import agent_meta, scan_transcript
 from trajviz_obs.snapshot import build_snapshot, downsample, empty_snapshot
@@ -24,6 +26,90 @@ CONTRACT_KEYS = {
 def _snapshot(path: str, **kwargs) -> dict:
     return build_snapshot(load_run(path, **kwargs), transcript_path=path, facts=scan_transcript(path),
                           agents_meta=agent_meta(path), artifacts=None)
+
+
+@pytest.fixture
+def native_cost_source(tmp_path):
+    def session(sid, cost, content):
+        return {"source_format": "opencode_v2", "schema_version": 1, "directory": "/controlled",
+                "session": {"id": sid, "cost": cost, "time": {"created": 1790000000000, "updated": 1790000001000}},
+                "messages": [{"id": "a", "type": "assistant", "content": content,
+                              "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+                              "time": {"created": 1790000000100, "completed": 1790000000900}}], "children": []}
+
+    child = session("ses_child", .75, [{"type": "text", "text": "Checked"}])
+    child["session"]["parentID"] = "ses_root"
+    raw = session("ses_root", .25, [{"type": "tool", "id": "spawn", "name": "subagent",
+                  "state": {"status": "completed", "input": {"prompt": "Check"}, "metadata": {"sessionID": "ses_child"}}}])
+    raw["children"] = [child]
+    path = tmp_path / "native.json"
+
+    def write(value=None):
+        path.write_text(json.dumps(raw if value is None else value))
+        return path
+
+    return raw, write
+
+
+def test_reported_native_family_cost_survives_json_zip_and_portable_reload(native_cost_source, tmp_path):
+    raw, write = native_cost_source
+    source = write()
+    before = source.read_bytes()
+    zipped = bundle_session(str(source), tmp_path / "session.zip")["path"]
+    portable = tmp_path / "trajectory.json"
+    portable.write_text(json.dumps(load_run(str(source)).to_dict(include_raw=True)))
+    for path in (source, zipped, portable):
+        snapshot = _snapshot(str(path))
+        assert snapshot["engine_usage"]["cost"]["usd"] == 1
+        assert "context" not in snapshot["engine_usage"]
+    assert source.read_bytes() == before and json.loads(before) == raw
+
+
+def test_native_cost_preserves_measured_zero_and_never_fills_a_missing_child(native_cost_source):
+    raw, write = native_cost_source
+    raw["session"]["cost"] = raw["children"][0]["session"]["cost"] = 0
+    assert _snapshot(str(write()))["engine_usage"]["cost"]["usd"] == 0
+    raw["children"][0]["session"].pop("cost")
+    assert "engine_usage" not in _snapshot(str(write()))
+    raw["children"] = []
+    assert "engine_usage" not in _snapshot(str(write()))
+
+
+def test_reported_native_cost_does_not_fabricate_context_usage(native_cost_source):
+    raw, write = native_cost_source
+    raw["messages"][0].pop("tokens")
+    raw["children"][0]["messages"][0].pop("tokens")
+    snapshot = _snapshot(str(write()))
+    assert snapshot["engine_usage"] == {"cost": {"usd": 1}}
+    assert snapshot["context"]["current_pct"] is None
+
+
+@pytest.mark.parametrize("value", [None, "0.75", -.1, True, float("nan"), float("inf"), 10 ** 1000])
+@pytest.mark.parametrize("member", ["root", "child"])
+def test_invalid_native_cost_is_unknown_for_the_entire_family(native_cost_source, value, member):
+    raw, write = native_cost_source
+    target = raw if member == "root" else raw["children"][0]
+    target["session"]["cost"] = value
+    assert "engine_usage" not in _snapshot(str(write()))
+
+
+def test_native_cost_rejects_overflow_and_conflicting_parent_identity(native_cost_source):
+    raw, write = native_cost_source
+    raw["session"]["cost"] = raw["children"][0]["session"]["cost"] = 1e308
+    assert "engine_usage" not in _snapshot(str(write()))
+    raw["session"]["cost"] = raw["children"][0]["session"]["cost"] = 1
+    raw["children"][0]["session"]["parentID"] = "ses_unrelated"
+    assert "engine_usage" not in _snapshot(str(write()))
+
+
+def test_native_cost_counts_only_confirmed_sessions_and_excludes_forks(native_cost_source):
+    raw, write = native_cost_source
+    unrelated = copy.deepcopy(raw["children"][0])
+    unrelated["session"].update(id="ses_unrelated", cost=999)
+    raw["children"].append(unrelated)
+    assert _snapshot(str(write()))["engine_usage"]["cost"]["usd"] == 1
+    raw["children"][0]["session"]["fork"] = {"sessionID": "ses_root"}
+    assert "engine_usage" not in _snapshot(str(write()))
 
 
 def test_snapshot_keys_and_bounds(big_session):

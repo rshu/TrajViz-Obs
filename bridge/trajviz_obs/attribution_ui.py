@@ -9,7 +9,7 @@ from __future__ import annotations
 import functools
 import inspect
 
-from .compat import attribution_identity_message, attribution_message
+from .compat import attribution_defaults, attribution_identity_message, attribution_message
 
 _STATUS = {"on_awe_apply": 3, "on_awe_restore": -2, "on_awe_reset": -2}
 _WORKER_NOTE = ("For OpenCode subagent diagnoses, use `/obs attribution` for session-accurate child evidence. "
@@ -18,6 +18,7 @@ _GRAPH_LABEL = ("aria-label='Numbered AWE provenance graph'", "aria-label='Numbe
 
 
 def _diagnosis_callback(original):
+    from agent_trajviz.insight.loaders import detect_format
     from agent_trajviz.insight.rendering import build_attribution_html
 
     signature = inspect.signature(original)
@@ -28,8 +29,23 @@ def _diagnosis_callback(original):
 
     @functools.wraps(original)
     def present(*args, **kwargs):
-        result = original(*args, **kwargs)
-        override = signature.bind(*args, **kwargs).arguments.get("agent_override", "")
+        bound = signature.bind(*args, **kwargs)
+        override = bound.arguments.get("agent_override", "")
+        raw = bound.arguments.get("overview_raw")
+        if isinstance(raw, dict) and detect_format(raw) == "opencode":
+            agent, instance = attribution_defaults("opencode", raw, str(override or "").strip() or None,
+                str(bound.arguments.get("inst_override") or "").strip() or None)
+            if automatic:
+                # Autoload closes over the same native manual callback. Keep
+                # its output shape and reset fields while supplying defaults.
+                diagnose = inspect.getclosurevars(original).nonlocals["on_diagnose"]
+                html, status = diagnose(raw, agent or "", instance or "", bound.arguments.get("root_override", ""))
+                result = html, status, "", ""
+            else:
+                bound.arguments.update(agent_override=agent or "", inst_override=instance or "")
+                result = original(*bound.args, **bound.kwargs)
+        else:
+            result = original(*args, **kwargs)
         # Only the generated refusal message changes. Explicit invalid
         # overrides, evidence, source identities and verdicts stay native.
         if (automatic or not str(override or "").strip()) and result[0] == refused:

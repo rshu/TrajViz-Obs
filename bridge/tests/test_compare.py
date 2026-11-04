@@ -13,7 +13,7 @@ from conftest import make_session
 from jsonschema import Draft202012Validator
 
 from trajviz_obs.compare_cmd import compare_sessions, label_views_payload, scorecard
-from trajviz_obs.compat import labeler_chat
+from trajviz_obs.compat import labeler_chat, load_run
 from trajviz_obs.errors import BridgeError
 
 
@@ -52,6 +52,44 @@ def test_compare_orientation(fixture_run, synthetic_session, tmp_artifacts):
 
 def test_scorecard_current_is_first_row(fixture_run, synthetic_session, tmp_artifacts):
     assert scorecard(fixture_run, [synthetic_session], fuzzy=False, labels=None, no_self=False, out_dir=tmp_artifacts)["rows"][0]["path"].endswith("11477.jsonl")
+
+
+@pytest.mark.parametrize("mode", ["no-self-captures", "current-and-capture", "mixed-imports"])
+def test_scorecard_operation_capture_exports_keep_the_unsupported_alignment_guidance(
+        captured_sessions, fixture_run, synthetic_session, tmp_path, tmp_artifacts, mode):
+    portable = []
+    for sid in ("A", "B"):
+        run = load_run(str(captured_sessions), session_id=sid)
+        path = tmp_path / f"portable-{sid}.json"
+        path.write_text(json.dumps(run.to_dict(include_raw=True)))
+        assert load_run(str(path)).raw["_otel"]["mapping"] == "operation"
+        portable.append(str(path))
+    before = [Path(path).read_bytes() for path in portable]
+    others = portable if mode == "no-self-captures" else [portable[0]] if mode == "current-and-capture" else [synthetic_session, portable[1]]
+    with pytest.raises(BridgeError, match="Transcript alignment is unavailable for operation-based OTLP captures") as caught:
+        scorecard(fixture_run, others, fuzzy=False, labels=None,
+                  no_self=mode != "current-and-capture", out_dir=tmp_artifacts)
+    assert caught.value.code == "compare_failed"
+    assert "observed token, timing and tool views" in str(caught.value)
+    assert "None of the trajectories" not in str(caught.value)
+    assert not (tmp_artifacts / "compare" / "scorecard.json").exists()
+    assert [Path(path).read_bytes() for path in portable] == before
+
+
+def test_scorecard_keeps_two_valid_transcripts_and_an_unsupported_capture_error_row(
+        captured_sessions, fixture_run, synthetic_session, tmp_path, tmp_artifacts):
+    run = load_run(str(captured_sessions), session_id="A")
+    portable = tmp_path / "portable.json"
+    portable.write_text(json.dumps(run.to_dict(include_raw=True)))
+    before = portable.read_bytes()
+    result = scorecard(fixture_run, [synthetic_session, str(portable)], fuzzy=False, labels=None,
+                       no_self=False, out_dir=tmp_artifacts)
+    assert len(result["rows"]) == 3
+    assert not any(row.get("error") for row in result["rows"][:2])
+    assert "operation-based OTLP captures" in result["rows"][2]["error"]
+    saved = json.loads(Path(result["path"]).read_text())["views"]
+    assert len(saved["run_behavior"]["data"]["similarity"]) == 2
+    assert portable.read_bytes() == before
 
 
 def test_label_views_payload(sidecar_path): assert "classification_rate" in label_views_payload(sidecar_path, None)["summary"]

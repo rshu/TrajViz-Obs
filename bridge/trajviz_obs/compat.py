@@ -435,6 +435,19 @@ def attribution_identity_message(reason: str | None, *, browser: bool = False) -
     return reason
 
 
+def attribution_defaults(fmt: str | None, raw: dict, agent: str | None, instance_id: str | None) -> tuple[str | None, str | None]:
+    """Use native OpenCode identities rather than immutable cache folder names."""
+    if fmt == "opencode":
+        if agent is None:
+            agent = "opencode"
+        if instance_id is None:
+            metadata = raw.get("metadata")
+            native_id = metadata.get("session_id") if isinstance(metadata, dict) else None
+            if isinstance(native_id, str) and native_id.strip():
+                instance_id = native_id
+    return agent, instance_id
+
+
 def attribution_message(text: str | None) -> str | None:
     """Use public attribution terminology without rewriting paths or upstream API identifiers."""
     if text is None:

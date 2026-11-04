@@ -26,7 +26,14 @@ from agent_trajviz.collect import __main__ as collect_main
 from agent_trajviz.converge import cli as converge_cli
 
 from .cli import register
-from .compat import EmptySession, attribution_identity_message, install_attribution_guard, load_plugins, project_brief
+from .compat import (
+    EmptySession,
+    attribution_defaults,
+    attribution_identity_message,
+    install_attribution_guard,
+    load_plugins,
+    project_brief,
+)
 from .views_cmd import _load, _session_args
 
 #: Most bytes of a pass-through's stdout or stderr returned inline (UTF-8).
@@ -157,8 +164,15 @@ def run_collect(argv: list[str]) -> dict:
 def attribution(run: Trajectory, *, reference_root: str | None, agent: str | None, instance_id: str | None) -> dict:
     """``agent_trajviz.attribution.diagnose`` of *run*, as TrajViz returns it."""
     install_attribution_guard()
+    inferred_agent = agent is None
+    agent, instance_id = attribution_defaults(run.format, run.raw, agent, instance_id)
     result = tv_attribution.diagnose(run, agent=agent, instance_id=instance_id, reference_root=reference_root)
-    if agent is None and result.get("available") is False:
+    if inferred_agent and result.get("available") is False:
+        if run.format == "opencode" and (str(result.get("reason") or "").startswith("no gold reference") or instance_id is None):
+            return {**result, "reason": ("No matching attribution reference is available for this OpenCode run. "
+                    "Supply --reference-root DIR, --agent opencode, and --instance for its matching reference task. "
+                    + (f"Native session id: {instance_id}." if instance_id is not None else
+                       "This source has no native session id to infer an instance."))}
         # Native Claude project folders begin with a hyphen. They are not
         # benchmark agent identities, even though the public API infers one
         # from any source's parent directory. Keep the refusal and all source

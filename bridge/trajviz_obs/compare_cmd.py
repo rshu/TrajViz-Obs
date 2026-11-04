@@ -210,6 +210,12 @@ def compare_sessions(current: Trajectory, other_path: str, *, anchor_patch: str 
 
 # -- scorecard -------------------------------------------------------------------
 
+def _require_scorecard_transcript(run: Trajectory) -> None:
+    if run.raw.get("_otel", {}).get("mapping") == "operation":
+        raise BridgeError("compare_failed", "Transcript alignment is unavailable for operation-based OTLP captures. "
+                          "Inspect their observed token, timing and tool views instead.")
+
+
 def _scorecard_text(views: dict[str, tv.View]) -> str:
     rows, behavior = views["run_scorecard"].data, views["run_behavior"].data
     columns = [*_SCORE_COLUMNS, *((("error", "error"),) if any(r.get("error") for r in rows) else ())]
@@ -244,9 +250,8 @@ def scorecard(current: Trajectory | None, others: list[str], *, fuzzy: bool, lab
     is a row with its ``error``; fewer than two runs raise ``BridgeError("compare_failed")``.
     """
     load_plugins()  # TrajViz loads the others itself (and with --no-self nothing went through load_run)
-    if current is not None and not no_self and current.raw.get("_otel", {}).get("mapping") == "operation":
-        raise BridgeError("compare_failed", "Transcript alignment is unavailable for operation-based OTLP captures. "
-                          "Inspect their observed token, timing and tool views instead.")
+    if current is not None and not no_self:
+        _require_scorecard_transcript(current)
     sources: list[Trajectory | str] = [] if no_self else [current]
     destination = out_dir / "compare" / "scorecard.json"
     if current is not None:
@@ -261,6 +266,11 @@ def scorecard(current: Trajectory | None, others: list[str], *, fuzzy: bool, lab
         else:
             protect_run_outputs(loaded, [destination])
             sources.append(loaded)
+    operation_runs = [run for run in sources if isinstance(run, Trajectory)
+                      and run.raw.get("_otel", {}).get("mapping") == "operation"]
+    usable = sum(isinstance(run, Trajectory) for run in sources) - len(operation_runs)
+    if operation_runs and usable < 2:
+        _require_scorecard_transcript(operation_runs[0])
     try:
         result = tv.compare_runs(sources, labels=labels, fuzzy_commands=fuzzy)
     except ValueError as exc:

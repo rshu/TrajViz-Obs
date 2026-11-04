@@ -73,6 +73,16 @@ describe('OpenCode obs command contract', () => {
     expect(result.text).toContain('[]')
   })
 
+  test('brief displays its readable text while retaining the full diagnostic document', async () => {
+    const doc = { brief: '# Trajectory analysis brief\n\nsteps: 14\ncost: unknown', metadata: { source: 'native' } }
+    const result = await fixture({ brief: doc }).execute('brief')
+    expect(result.text).toBe(doc.brief)
+    expect(result.data).toEqual(doc)
+    expect(result.sessionID).toBe('ses_current')
+    expect((await fixture({ brief: { text: 'Legacy readable brief' } }).execute('brief')).text).toBe('Legacy readable brief')
+    expect((await fixture({ brief: { empty: true } }).execute('brief')).text).toContain('Nothing to analyze yet')
+  })
+
   test('diagnostic shortcuts and full views preserve paging, options and selection', async () => {
     for (const [sub, view] of Object.entries({ issues: 'issues', health: 'health', patterns: 'hotspots', agents: 'agents', context: 'context_pressure', timeline: 'workflow' })) {
       const { execute, calls } = fixture({ view: { view: { id: view, title: 'View title' }, path: '/tmp/view.json', rows_total: 3, inline: { table: 'Full evidence' } } })

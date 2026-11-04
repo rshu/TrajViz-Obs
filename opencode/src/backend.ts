@@ -202,19 +202,7 @@ export class Backend {
   }
   async snapshot(sessionID: string, signal?: AbortSignal, selector?: string, captureSessionID?: string): Promise<Snapshot | EmptySnapshot> {
     const source = await this.session(sessionID, selector, signal, captureSessionID)
-    const snapshot = await this.runtime.run<Snapshot | EmptySnapshot>(['snapshot', ...source.argv], signal)
-    if (!snapshot.empty) {
-      const native = source.native
-      const costs: number[] = []
-      const cost = (item: NativeSource): boolean => {
-        const value = item.session.cost
-        if (typeof value !== 'number' || !Number.isFinite(value)) return false
-        costs.push(value)
-        return item.children.every(cost)
-      }
-      if (native && cost(native)) snapshot.engine_usage = { context: { window: snapshot.context.window ?? 0 }, cost: { usd: costs.reduce((a,b) => a+b, 0) } }
-    }
-    return snapshot
+    return this.runtime.run<Snapshot | EmptySnapshot>(['snapshot', ...source.argv], signal)
   }
   async serve(kind: 'dashboard' | 'converge', argv: string[], signal?: AbortSignal, ownerID?: string): Promise<{ url: string; preloaded?: boolean }> {
     const at = argv.indexOf('--transcript'), labelsAt = argv.indexOf('--labels')

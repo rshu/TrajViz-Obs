@@ -70,7 +70,7 @@ function Tokens(props: { model: Model }) {
 
 function Durations(props: { model: Model }) {
   const bins = () => props.model.durations.bins, maximum = () => Math.max(0.001, props.model.durations.max ?? 0)
-  return <Frame title="Step duration" axis={props.model.axis} description="Seconds per recorded step; each bin keeps its slowest observed sample. △ marks a bin containing source-reported outliers; × marks missing timing." legend={[{ label: 'Duration', color: colors.fresh }, { label: '△ Outlier in bin', color: colors.cache_write }, { label: '× Unknown', color: colors.unknown }]} empty={props.model.durations.max === null ? 'Step timing was not recorded.' : undefined}>{g => <>
+  return <Frame title="Step time" axis={props.model.axis} description="Engine step timing excludes recorded subagent waits when available; Timeline shows full recorded step duration. Each bin keeps its slowest observed sample. △ marks a bin containing source-reported outliers; × marks missing timing." legend={[{ label: 'Step time', color: colors.fresh }, { label: '△ Outlier in bin', color: colors.cache_write }, { label: '× Unknown', color: colors.unknown }]} empty={props.model.durations.max === null ? 'Step timing was not recorded.' : undefined}>{g => <>
     <Axes g={g} axis={props.model.axis} maximum={maximum()} unit="seconds" />
     <For each={bins()}>{bin => {
       const x = () => g.x((bin.start + bin.end) / 2), width = () => barWidth(g, bins().length)

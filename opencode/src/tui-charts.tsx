@@ -9,15 +9,50 @@ import type { Snapshot } from './types.js'
 type Color = string | RGBA
 export type TerminalPalette = { base: Color; muted: Color; enabled: boolean; ascii: boolean; tone(tone?: Tone): Color; category(index: number): Color }
 
+function channels(color: Color | undefined): readonly number[] | undefined {
+  if (typeof color !== 'string') return color?.toInts()
+  const hex = color.replace(/^#/, '')
+  if (!/^(?:[\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i.test(hex)) return
+  const full = hex.length < 5 ? [...hex].map(value => value + value).join('') : hex
+  return [0, 2, 4, 6].map(offset => offset < full.length ? Number.parseInt(full.slice(offset, offset + 2), 16) : 255)
+}
+
+function luminance(rgb: readonly number[]): number {
+  const linear = rgb.slice(0, 3).map(value => { const channel = value / 255; return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4 })
+  return linear[0]! * 0.2126 + linear[1]! * 0.7152 + linear[2]! * 0.0722
+}
+
 export function terminalPalette(theme: ResolvedTheme): TerminalPalette {
   const ascii = process.env.TERM === 'dumb', enabled = process.env.NO_COLOR === undefined && !ascii
+  const background = channels(theme.background?.base)
+  const readable = (preferred: Color, scale?: Readonly<Record<number, Color>>, minimum = 4.5): Color => {
+    if (!background || background[3] !== 255) return preferred
+    const contrast = (color: Color): number => {
+      const rgba = channels(color)
+      if (!rgba) return 0
+      const alpha = rgba[3]! / 255
+      const foreground = luminance(rgba.slice(0, 3).map((channel, index) => channel * alpha + background[index]! * (1 - alpha)))
+      const behind = luminance(background)
+      return (Math.max(foreground, behind) + 0.05) / (Math.min(foreground, behind) + 0.05)
+    }
+    if (contrast(preferred) >= minimum) return preferred
+    // Stay on the theme's own hue ramp, choosing its nearest readable shade.
+    const candidates = scale ? Object.entries(scale).sort(([a], [b]) => Math.abs(Number(a) - 500) - Math.abs(Number(b) - 500)).map(([, color]) => color)
+      : typeof preferred !== 'string' && theme.source?.(preferred) ? [1, 2, 3, 4, 5, 6, 7, 8].flatMap(step => [theme.decrease(preferred, step), theme.increase(preferred, step)]) : []
+    return candidates.find(color => contrast(color) >= minimum) ?? theme.text.base
+  }
   const color = (tone: Tone = 'neutral'): Color => {
     if (!enabled) return theme.text.base
-    if (tone === 'agent') return theme.hue?.accent?.[500] ?? theme.text.base
-    return tone === 'neutral' ? theme.text.base : theme.text.feedback?.[tone === 'danger' ? 'error' : tone]?.base ?? theme.text.base
+    // A larger margin keeps categorical text readable after ANSI256 rounding.
+    if (tone === 'agent') return readable(theme.hue?.accent?.[500] ?? theme.text.base, theme.hue?.accent, 7)
+    return tone === 'neutral' ? theme.text.base : readable(theme.text.feedback?.[tone === 'danger' ? 'error' : tone]?.base ?? theme.text.base)
   }
-  return { base: theme.text.base, muted: enabled ? theme.text.muted : theme.text.base, enabled, ascii, tone: color,
-    category: index => enabled ? theme.categorical?.[index % (theme.categorical?.length || 1)]?.[500] ?? color(['info','success','warning','agent'][index % 4] as Tone) : theme.text.base }
+  return { base: theme.text.base, muted: enabled ? readable(theme.text.muted) : theme.text.base, enabled, ascii, tone: color,
+    category: index => {
+      if (!enabled) return theme.text.base
+      const scale = theme.categorical?.[index % (theme.categorical?.length || 1)]
+      return scale?.[500] ? readable(scale[500], scale, 7) : color(['info','success','warning','agent'][index % 4] as Tone)
+    } }
 }
 
 /** Terminal-cell clipping keeps a wide grapheme intact and never emits control codes. */
@@ -83,10 +118,11 @@ export function TerminalCharts(props: { snapshot: Snapshot; width: number; palet
     {text('Input/cache/output; reasoning not plotted.')}
   </box>
   const Durations = () => <box flexDirection="column" flexShrink={0}>
-    {text(`Step duration · peak ${duration(model().durations.max)}`, 'info')}
+    {text(`Step time · peak ${duration(model().durations.max)}`, 'info')}
     <Row label="seconds" cells={model().durations.bins.map(bin=>({text:!bin.samples?' ':bin.seconds===null?'?':level(bin.seconds,model().durations.max,props.palette.ascii),color:props.palette.tone(bin.seconds===null?'neutral':bin.outlier?'warning':'info')}))} />
     <Row label="! / ?" cells={model().durations.bins.map(bin=>({text:bin.outlier?bin.unknown?'*':'!':bin.unknown?'?':' ',color:props.palette.tone(bin.outlier?'warning':'neutral')}))} />
     {text('! outlier · ? incomplete · * both')}
+    {text('Recorded subagent waits excluded when available; Timeline shows full step duration.')}
     <Show when={model().durations.bins.some(bin=>bin.outlier)}>{text(`Outlier steps: ${model().durations.bins.flatMap(bin=>bin.outliers).join(', ')}`)}</Show>
   </box>
   const Context = () => <box flexDirection="column" flexShrink={0}>

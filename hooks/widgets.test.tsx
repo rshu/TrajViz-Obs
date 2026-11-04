@@ -37,6 +37,25 @@ const pane = (bodyColumns: number) =>
     props: { title: 'Widgets', isFocused: false, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
   }) as const
 
+test('reported cost remains visible without a host context measurement', async ($, on) => {
+  const usage = { cost: { usd: 1.25 } }
+  on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) => {
+    const els = $.ui.resolve(e)
+    const { Box } = els
+    return <Box flexDirection="column">
+      {KpiRow({ els, snap: UNKNOWN_SNAPSHOT, usage, columns: 80 })}
+      {PaneMetrics({ els, snap: UNKNOWN_SNAPSHOT, usage, columns: 80 })}
+    </Box>
+  })
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...pane(80), surface })
+    expect(await ui.findAll({ type: 'Text', text: '$1.25' })).toHaveLength(2)
+    expect(await ui.find({ type: 'Text', text: 'Context' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '24%' })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
 /** Every widget off the fixture snapshot at `columns`, as a card draws them. */
 function probe(els: Els, surface: RenderSurface, columns: number): RenderElement {
   const { Box } = els
