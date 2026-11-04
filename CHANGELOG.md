@@ -1,5 +1,9 @@
 # Changelog
 
+## OpenCode 0.4.2 — 2026-11-04
+
+- Highlight Desktop health, failures, metrics, and agent relationships with theme-aware text colors.
+
 ## OpenCode 0.4.1 / Claude Code 0.3.4 — 2026-11-04
 
 - Restore confirmed OpenCode subagent spawn steps in the Agents view and live pane.

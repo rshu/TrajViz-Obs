@@ -84,7 +84,7 @@ const sumMeasured = (values: readonly (number | null | undefined)[]): number | n
   values.length && values.every((value): value is number => typeof value === 'number' && Number.isFinite(value))
     ? values.reduce((sum, value) => sum + value, 0) : null
 
-const failures = (errors: number | null, unknown = 0): string => unknown > 0
+export const failures = (errors: number | null, unknown = 0): string => unknown > 0
   ? `${compact(errors)} observed failures · ${compact(unknown)} unknown outcome${unknown === 1 ? '' : 's'}`
   : errors === null ? 'failures unknown' : `${compact(errors)} failed`
 

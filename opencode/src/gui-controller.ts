@@ -14,7 +14,7 @@ export type GuiOrigin = {
   location(): LocationRef | undefined
 }
 export type GuiTarget = { id: string; selector?: string; captureSessionID?: string }
-export type GuiJob = { id: string; args: string; origin: GuiOrigin; target?: GuiTarget; text: string; pending: boolean; url?: string; path?: string; data?: unknown }
+export type GuiJob = { id: string; args: string; origin: GuiOrigin; target?: GuiTarget; text: string; pending: boolean; url?: string; path?: string; data?: unknown; snapshot?: Snapshot | EmptySnapshot }
 export type GuiView = { selected?: GuiTarget; tab: number; snapshots: Record<string, Snapshot | EmptySnapshot>; errors: Record<string, string>; running?: string; latest?: string }
 export type GuiHooks = {
   changed(): void
@@ -128,7 +128,7 @@ export class GuiController {
       if (result.sessionID) target = { ...target, id: result.sessionID }
       if (!SESSIONLESS.has(parsed.sub)) { view.selected = target; job.target = target }
       if (result.snapshot && key && this.generations.get(key) === generation) { view.snapshots[target.id] = result.snapshot; delete view.errors[target.id] }
-      job.text = display(commandText(result)); job.url = result.url; job.path = result.path; job.data = result.data
+      job.text = display(commandText(result)); job.url = result.url; job.path = result.path; job.data = result.data; job.snapshot = result.snapshot
       if (result.tab) { const tab = TABS.findIndex(name => name.toLowerCase() === result.tab?.toLowerCase()); if (tab >= 0) view.tab = tab }
       if (parsed.sub === 'label' && result.path) void this.refresh(origin)
     } catch (error) {
