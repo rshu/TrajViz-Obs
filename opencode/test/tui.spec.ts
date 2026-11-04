@@ -7,6 +7,7 @@ import { setup } from '../src/tui.js'
 function host(options: Record<string, unknown> = {}, onSession = true) {
   let panel: { name: string; sessionID: string } | undefined
   let command: ((input?: string) => void | Promise<void>) | undefined
+  let nativeEvent!: (event: {details:{type:string}}) => void
   const listeners = new Map<string, (event: { data: Record<string, string> }) => void>()
   const unsubscribed: string[] = []
   const memory = new Map<string, object>()
@@ -35,7 +36,7 @@ function host(options: Record<string, unknown> = {}, onSession = true) {
     data: {
       session: { get: () => ({ location: { directory: '/test-project' } }), family: (id: string) => [id] },
       location: { default: () => ({ directory: '/test-project' }) },
-      listen: (_fn: unknown) => () => { unsubscribed.push('native') },
+      listen: (fn: typeof nativeEvent) => { nativeEvent = fn; return () => { unsubscribed.push('native') } },
     },
     theme: { text: { base: 'white', muted: 'gray' } },
     keymap: { layer: (factory: () => { commands?: { id?: string; run(input?: string): void | Promise<void> }[] }) => { const commands = factory().commands ?? []; command = commands.find(row => row.id === 'trajviz-obs.command')?.run ?? command } },
@@ -49,10 +50,41 @@ function host(options: Record<string, unknown> = {}, onSession = true) {
     },
   }
   const cleanup = setup(context as unknown as Plugin.Context)
-  return { rpc, sessionGet, messageList, toast, confirm, cleanup, persisted, memory, listeners, unsubscribed, command: (args: string) => Promise.resolve(command!(args)) }
+  return { rpc, sessionGet, messageList, toast, confirm, cleanup, persisted, memory, listeners, unsubscribed, nativeEvent: (type: string) => nativeEvent({details:{type}}), command: (args: string) => Promise.resolve(command!(args)) }
 }
 
 describe('OpenCode command adapter', () => {
+  test('fresh history requests work with the pane closed and watch disabled', async () => {
+    const h = host({watch:false},false)
+    try {
+      h.listeners.get('capture')!({data:{sessionID:'ses_requested',requestID:'fresh-request'}})
+      await new Promise(resolve => setTimeout(resolve,0))
+      expect(h.sessionGet.mock.calls[0]?.[0]).toEqual({sessionID:'ses_requested'})
+      expect(h.rpc.sync.mock.calls[0]?.[0]).toMatchObject({source:{session:{id:'ses_requested'}},requestID:'fresh-request'})
+      expect(h.rpc.sync.mock.calls[0]?.[1]).toMatchObject({location:{directory:'/test-project'}})
+    } finally { h.cleanup() }
+    expect(h.unsubscribed).toContain('capture')
+  })
+
+  test('reconnecting cancels an old capture responder before subscribing to the current server', async () => {
+    const h = host({watch:false},false)
+    let started!: () => void
+    const reading = new Promise<void>(resolve => { started = resolve })
+    h.messageList.mockImplementationOnce(async (_input,options) => {
+      started()
+      return new Promise((_resolve,reject) => options!.signal!.addEventListener('abort',() => reject(new Error('Disconnected')),{once:true}))
+    })
+    try {
+      h.listeners.get('capture')!({data:{sessionID:'ses_requested',requestID:'old-request'}})
+      await reading
+      h.nativeEvent('server.connected')
+      h.listeners.get('capture')!({data:{sessionID:'ses_requested',requestID:'new-request'}})
+      await new Promise(resolve => setTimeout(resolve,0))
+      expect(h.rpc.sync).toHaveBeenCalledTimes(1)
+      expect(h.rpc.sync.mock.calls[0]?.[0]).toMatchObject({requestID:'new-request'})
+    } finally { h.cleanup() }
+  })
+
   test('slash diagnostics synchronize the exact connected session without prompting the agent', async () => {
     const h = host()
     try {

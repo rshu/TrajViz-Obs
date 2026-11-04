@@ -1,10 +1,39 @@
 import { describe, expect, test } from 'bun:test'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { captureSession, validateSource } from '../src/collect.js'
 
 type Reader = Parameters<typeof captureSession>[0]
 const session = (id: string, parentID?: string, fork?: object) => ({ id, parentID, fork, location: {directory:'/demo'} })
 
 describe('native OpenCode history collection', () => {
+  test('Desktop capture and sync validation work without Node globals and retain UTF-8 limits', () => {
+    const code = `
+      delete globalThis.Buffer
+      const { captureSession, validateSource } = await import('./src/collect.ts')
+      const { Obs } = await import('./src/rpc.ts')
+      const session = { id: 'ses_browser', location: { directory: '/demo' } }
+      const messages = [{ id: 'unicode', type: 'assistant', text: '🧪' }]
+      const reader = { session: { get: async () => session },
+        message: { list: async () => ({ data: messages, cursor: {} }) } }
+      const source = await captureSession(reader, session.id)
+      validateSource(source)
+      Obs.methods.sync.input.parse({ source })
+      const sessionBytes = new TextEncoder().encode(JSON.stringify(session)).byteLength
+      const remaining = JSON.stringify(messages).length
+      let limited = false
+      try {
+        await captureSession(reader, session.id, undefined, new Set(), { bytes: 32 * 1024 * 1024 - sessionBytes - remaining })
+      } catch (error) { limited = error.message.includes('32 MiB') }
+      if (!limited) throw new Error('Unicode payload bypassed the UTF-8 byte limit')
+      console.log(JSON.stringify({ id: source.session.id, text: source.messages[0].text, limited }))
+    `
+    const output = execFileSync(process.execPath, ['--eval', code], {
+      cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8', timeout: 10_000,
+    })
+    expect(JSON.parse(output)).toEqual({ id: 'ses_browser', text: '🧪', limited: true })
+  })
+
   test('follows opaque cursors and confirmed subagents, retaining pre-compaction history', async () => {
     const requests: object[] = []
     const child = session('ses_child','ses_root'), fork = session('ses_fork','ses_root',{sessionID:'ses_root'})

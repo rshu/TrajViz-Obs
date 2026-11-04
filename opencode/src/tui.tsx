@@ -112,9 +112,28 @@ export function setup(context: Plugin.Context): () => void {
 
   let stopChanged = () => {}
   let stopProgress = () => {}
+  let stopCapture = () => {}
+  const captureReads = new Set<AbortController>()
   function subscribe(): void {
     stopChanged()
     stopProgress()
+    stopCapture()
+    for (const controller of captureReads) controller.abort()
+    const client = context.client
+    const peer = client.rpc(Obs)
+    stopCapture = peer.events.on('capture', event => {
+      const controller = new AbortController()
+      captureReads.add(controller); aborts.add(controller)
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)])
+      void (async () => {
+        try {
+          const source = await captureSession(client, event.data.sessionID, signal)
+          signal.throwIfAborted()
+          if (!disposed) await peer.sync({ source, requestID: event.data.requestID }, { location: { directory: source.directory }, signal })
+        } catch { /* Another window may answer first; cancelled or expired requests are harmless. */ }
+        finally { captureReads.delete(controller); aborts.delete(controller) }
+      })()
+    })
     stopChanged = rpc().events.on('changed', event => changed(event.data.sessionID))
     stopProgress = rpc().events.on('progress', event => {
       const job = state.jobs[event.data.runID]
@@ -391,7 +410,7 @@ export function setup(context: Plugin.Context): () => void {
 
   return () => {
     disposed = true
-    stopChanged(); stopProgress(); stopEvents(); stopPanel(); stopFooter()
+    stopChanged(); stopProgress(); stopCapture(); stopEvents(); stopPanel(); stopFooter()
     for (const timer of timers.values()) clearTimeout(timer)
     for (const controller of aborts) controller.abort()
     for (const [base, runID] of Object.entries(state.running)) if (jobs.has(runID)) {

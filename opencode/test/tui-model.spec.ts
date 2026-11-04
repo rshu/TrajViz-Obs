@@ -99,6 +99,15 @@ describe('native pane data', () => {
     expect(safeText('x\u001b]title cut')).toBe('x')
   })
 
+  test('names blank comparison headers without changing the saved table', () => {
+    const table = '| | reference | candidate |\n|---|---|---|\n| finished | yes | no |'
+    const result = { text: table, data: { inline: { table } } }
+    expect(commandText(result)).toBe('1.\nMetric: finished\nreference: yes\ncandidate: no')
+    expect(result.text).toBe(table)
+    expect(result.data.inline.table).toBe(table)
+    expect(commandText({ text: '| | |\n|---|---|\n| tokens | unknown |', data: {} })).toBe('1.\nMetric: tokens\nValue: unknown')
+  })
+
   test('renders wide view tables as row cards, preserving escaped pipes and source exports', () => {
     const table = '| step | tool_name | command |\n|---|---|---|\n| 1 | bash | cat a \\| sort |\n| 2 | read | a.py |'
     const result = { text: `Tools · 2 rows\n${table}\nFull view: /tmp/tools.json`, data: { inline: { table } } }

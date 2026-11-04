@@ -11,7 +11,7 @@ Visualize and diagnose Claude Code and OpenCode 2 sessions with [TrajViz](https:
 
 ## Install
 
-For **OpenCode 2**, follow the [OpenCode installation guide](opencode/README.md). The instructions below install the Claude Code plugin.
+For **OpenCode 2 terminal or Desktop**, follow the [OpenCode installation guide](opencode/README.md). The instructions below install the Claude Code plugin.
 
 Requires Claude Code with function hooks (mods) and process execution, plus [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Validated on Claude Code **2.1.309**; hosts limited to shell hooks and Markdown commands cannot run this plugin.
 
@@ -44,7 +44,7 @@ After the session's first assistant response:
 | Task | Command |
 | --- | --- |
 | Inspect diagnostics | `/obs issues`, `/obs agents`, `/obs view` |
-| Open a live terminal pane | `/obs pane`; close with `/obs pane close` |
+| Open a live pane | `/obs pane`; close with `/obs pane close` |
 | Export data | `/obs json --with-trajectory`, `/obs bundle` |
 | Compare runs | `/obs compare <session-id>`, `/obs converge` |
 | Ask for analysis or fixes | `/obs analyze [question]`, `/obs fixes` |

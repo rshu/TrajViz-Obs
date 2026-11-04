@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, expect, spyOn, test } from 'bun:test'
 import type { Plugin } from '@opencode/plugin'
 import { link, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -28,6 +28,141 @@ async function fixture() {
   const source: NativeSource = { source_format: 'opencode_v2', schema_version: 1, directory, session, messages: [], children: [] }
   return { backend, source, directory }
 }
+
+function withoutService(backend: Backend): void {
+  Object.defineProperty(backend, 'connection', { value: async () => undefined })
+}
+
+test('Desktop model-tool reads request a fresh authenticated capture rather than dirty cached history', async () => {
+  const { backend, source } = await fixture()
+  withoutService(backend)
+  await backend.sync(source)
+  backend.invalidate('ses_root')
+  const fresh = { ...source, messages: [{ id: 'new', text: 'New native history' }] }
+  const requests: string[] = []
+  backend.requestCapture = async ({requestID,sessionID}) => {
+    requests.push(sessionID)
+    await backend.sync(fresh, requestID)
+  }
+  const selected = await backend.withSources(false, () => backend.session('ses_root'))
+  expect(JSON.parse(await readFile(selected.transcript, 'utf8')).messages).toEqual(fresh.messages)
+  expect(requests).toEqual(['ses_root'])
+})
+
+test('capture replies require the pending nonce, session and server location and cannot be replayed', async () => {
+  const {backend,source} = await fixture()
+  withoutService(backend)
+  let request!: {requestID:string;sessionID:string}, ready!: () => void
+  const published = new Promise<void>(resolve => { ready = resolve })
+  backend.requestCapture = async value => { request = value; ready() }
+  const pending = backend.session('ses_root')
+  await published
+  await expect(backend.sync(source, 'wrong-nonce')).rejects.toThrow('expired')
+  await expect(backend.sync({...source,session:{...source.session,id:'ses_other'}}, request.requestID)).rejects.toThrow('another session')
+  await expect(backend.sync({...source,directory:'/wrong'}, request.requestID)).rejects.toThrow('does not match')
+  expect(backend.sources.size).toBe(0)
+  await backend.sync(source,request.requestID)
+  const selected = await pending
+  await expect(backend.sync({...source,messages:[{id:'late'}]},request.requestID)).rejects.toThrow('expired')
+  expect(JSON.parse(await readFile(selected.transcript,'utf8')).messages).toEqual([])
+  expect(backend.sources.get('ses_root')?.messages).toEqual([])
+})
+
+test('cancelled capture requests reject late replies while a new UI connection can answer a new request', async () => {
+  const {backend,source} = await fixture()
+  withoutService(backend)
+  const requests: {requestID:string;sessionID:string}[] = []
+  let wake!: () => void
+  backend.requestCapture = async value => { requests.push(value); wake() }
+  const controller = new AbortController()
+  let published = new Promise<void>(resolve => { wake = resolve })
+  const old = backend.session('ses_root',undefined,controller.signal).catch(error => error as Error)
+  await published
+  controller.abort()
+  expect(String(await old)).toContain('cancelled')
+  published = new Promise<void>(resolve => { wake = resolve })
+  const current = backend.session('ses_root')
+  await published
+  expect(requests[1]!.requestID).not.toBe(requests[0]!.requestID)
+  await expect(backend.sync(source,requests[0]!.requestID)).rejects.toThrow('expired')
+  await backend.sync(source,requests[1]!.requestID)
+  expect((await current).sessionID).toBe('ses_root')
+})
+
+test('concurrent capture replies are single-use and cancellation during materialization publishes no cache', async () => {
+  const {backend,source} = await fixture()
+  withoutService(backend)
+  let requestID!: string, announce!: () => void, started!: () => void, resume!: () => void
+  const announced = new Promise<void>(resolve => { announce = resolve })
+  const materializing = new Promise<void>(resolve => { started = resolve })
+  const gate = new Promise<void>(resolve => { resume = resolve })
+  backend.requestCapture = async request => { requestID = request.requestID; announce() }
+  const controller = new AbortController()
+  const pending = backend.session('ses_root',undefined,controller.signal).catch(error => error as Error)
+  await announced
+  const original = backend.materialize.bind(backend)
+  backend.materialize = async captured => { started(); await gate; return original(captured) }
+  const first = backend.sync(source,requestID).catch(error => error as Error)
+  await materializing
+  await expect(backend.sync({...source,messages:[{id:'duplicate'}]},requestID)).rejects.toThrow('expired')
+  controller.abort()
+  resume()
+  expect(String(await pending)).toContain('cancelled')
+  expect(String(await first)).toContain('cancelled')
+  expect(backend.sources.size).toBe(0)
+})
+
+test('unload and unanswered capture requests release their pending slots', async () => {
+  const {backend,source} = await fixture()
+  withoutService(backend)
+  let requestID!: string, ready!: () => void
+  const published = new Promise<void>(resolve => { ready = resolve })
+  backend.requestCapture = async value => { requestID = value.requestID; ready() }
+  const pending = backend.session('ses_root').catch(error => error as Error)
+  await published
+  await backend.close()
+  expect(String(await pending)).toContain('unloading')
+  await expect(backend.sync(source,requestID)).rejects.toThrow('expired')
+  const other = await fixture()
+  withoutService(other.backend)
+  const timers: {callback:()=>void}[] = []
+  const original = globalThis.setTimeout
+  const timer = spyOn(globalThis,'setTimeout').mockImplementation(((callback:()=>void, milliseconds:number) => {
+    if (milliseconds === 15_000) timers.push({callback})
+    return original(callback,milliseconds)
+  }) as typeof setTimeout)
+  try {
+    let announce!: () => void
+    const announced = new Promise<void>(resolve => { announce = resolve })
+    let unansweredID!: string
+    other.backend.requestCapture = async request => { unansweredID = request.requestID; announce() }
+    const waiting = other.backend.session('ses_root').catch(error => error as Error)
+    await announced
+    timers[0]!.callback()
+    expect(String(await waiting)).toContain('No connected OpenCode UI')
+    await expect(other.backend.sync(other.source,unansweredID)).rejects.toThrow('expired')
+    expect(other.backend.sources.size).toBe(0)
+  } finally { timer.mockRestore() }
+})
+
+test('pending capture requests are bounded and publisher failures do not leak slots', async () => {
+  const {backend} = await fixture()
+  withoutService(backend)
+  let requestCount = 0, ready!: () => void
+  const published = new Promise<void>(resolve => { ready = resolve })
+  backend.requestCapture = async () => { if (++requestCount === 64) ready() }
+  const pending = Array.from({length:64},(_,index) => backend.session(`ses_${index}`).catch(error => error as Error))
+  await published
+  await expect(backend.session('ses_overflow')).rejects.toThrow('Too many pending')
+  await backend.close()
+  expect((await Promise.all(pending)).every(result => result instanceof Error)).toBe(true)
+  const other = await fixture()
+  withoutService(other.backend)
+  other.backend.requestCapture = async () => { throw new Error('UI disconnected') }
+  for (let index = 0; index < 65; index++) await expect(other.backend.session('ses_root')).rejects.toThrow('UI disconnected')
+  other.backend.requestCapture = undefined
+  await expect(other.backend.session('ses_root')).rejects.toThrow('OpenCode Desktop')
+})
 
 test('materialized source references are immutable under concurrent captures', async () => {
   const { backend, source } = await fixture()

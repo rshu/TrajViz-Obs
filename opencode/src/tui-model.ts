@@ -34,7 +34,7 @@ export function commandText(result: { text: string; data?: unknown }): string {
     if (fence || !line.trimStart().startsWith('|') || !lines[i + 1]?.trimStart().startsWith('|') || !split(lines[i + 1]!).every(cell => /^:?-{3,}:?$/.test(cell))) { output.push(line); continue }
     let end = i + 2
     while (end < lines.length && lines[end]!.trimStart().startsWith('|')) end++
-    const headers = split(line).map(name => name.replaceAll('_', ' '))
+    const headers = split(line).map((name, column) => name.replaceAll('_', ' ').trim() || (column === 0 ? 'Metric' : column === 1 ? 'Value' : `Value ${column}`))
     const rows = lines.slice(i + 2, end).map(split)
     if (rows.some(row => row.length !== headers.length)) output.push(...lines.slice(i, end))
     else output.push(rows.map((row, index) => [`${index + 1}.`, ...headers.map((name, column) => `${name}: ${row[column]}`)].join('\n')).join('\n\n') || 'No rows.')

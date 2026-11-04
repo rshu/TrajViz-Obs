@@ -40,12 +40,13 @@ export default Plugin.define({
     }
     const rpc = await ctx.rpc.register(Obs, {
       run: (input, call) => track(run(input, call.signal)),
-      sync: input => track(backend.sync(input.source)),
+      sync: input => track(backend.sync(input.source, input.requestID)),
       resolve: input => track(backend.resolve(input.sessionID, input.selector, input.captureSessionID)),
       snapshot: (input, call) => track(backend.withSources(input.useSynced, () => backend.snapshot(input.sessionID, AbortSignal.any([call.signal,lifetime.signal]), input.selector, input.captureSessionID))),
       cancel: async input => { const job = jobs.get(input.runID); job?.abort(); const plan = cancelModel(backend, input.runID); return {cancelled: Boolean(job) || plan} },
     })
     backend.progress = (runID, text) => rpc.events.emit('progress', {runID, text})
+    backend.requestCapture = request => rpc.events.emit('capture', request)
     // Read-only data for the agent. This tool never calls another model or runs a diagnostic shell command.
     const tool = await ctx.tool.transform(editor => {
       editor.add({

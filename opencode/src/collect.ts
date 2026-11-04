@@ -12,6 +12,8 @@ export type NativeSource = {
 
 type Reader = Pick<OpenCodeClient, 'session' | 'message'>
 export const record = (v: unknown): Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : {}
+const encoder = new TextEncoder()
+const jsonBytes = (value: unknown): number => encoder.encode(JSON.stringify(value)).byteLength
 
 /** Read every projected message, including pre-compaction history. Never use model context as a transcript. */
 export async function captureSession(client: Reader, sessionID: string, signal?: AbortSignal, seen = new Set<string>(), budget = {bytes:0}): Promise<NativeSource> {
@@ -19,13 +21,13 @@ export async function captureSession(client: Reader, sessionID: string, signal?:
   if (seen.size >= 64) throw new Error('Session family exceeds 64 sessions; export the source explicitly instead.')
   seen.add(sessionID)
   const session = record(await client.session.get({ sessionID }, { signal }))
-  budget.bytes += Buffer.byteLength(JSON.stringify(session))
+  budget.bytes += jsonBytes(session)
   const messages: Record<string, unknown>[] = []
   let cursor: string | undefined
   const cursors = new Set<string>()
   do {
     const page = await client.message.list({ sessionID, limit: 200, ...(cursor ? { cursor } : { order: 'asc' as const }) }, { signal })
-    budget.bytes += Buffer.byteLength(JSON.stringify(page.data))
+    budget.bytes += jsonBytes(page.data)
     if (budget.bytes > 32 * 1024 * 1024) throw new Error('Session family exceeds 32 MiB; use an explicit source export.')
     messages.push(...page.data.map(record))
     cursor = page.cursor.next ?? undefined
@@ -62,6 +64,6 @@ export function validateSource(value: unknown): NativeSource {
     if (ids.size > 64) throw new Error('Session family exceeds 64 sessions.')
     pending.push(...item.children.map(record))
   }
-  if (Buffer.byteLength(JSON.stringify(source)) > 32 * 1024 * 1024) throw new Error('Session capture exceeds 32 MiB; use an explicit source export.')
+  if (jsonBytes(source) > 32 * 1024 * 1024) throw new Error('Session capture exceeds 32 MiB; use an explicit source export.')
   return source as NativeSource
 }

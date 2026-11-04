@@ -4,5 +4,6 @@
     "strict": true, "noUncheckedIndexedAccess": true, "noEmit": true, "skipLibCheck": true,
     "jsx": "preserve", "jsxImportSource": "@opentui/solid", "types": ["bun", "node"]
   },
-  "include": ["src", "test"]
+  "include": ["src", "test"],
+  "exclude": ["src/gui.tsx"]
 }

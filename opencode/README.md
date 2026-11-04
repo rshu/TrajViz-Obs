@@ -1,6 +1,6 @@
 # TrajViz Obs for OpenCode 2
 
-Inspect session health, tools, subagents, context use, and step labels with `/obs`. The browser dashboard and Python analysis engine are shared with the Claude Code plugin.
+Inspect session health, tools, subagents, context use, and step labels with `/obs` in OpenCode's terminal or Desktop app. The browser dashboard and Python analysis engine are shared with the Claude Code plugin.
 
 ## Install
 
@@ -44,7 +44,9 @@ Alternatively, enable it for **one project only** by putting the entry in `openc
 
 ### 3. Restart and verify
 
-Close the TUI. From the project you want to observe, restart OpenCode's background server and reopen OpenCode:
+For **OpenCode Desktop**, quit and reopen the app. Check **Settings → Extensions → Plugins** for TrajViz Obs.
+
+For the **terminal**, close the TUI. From the project you want to observe, restart OpenCode's background server and reopen OpenCode:
 
 ```sh
 opencode service restart
@@ -66,11 +68,11 @@ To disable the adapter, remove its entry from the configuration you edited and r
 
 ## Use
 
-After an assistant response, run `/obs` for a summary, `/obs pane` for the live panel, or `/obs dashboard` for the browser dashboard. Use the displayed **Open URL** action; remote servers need port forwarding.
+After an assistant response, run `/obs` for a summary, `/obs pane` for the live panel, or `/obs dashboard` for the browser dashboard. Use **Open dashboard** in Desktop or **Open URL** in the terminal; remote servers need port forwarding.
 
-The panel has Overview, Tools, Issues, Patterns, Agents, Context, and Timeline tabs. See the [demo screenshots](../README.md#demo). `/obs pane close` closes it. `/obs watch off` disables automatic refresh; `/obs statusline on` adds a compact footer. `/obs cancel` cancels a running command.
+The panel has Overview, Tools, Issues, Patterns, Agents, Context, and Timeline tabs. See the [demo screenshots](../README.md#demo). `/obs pane close` closes it. `/obs watch off` disables automatic refresh; `/obs statusline on` adds a compact status summary. `/obs cancel` cancels a running command.
 
-Focus the panel to switch tabs with **1–7**, scroll with **↑↓**, **PgUp/PgDn**, or **Home/End**, and toggle fullscreen with **f**.
+Focus the panel to switch tabs with **1–7**. In Desktop, use **Expand** for a larger view; the panel's command field runs additional `/obs` commands. In the terminal, scroll with **↑↓**, **PgUp/PgDn**, or **Home/End**, and toggle fullscreen with **f**.
 
 Use `/obs help` for all commands. Diagnostics, exports, comparisons, analysis, fixes, step labeling, and attribution follow the [shared usage guide](https://github.com/rshu/TrajViz-Obs#use). `/obs sessions` lists this project's saved sessions; session commands accept `--session <id|prefix|path>`.
 
@@ -91,9 +93,11 @@ To set options, replace the adapter's existing string entry with an object:
 
 `llm` defaults to `session`, using OpenCode's selected model. `analysisModel` and `labelModel` accept `session` or `provider/model`. Model commands show their call plan and ask before more than four calls; labeling defaults to 50 steps (`labelMaxSteps`). Native generation uses OpenCode's configured output settings and does not return per-call usage. Per-request `--max-tokens` and `--temperature` require `llm: "env"` and the [environment provider settings](https://github.com/rshu/TrajViz-Obs#configure).
 
+Desktop remembers watch and statusline toggles in its own preferences, overriding these configuration defaults.
+
 `python` overrides interpreter discovery; `trajvizSource` overrides the TrajViz requirement. `cacheRoot` moves the private runtime and session artifacts. Dashboards bind to localhost and stop with `/obs dashboard stop`, `/obs converge stop`, or plugin unload.
 
-The TUI reads full history from its connected server. Headless tool calls discover OpenCode's local service; custom servers can set `serverUrl` to a loopback URL on that server's host and `serverPasswordEnv` (default `OPENCODE_PASSWORD`). Set the named password variable in that server's launch environment. History before compaction is retained. Forks remain separate runs; confirmed subagent sessions appear in the parent trajectory.
+Desktop and the TUI read full history from their connected server. Headless tool calls discover OpenCode's local service; custom servers can set `serverUrl` to a loopback URL on that server's host and `serverPasswordEnv` (default `OPENCODE_PASSWORD`). Set the named password variable in that server's launch environment. History before compaction is retained. Forks remain separate runs; confirmed subagent sessions appear in the parent trajectory.
 
 Live captures are limited to 32 MiB and 64 sessions in one family. For larger inputs, export the session and use `--session /path/to/export.json`.
 
@@ -103,8 +107,8 @@ From the checkout's `opencode` directory (packaging also requires Node.js/npm):
 
 ```sh
 bun run typecheck
-bun test
+bun run test
 npm pack
 ```
 
-The package includes the OpenCode adapter and shared Python runtime. Keep private session fixtures, logs, and test output outside the repository. OpenCode 1 and desktop GUI extensions are outside this adapter's scope.
+The package includes terminal and Desktop components plus the shared Python runtime. The Desktop extension uses OpenCode's experimental GUI API, tested with **2.2.5**. Keep private session fixtures, logs, and test output outside the repository. OpenCode 1 is unsupported.

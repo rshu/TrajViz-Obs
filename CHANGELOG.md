@@ -1,5 +1,11 @@
 # Changelog
 
+## OpenCode 0.4.0 — 2026-11-04
+
+- Add native Desktop `/obs` commands, a live seven-tab pane, results, and a status pill.
+- Capture Desktop session history through its authenticated client, including fresh history for the read-only model tool.
+- Preserve the terminal adapter and shared TrajViz 0.4.1 engine; the Claude Code plugin remains at 0.3.3.
+
 ## 0.3.3 — 2026-11-03
 
 - Render the Claude Code scorecard as a table by separating its heading from the host's command prefix.

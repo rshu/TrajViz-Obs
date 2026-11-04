@@ -15,6 +15,7 @@ import { argvValue, valueArgv } from './shared/args.js'
 
 export type SourceRef = { sessionID: string; transcript: string; artifacts: string; argv: string[]; native?: NativeSource; captureSessionID?: string }
 type Server = { child: ChildProcessWithoutNullStreams; url: string; signature: string; preloaded?: boolean }
+type CaptureRequest = { sessionID: string; claimed?: boolean; resolve(source: NativeSource): void; reject(error: Error): void }
 const hash = (text: string | Uint8Array) => createHash('sha256').update(text).digest('hex')
 const sourceIdentity = (file: string, captureSessionID?: string): string => {
   return captureSessionID === undefined ? file : JSON.stringify([file, captureSessionID])
@@ -35,18 +36,32 @@ export class Backend {
   private readonly servers = new Map<string, Server>()
   private readonly starting = new Map<string, { promise: Promise<{ url: string; preloaded?: boolean }>; controller: AbortController }>()
   private client?: OpenCodeClient
+  private readonly captureRequests = new Map<string, CaptureRequest>()
+  requestCapture?: (request: { requestID: string; sessionID: string }) => Promise<void>
   progress: (runID: string, text: string) => Promise<void> = async () => {}
   readonly root: string
   constructor(readonly ctx: Plugin.Context, readonly options: Options) {
     this.runtime = new Runtime(options, ctx.location.directory)
     this.root = path.join(this.runtime.cache, 'sessions', hash(ctx.location.directory).slice(0, 24))
   }
-  async sync(value: unknown): Promise<{ sessionID: string }> {
+  async sync(value: unknown, requestID?: string): Promise<{ sessionID: string }> {
     const source = validateSource(value), sessionID = String(source.session.id)
+    const request = requestID === undefined ? undefined : this.captureRequests.get(requestID)
+    if (requestID !== undefined && (!request || request.claimed || request.sessionID !== sessionID)) throw new Error('This capture request expired or belongs to another session.')
     const current = record(await this.ctx.session.get({ sessionID } as Parameters<Plugin.Context['session']['get']>[0]))
     if (current.id !== sessionID || record(current.location).directory !== source.directory) throw new Error('Session capture does not match this OpenCode server.')
-    this.remember(source)
-    await this.materialize(source)
+    // Recheck after the host read: cancellation or another window may have answered.
+    if (requestID !== undefined && (this.captureRequests.get(requestID) !== request || request?.claimed)) throw new Error('This capture request expired or was already answered.')
+    if (request) request.claimed = true
+    try {
+      await this.materialize(source)
+      if (requestID !== undefined && this.captureRequests.get(requestID) !== request) throw new Error('This capture request expired or was cancelled.')
+      this.remember(source)
+      request?.resolve(source)
+    } catch (error) {
+      request?.reject(error instanceof Error ? error : new Error(String(error)))
+      throw error
+    }
     return { sessionID }
   }
   async sessions(limit = 20): Promise<Record<string, unknown>[]> {
@@ -102,13 +117,36 @@ export class Backend {
     if (pending) return pending
     const next = (async () => {
       const client = await this.connection(sessionID)
-      if (!client) throw new Error('Full session history is not synchronized. Run /obs from the OpenCode terminal UI, or configure serverUrl for this server.')
-      const source = validateSource(await captureSession(client, sessionID, signal))
+      const source = client ? validateSource(await captureSession(client, sessionID, signal)) : await this.captureFromUI(sessionID, signal)
       this.remember(source)
       return source
     })()
     this.captures.set(sessionID, next)
     try { return await next } finally { this.captures.delete(sessionID) }
+  }
+  private async captureFromUI(sessionID: string, signal?: AbortSignal): Promise<NativeSource> {
+    signal?.throwIfAborted()
+    const publish = this.requestCapture
+    if (!publish) throw new Error('Full session history is not synchronized. Open the session in OpenCode Desktop or the terminal UI, or configure serverUrl for this server.')
+    if (this.captureRequests.size >= 64) throw new Error('Too many pending history requests. Wait for an existing request to finish and retry.')
+    // An authenticated UI reads native history from its own server. A nonce
+    // binds that fresh response to this request; unrelated cached syncs cannot answer it.
+    const requestID = randomUUID()
+    return new Promise((resolve, reject) => {
+      const finish = (source?: NativeSource, error?: Error) => {
+        if (!this.captureRequests.has(requestID)) return
+        this.captureRequests.delete(requestID)
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', abort)
+        if (error) reject(error); else resolve(source!)
+      }
+      const abort = () => finish(undefined, new Error('Session capture cancelled.'))
+      const timer = setTimeout(() => finish(undefined, new Error('No connected OpenCode UI answered the history request. Open the session in Desktop or the terminal UI and retry.')), 15_000)
+      timer.unref()
+      this.captureRequests.set(requestID, { sessionID, resolve: source => finish(source), reject: error => finish(undefined, error) })
+      signal?.addEventListener('abort', abort, { once: true })
+      void Promise.resolve().then(() => publish({ requestID, sessionID })).catch(error => finish(undefined, error instanceof Error ? error : new Error(String(error))))
+    })
   }
   invalidate(sessionID: string): void {
     if (this.sources.has(sessionID)) this.dirty.add(sessionID)
@@ -249,5 +287,9 @@ export class Backend {
     await new Promise<void>(resolve => { if (server.child.exitCode !== null || server.child.signalCode !== null) resolve(); else server.child.once('close', () => resolve()) })
     return true
   }
-  async close(): Promise<void> { for (const start of this.starting.values()) start.controller.abort(); this.runtime.close(); this.servers.clear(); this.sources.clear(); await this.revisions.close() }
+  async close(): Promise<void> {
+    for (const request of this.captureRequests.values()) request.reject(new Error('The obs plugin is unloading.'))
+    for (const start of this.starting.values()) start.controller.abort()
+    this.runtime.close(); this.servers.clear(); this.sources.clear(); await this.revisions.close()
+  }
 }
