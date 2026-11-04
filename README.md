@@ -91,9 +91,9 @@ Demos use real, controlled coding sessions. Terminal images are rendered from re
 
 ![OpenCode Desktop pane in light mode with session metrics, health, token usage, and step timing](assets/demo-opencode-desktop-light.png)
 
-**Browser dashboard: session summary**
+**Browser dashboard: session summary (TrajViz 0.4.2)**
 
-![Dashboard summary with session health, tool success, and issues](assets/demo-dashboard.jpg)
+![TrajViz 0.4.2 dashboard in light mode with session health, label coverage, and issue evidence](assets/demo-dashboard-light.jpg)
 
 ## Configure
 
