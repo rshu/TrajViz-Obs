@@ -54,10 +54,12 @@ Desktop commands and the pane require adapter **0.4.0+**, tested with **OpenCode
 
 ```text
 /obs
-/obs pane
+/obs dashboard
 ```
 
-`/obs` opens the summary; `/obs pane` opens the live panel beside the conversation. Use **Expand** for a larger view. `/obs dashboard` opens a result with an **Open dashboard** button for the browser view.
+`/obs` opens the summary. `/obs dashboard` starts the browser dashboard; click **Open dashboard** in its result to view it. Stop the server with `/obs dashboard stop`.
+
+For an optional live panel beside the conversation, run `/obs pane`; use **Expand** for a larger view.
 
 If the plugin is missing, check the global configuration and the absolute adapter path from step 1, then restart the app. If its Desktop UI fails to load, use **Reload** on the plugin's settings row. See OpenCode's [Desktop plugin guidance](https://opencode.ai/v2/docs/plugins#desktop).
 
@@ -70,7 +72,7 @@ opencode service restart
 opencode
 ```
 
-For standalone sessions, close and rerun `opencode --standalone`. With `--server`, restart the connected server and reconnect the TUI instead. Complete an assistant response, then run `/obs` and `/obs pane`.
+For standalone sessions, close and rerun `opencode --standalone`. With `--server`, restart the connected server and reconnect the TUI instead. Complete an assistant response, then run `/obs` and `/obs dashboard`.
 
 In either interface, the first `/obs` installs a private TrajViz runtime and needs network access. Opening a dashboard adds its dependencies. Use `/obs doctor` to check setup or `/obs help` to list commands.
 
