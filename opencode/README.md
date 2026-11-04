@@ -46,8 +46,6 @@ Alternatively, enable it for **one project only** by putting the entry in `openc
 
 #### OpenCode Desktop
 
-Desktop commands and the pane require adapter **0.4.0+**, tested with **OpenCode Desktop 2.2.5**.
-
 1. Quit OpenCode Desktop completely (**Cmd+Q** on macOS), then reopen it.
 2. With Desktop's built-in local server selected, open **Settings → Extensions → Plugins**. Find **trajviz-obs** and make sure its switch is on; this enables the Desktop commands and pane.
 3. Open a project and session, complete an assistant response, then enter these commands one at a time in the chat composer:

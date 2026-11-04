@@ -56,42 +56,48 @@ In the dashboard, start with **Overview → Summary** for health and issues. Cli
 
 Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path>` to a session command. Run `/obs` without a selector to return to the current session.
 
-Saved OTLP captures can contain several sessions. List them with `/obs sessions --session /path/to/capture`, then select one with `/obs --session /path/to/capture --session-id <id>`. JSON, JSONL, bundle manifests, directories, and ZIP captures are supported. This imports saved telemetry; it does not enable live telemetry collection.
-
-Both plugins use TrajViz **0.4.2**, including all **36 views**, bundled attribution, and Codex, Pi, and compressed DeepSeek session imports. `/obs view data_quality` explains missing or partial evidence; unavailable measurements appear as unknown. JSON view exports use schema version **2**. Bundles preserve a complete OTLP capture; use `/obs json --with-trajectory` to export only the selected session. Other imported formats may bundle a portable `trajectory.json` that can also be loaded separately.
+Both plugins use TrajViz **0.4.2** and expose all **36 views**. `/obs view data_quality` explains missing or partial evidence; unavailable measurements appear as unknown.
 
 Watch refreshes an open pane after turns. `/obs statusline on` pins a summary under the prompt. Use `/obs watch off` and `/obs statusline off` to stop automatic refreshes.
 
-## Demo
-
-Terminal screenshots are rendered from recorded output of real, controlled test sessions.
-
-**Claude Code** — overview and live pane in light mode:
-
-![Claude Code overview and live pane in light mode](assets/demo-terminal-light.png)
-
-**OpenCode 2** — live overview in light mode:
-
-![OpenCode 2 live overview with session metrics, health, and issues in light mode](assets/demo-opencode-overview-light.png)
-
 <details>
-<summary>OpenCode 2: agents and Desktop charts</summary>
+<summary>Saved imports and exports</summary>
 
-![OpenCode 2 Agents tab with per-agent steps, tokens, tools, and duration](assets/demo-opencode-agents.png)
+Imports include Codex, Pi, and compressed DeepSeek sessions. JSON view exports use schema version **2**.
 
-Desktop pane with token and timing charts from a real coding session:
+Saved OTLP captures can contain several sessions. List them with `/obs sessions --session /path/to/capture`, then select one with `/obs --session /path/to/capture --session-id <id>`. JSON, JSONL, bundle manifests, directories, and ZIP captures are supported. This imports saved telemetry; it does not enable live telemetry collection.
 
-![OpenCode Desktop token and timing charts in light mode](assets/demo-opencode-desktop-light.jpg)
+Bundles preserve a complete OTLP capture; use `/obs json --with-trajectory` to export only the selected session. Other imported formats may bundle a portable `trajectory.json` that can also be loaded separately.
 
 </details>
 
-**Browser dashboard** — summary from the Claude Code demo session:
+## Demo
+
+Demos use real, controlled coding sessions. Terminal images are rendered from recorded output.
+
+**Claude Code: overview and live pane**
+
+![Claude Code overview and live pane in light mode](assets/demo-terminal-light.png)
+
+**OpenCode 2 terminal: live overview**
+
+![OpenCode 2 live overview with session metrics, health, and issues in light mode](assets/demo-opencode-overview-light.png)
+
+**OpenCode 2 terminal: subagent activity**
+
+![OpenCode 2 Agents tab in light mode with per-agent steps, tokens, tools, and duration](assets/demo-opencode-agents-light.png)
+
+**OpenCode Desktop: metrics and charts**
+
+![OpenCode Desktop pane in light mode with session metrics, health, token usage, and step timing](assets/demo-opencode-desktop-light.png)
+
+**Browser dashboard: session summary**
 
 ![Dashboard summary with session health, tool success, and issues](assets/demo-dashboard.jpg)
 
 ## Configure
 
-Use `/plugin configure trajviz-obs@trajviz-obs` or Claude Code's `/config` menu for plugin options. Model features default to `llm=session`, using Claude Code's client: `analysisModel=sonnet` for analysis and fixes, and `labelModel=haiku` for labeling. Set either model option to `session` to follow the main conversation's model.
+In Claude Code, use `/plugin configure trajviz-obs@trajviz-obs` or `/config` for plugin options. Model features default to `llm=session`, using Claude Code's client: `analysisModel=sonnet` for analysis and fixes, and `labelModel=haiku` for labeling. Set either model option to `session` to follow the main conversation's model.
 
 OpenCode uses [options in its configuration file](opencode/README.md#options) and defaults to its selected model.
 
@@ -117,7 +123,7 @@ Labeling uses `LABEL_BASE_URL`, `LABEL_API_KEY`, and `LABEL_MODEL`, falling back
 
 To use a default reference folder, set `TRAJVIZ_REFERENCE_ROOT` before starting the host/server, then pass `--agent NAME` or `--instance ID` to select reference diagnosis. Verdicts require the matching canonical session; missing reference evidence produces an explanation instead of capability blame.
 
-The **Attribution workspace** opens saved results, evidence graphs, and reports. Its evaluation settings and operations run only when explicitly selected. For OpenCode subagent reference diagnoses, use `/obs attribution` with matching reference options; bundled evaluation workers can group child evidence by agent role.
+The **Attribution workspace** opens saved results, evidence graphs, and reports. Its evaluation settings and operations run only when explicitly selected. For OpenCode subagent reference diagnoses, use `/obs attribution` with matching reference options.
 
 </details>
 
