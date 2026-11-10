@@ -58,6 +58,11 @@ def test_table_union_and_nested():
     assert render_table([], limit=10, offset=0) == "rows 0 of 0"
 
 
+def test_table_distinguishes_unknown_values_from_measured_zero():
+    table = render_table([{"tokens": None}, {"tokens": 0}], limit=2, offset=0)
+    assert table.splitlines()[2:4] == ["| Unknown |", "| 0 |"]
+
+
 def test_series_glyphs(): assert render_series([0, 1, None, 8], width=4) == "▁▂·█"
 
 

@@ -109,7 +109,7 @@ def test_workspace_settings_stay_session_only_and_preflight_runs_offline(tmp_pat
     assert "controlled-session-key" not in json.dumps(remembered) + capabilities
     assert not (tmp_path / "operations").exists()
     restored = _fn(page, "on_awe_restore")(remembered)
-    assert restored[0] is None and restored[-2].startswith("Attribution connection preferences restored")
+    assert restored[0] is None and ">Attribution connection preferences restored" in restored[-2]
     assert "controlled-session-key" not in json.dumps(restored, default=str)
     result, logs, path, active, network, *_ = _fn(page, "on_awe_operation")(
         settings, "preflight", "", "", "", "{}", False)
@@ -120,7 +120,7 @@ def test_workspace_settings_stay_session_only_and_preflight_runs_offline(tmp_pat
     manifest = json.loads((Path(path) / "operation-manifest.json").read_text())
     assert manifest["network_enabled"] is False and manifest["api_key_stored"] is False
     reset = _fn(page, "on_awe_reset")()
-    assert reset[0] is None and reset[-2] == "Attribution settings cleared."
+    assert reset[0] is None and ">Attribution settings cleared.</span>" in reset[-2]
 
 
 def test_workspace_errors_use_public_wording_without_mutating_settings():

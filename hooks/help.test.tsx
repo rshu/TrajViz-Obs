@@ -70,7 +70,7 @@ test('/obs help answers the grouped table', async ($, on) => {
   expect((await $.command.run({ command: 'obs', args: 'dashboard --offlne' } as never)).text).toBe("Unknown option '--offlne' for /obs dashboard. /obs help lists the supported options.")
   expect((await $.command.run({ command: 'obs', args: 'json --with-trajectory=false' } as never)).text).toBe('--with-trajectory does not take a value.')
   expect(out.text).not.toContain('report [')
-  expect((await $.command.run({ command: 'obs', args: 'report' } as never)).text).toBe('HTML reports have been removed. Run /obs dashboard for the full interactive view.')
+  expect((await $.command.run({ command: 'obs', args: 'report' } as never)).text).toContain('/obs dashboard --html PATH')
 })
 
 test('extra arguments and unsupported session selectors fail before any external work', async ($, on) => {

@@ -13,7 +13,7 @@ from conftest import make_session
 from trajviz_obs.bundle_cmd import bundle_session
 from trajviz_obs.compat import load_run
 from trajviz_obs.sidecars import agent_meta, scan_transcript
-from trajviz_obs.snapshot import build_snapshot, downsample, empty_snapshot
+from trajviz_obs.snapshot import _merge_segments, build_snapshot, downsample, empty_snapshot
 from trajviz_obs.views_cmd import export
 
 CONTRACT_KEYS = {
@@ -304,6 +304,15 @@ def test_snapshot_small_max_points_merges_lanes_and_phases(tmp_path):
 
 def test_downsample_keeps_bucket_maxima():
     assert downsample([1, 5, 2, None, None, None, 3], 3) == [5, None, 3]
+
+
+def test_swimlane_bucketing_keeps_measured_zero_and_unknown_tokens_distinct():
+    spans = [{"start": i * 2, "end": i * 2, "tokens": tokens, "tool_calls": i}
+             for i, tokens in enumerate([0, 0, None, 17])]
+    assert _merge_segments(spans, 2) == [
+        {"start": 0, "end": 2, "tokens": 0, "tool_calls": 1},
+        {"start": 4, "end": 6, "tokens": None, "tool_calls": 5},
+    ]
     assert downsample([1, 2], 5) == [1, 2]
     assert len(downsample(list(range(1001)), 400)) <= 400
 

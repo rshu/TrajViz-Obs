@@ -120,7 +120,7 @@ export type Segment = { start: number; end: number }
 
 export type Swimlane = {
   total_steps: number
-  lanes: { id: string; label: string; segments: Segment[] }[]
+  lanes: { id: string; label: string; segments: (Segment & { tokens?: number | null; tool_calls?: number })[] }[]
 }
 
 /** Each list top 8 (hotspots top 5); rows are TrajViz's own, drawn as given. */

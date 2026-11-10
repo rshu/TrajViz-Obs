@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import functools
 import inspect
+import json
+import re
 
 from .compat import attribution_defaults, attribution_identity_message, attribution_message
 
@@ -16,6 +18,47 @@ _WORKER_NOTE = ("For reference-based OpenCode subagent diagnoses, use "
                 "`/obs attribution --reference-root DIR --agent opencode --instance ID` for session-accurate child evidence. "
                 "The bundled evaluation workers can group child evidence by agent role.")
 _GRAPH_LABEL = ("aria-label='Numbered AWE provenance graph'", "aria-label='Numbered attribution provenance graph'")
+_LOCALIZED_ENGINE = re.compile(r"\b(?:AWE|DECAF)\b", re.IGNORECASE)
+
+
+def _public_caption(value: str, chinese: bool) -> str:
+    return _LOCALIZED_ENGINE.sub("归因", value) if chinese else attribution_message(value)
+
+
+def public_translation_head(head: str) -> str:
+    """Translate the bridge's attribution captions with the native browser catalog."""
+    marker = "window.__tvTranslations="
+    prefix, found, tail = head.partition(marker)
+    if not found:
+        return head
+    translations, end = json.JSONDecoder().raw_decode(tail)
+    for key, value in list(translations.items()):
+        caption = _public_caption(value, chinese=True)
+        translations[key] = caption
+        translations[attribution_message(key)] = caption
+        # The same caption can appear inside an HTML data attribute, where
+        # attribution_message preserves the middle-of-sentence capitalization.
+        translations[attribution_message('"' + key)[1:]] = caption
+    return prefix + marker + json.dumps(translations, ensure_ascii=False).replace("<", "\\u003c") + tail[end:]
+
+
+def _language_callback(original):
+    @functools.wraps(original)
+    def present(language):
+        chinese = language == "zh-CN"
+        updates = []
+        for item in original(language):
+            if not isinstance(item, dict):
+                updates.append(item)
+                continue
+            shown = {key: _public_caption(value, chinese) if isinstance(value, str) else value
+                     for key, value in item.items()}
+            if "choices" in item:
+                shown["choices"] = [(_public_caption(label, chinese), value) for label, value in item["choices"]]
+            updates.append(shown)
+        return tuple(updates)
+
+    return present
 
 
 def _diagnosis_callback(original):
@@ -98,6 +141,10 @@ def adapt_attribution_workspace(app) -> None:
             component.children.insert(1, note)
     for entry in app.fns.values():
         original = entry.fn
+        if (getattr(original, "__module__", "") == "agent_trajviz.i18n.ui"
+                and getattr(original, "__name__", "") in {"change", "restore"}):
+            entry.fn = _language_callback(original)
+            continue
         if (callable(original) and getattr(original, "__module__", "") == "agent_trajviz.insight.ui.attribution_tab"
                 and getattr(original, "__name__", "") in {"on_diagnose", "on_diagnose_autoload"}
                 and not getattr(original, "_obs_attribution_identity", False)):

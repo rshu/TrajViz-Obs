@@ -159,6 +159,22 @@ def test_mobile_plot_text_wraps_plain_empty_messages_and_axis_titles_only():
     assert json.loads(plot.postprocess(figure).plot)["layout"]["annotations"][0]["text"] == plain
 
 
+@pytest.mark.parametrize("chart, axis, note", [
+    ("token-chart", "y", "No step token usage"),
+    ("duration-chart", "y", "No step durations"),
+    ("gantt-chart", "x", "No drawable execution"),
+])
+def test_missing_chart_evidence_gets_explanation_but_keeps_measured_zero(chart, axis, note):
+    with gr.Blocks() as native:
+        plot = gr.Plot(elem_id=chart)
+    decorate_dashboard(native, "insight")
+    missing = json.loads(plot.postprocess(go.Figure(go.Bar(**{axis: [None]}))).plot)
+    assert missing["data"] == [] and note in missing["layout"]["annotations"][0]["text"]
+    assert missing["layout"]["xaxis"]["visible"] is False
+    measured = json.loads(plot.postprocess(go.Figure(go.Bar(**{axis: [0]}))).plot)
+    assert measured["data"][0][axis] == [0]
+
+
 def test_presentation_keeps_upstream_assets_without_mutating_original():
     original = {"css": "native-css", "js": "native-js", "head": "native-head", "theme": object()}
     result = presentation("insight", original)
@@ -182,10 +198,43 @@ def test_health_and_findings_live_in_summary_without_burying_other_tabs():
     summary = content.children[0]
     assert cards not in app.children and cards in summary.children
     assert overview.children == [layout]
-    assert any(isinstance(child, gr.Button) and "Suggest fixes" in child.value for child in summary.children)
+    actions = next(child for child in summary.children if isinstance(child, gr.Row) and any(
+        isinstance(button, gr.Button) and "Suggest fixes" in button.value for button in child.children))
+    assert any(isinstance(button, gr.DownloadButton) and button.label == "Export issues into JSON"
+               for button in actions.children)
     assert status in summary.children and status not in app.children
     assert status.children == status_children
     assert "obs-summary-status" in status.elem_classes
+    token_row = next(child for child in summary.children if isinstance(child, gr.Row)
+                     and any(plot.elem_id == "token-chart" for plot in child.children))
+    assert "token-step-explain" in token_row.children[1].elem_classes
+    assert summary.children[summary.children.index(token_row) + 1].elem_id == "duration-chart"
+    gantt_row = next(child for child in summary.children if isinstance(child, gr.Row)
+                     and any(plot.elem_id == "gantt-chart" for plot in child.children))
+    axis_form = summary.children[summary.children.index(gantt_row) - 1]
+    assert any(isinstance(control, gr.Radio) and control.label == "Timeline axis" for control in axis_form.children)
+
+
+def test_language_selector_stays_visible_with_the_plugin_heading():
+    app = decorate_dashboard(dashboard.insight_app(), "insight")
+    heading = app.children[0]
+    header = next(child for child in heading.children if child.elem_id == "tv-app-header")
+    selector = next(child for child in app.blocks.values() if child.elem_id == "tv-language-selector")
+    assert selector.visible and all(not child.visible for child in header.children if isinstance(child, gr.HTML))
+    assert header not in app.children
+
+
+@pytest.mark.parametrize("locale, caption", [("en", "Attribution API base URL"), ("zh-CN", "归因 API 基础 URL")])
+def test_dashboard_language_updates_keep_public_attribution_terminology(locale, caption):
+    app = decorate_dashboard(dashboard.insight_app(), "insight")
+    updates = next(entry.fn for entry in app.fns.values()
+                   if getattr(entry.fn, "__module__", "") == "agent_trajviz.i18n.ui"
+                   and getattr(entry.fn, "__name__", "") == "restore")(locale)
+    displayed = json.dumps(updates, ensure_ascii=False)
+    assert caption in displayed and "AWE API base URL" not in displayed and "AWE API 基础 URL" not in displayed
+    head = presentation("insight", dashboard.insight_presentation())["head"]
+    translations, _ = json.JSONDecoder().raw_decode(head.split("window.__tvTranslations=", 1)[1])
+    assert translations["attribution connection preferences restored. Enter a key and apply settings before running an operation."].startswith("已恢复 归因")
 
 
 @pytest.mark.parametrize("kind", ["insight", "converge"])

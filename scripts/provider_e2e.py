@@ -8,6 +8,7 @@ Only synthetic credentials and a public transcript fixture are sent to the local
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import queue
@@ -156,7 +157,8 @@ def exercise(provider_name: str, output: Path, cache: Path) -> dict:
     work.mkdir()
     source = work / f'{uuid.uuid4()}.jsonl'
     source.write_bytes(FIXTURE.read_bytes())
-    artifacts = cache / 'trajviz-obs' / 'sessions' / source.stem
+    # Imported sessions are keyed by their resolved source path.
+    artifacts = cache / 'trajviz-obs' / 'sessions' / 'imports' / hashlib.sha256(str(source).encode()).hexdigest()
     ledger: dict = {'provider': provider_name, 'commands': [], 'status': 'running', 'artifacts': str(artifacts)}
     provider = Provider()
     session = None

@@ -177,13 +177,16 @@ def _label(agent_id: str, label: str, meta: AgentMeta | None) -> str:
 
 
 def _merge_segments(segments: list[dict], cap: int) -> list[dict]:
-    """``{start, end}`` per segment; above *cap*, consecutive segments are joined into *cap* or fewer spans."""
-    spans = [{"start": s["start"], "end": s["end"]} for s in segments]
-    if len(spans) <= cap:
-        return spans
-    size = math.ceil(len(spans) / cap)
-    return [{"start": spans[i]["start"], "end": spans[min(i + size, len(spans)) - 1]["end"]}
-            for i in range(0, len(spans), size)]
+    """Join spans within a lane without treating an unmeasured segment as zero usage."""
+    size = max(1, math.ceil(len(segments) / cap))
+    spans = []
+    for start in range(0, len(segments), size):
+        group = segments[start:start + size]
+        tokens = [segment["tokens"] for segment in group]
+        spans.append({"start": group[0]["start"], "end": group[-1]["end"],
+                      "tokens": None if None in tokens else sum(tokens),
+                      "tool_calls": sum(segment["tool_calls"] for segment in group)})
+    return spans
 
 
 def _phase_band(phases: list[dict], n: int) -> list[dict]:

@@ -1,6 +1,6 @@
 """Version-checked compatibility shims for TrajViz internals.
 
-The plugin ships against the published ``agent-trajviz>=0.4.2,<0.5``. These integrations need internal seams:
+The plugin ships against the published ``agent-trajviz>=0.5.0,<0.6``. These integrations need internal seams:
 
 1. **The real context window everywhere.** ``context_pressure(window_limit=)`` and the ``context_*`` views take
    an override, but the issues, the brief and the export do not. :func:`load_run` writes the window
@@ -49,8 +49,8 @@ from .native_records import normalize_native_records
 #: The installed TrajViz version.
 TRAJVIZ_VERSION: str = agent_trajviz.__version__
 
-#: Supported releases: ``>=0.4.2,<0.5`` as ``[lowest, first unsupported)``.
-_SUPPORTED = ((0, 4, 2), (0, 5, 0))
+#: Supported releases: ``>=0.5.0,<0.6`` as ``[lowest, first unsupported)``.
+_SUPPORTED = ((0, 5, 0), (0, 6, 0))
 
 #: ``LoadError`` codes that mean "no assistant step yet" for the session being written.
 _EMPTY_CODES = frozenset({"unknown_format", "no_steps"})
@@ -82,12 +82,12 @@ def _release(version: str) -> tuple[int, int, int] | None:
 
 
 def check_supported() -> None:
-    """Refuse a TrajViz outside ``>=0.4.2,<0.5``, whose internals the shims were not written against."""
+    """Refuse a TrajViz outside ``>=0.5.0,<0.6``, whose internals the shims were not written against."""
     release = _release(TRAJVIZ_VERSION)
     if release is None or not _SUPPORTED[0] <= release < _SUPPORTED[1]:
         raise BridgeError("unsupported_trajviz",
-                          f"agent-trajviz {TRAJVIZ_VERSION} is installed; this bridge needs >=0.4.2,<0.5.",
-                          version=TRAJVIZ_VERSION, required=">=0.4.2,<0.5")
+                          f"agent-trajviz {TRAJVIZ_VERSION} is installed; this bridge needs >=0.5.0,<0.6.",
+                          version=TRAJVIZ_VERSION, required=">=0.5.0,<0.6")
 
 
 @functools.cache
@@ -368,9 +368,11 @@ def dashboard_window_callback(callback: Callable, transcript: str, window: int |
     metadata before ``session_from_run`` also gives issues and charts the same window as ``/obs``.
     """
     check_supported()
+    from agent_trajviz.insight.session import LoadedSession, session_from_run
     from agent_trajviz.insight.session import LoadError as SessionLoadError
-    from agent_trajviz.insight.session import session_from_run
     from agent_trajviz.insight.ui import load as ui_load
+
+    from .native_quality import project_dashboard_session
 
     if (not isinstance(callback, types.FunctionType) or callback.__name__ != "_do_load"
             or callback.__module__ != ui_load.__name__
@@ -382,26 +384,23 @@ def dashboard_window_callback(callback: Callable, transcript: str, window: int |
     native_load = ui_load.load_session
     default_session_id = session_id
 
+    def load_native(path: str, format_hint: str, session_id: str | None):
+        result = native_load(path, format_hint=format_hint, **({"session_id": session_id} if session_id else {}))
+        return project_dashboard_session(result) if isinstance(result, LoadedSession) else result
+
     def load_selected(path: str, format_hint: str = "", *, session_id: str | None = None):
         if not path or Path(path).resolve() != target:
-            return native_load(path, format_hint=format_hint, **({"session_id": session_id} if session_id else {}))
+            return load_native(path, format_hint, session_id)
         selected_session_id = session_id or default_session_id
         try:
             run = load_run(transcript, window_limit=window, session_id=selected_session_id)
         except LoadError:
             # Keep TrajViz's format/read error classification and visible banners unchanged.
-            return native_load(transcript, format_hint=format_hint,
-                               **({"session_id": selected_session_id} if selected_session_id else {}))
+            return load_native(transcript, format_hint, selected_session_id)
         if format_hint in agent_trajviz.FORMATS and run.format != format_hint:
-            return native_load(transcript, format_hint=format_hint,
-                               **({"session_id": selected_session_id} if selected_session_id else {}))
+            return load_native(transcript, format_hint, selected_session_id)
         try:
-            session = session_from_run(run, transcript)
-            from .opencode import NATIVE_KEY
-
-            if NATIVE_KEY in run.raw:
-                session.agent_summaries = project_analysis(session.shown).agent_summaries
-            return session
+            return project_dashboard_session(session_from_run(run, transcript))
         except Exception as exc:  # noqa: BLE001 - same visible failure contract as the native loader
             return SessionLoadError(code="analysis_error", message=(
                 f"The file loaded but could not be analysed ({type(exc).__name__}: {str(exc)[:160]})."))

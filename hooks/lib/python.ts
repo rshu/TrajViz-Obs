@@ -9,7 +9,7 @@ import { cacheRoot, isWindows } from './paths'
 import { readSession, updateSession } from './state'
 
 /** The manifest's default `trajvizSource`. */
-export const DEFAULT_SOURCE = 'agent-trajviz==0.4.2'
+export const DEFAULT_SOURCE = 'agent-trajviz==0.5.0'
 
 /** The interpreters tried on PATH, in order, when no override is set. */
 export const PYTHON_CANDIDATES: readonly string[] = ['python3.13', 'python3.12', 'python3.11', 'python3', 'python']
@@ -22,8 +22,8 @@ const PROBE_TIMEOUT_MS = 10_000
 const BOOTSTRAP_TIMEOUT_MS = 600_000
 /** Includes host Python discovery/download, lock waiting, installation and verification. */
 export const SETUP_TIMEOUT_MS = BOOTSTRAP_TIMEOUT_MS + PROBE_TIMEOUT_MS * (PYTHON_CANDIDATES.length + 2)
-/** Rebuild older environments that omitted the chart imports required by TrajViz's LLM renderer. */
-export const ENV_REVISION = 5
+/** Rebuild cached environments from before the TrajViz 0.5 runtime migration. */
+export const ENV_REVISION = 6
 const BASE_EXTRAS: readonly string[] = ['llm', 'charts', 'zstd']
 
 export type EnvState = {

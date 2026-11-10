@@ -9,7 +9,7 @@ import jsonschema
 import pytest
 
 from trajviz_obs.compat import load_run, project_analysis, project_brief, project_view
-from trajviz_obs.native_quality import _recent_outcome_lines
+from trajviz_obs.native_quality import _recent_outcome_lines, project_dashboard_session
 
 BASE = 1790000000000
 
@@ -26,6 +26,11 @@ def message(mid="a", tokens=None, *, content=None, completed=1000):
     if tokens is not None:
         result["tokens"] = tokens
     return result
+
+
+def child_dispatch():
+    return {"type": "tool", "id": "spawn", "name": "subagent",
+            "state": {"status": "completed", "metadata": {"sessionID": "child"}, "input": {}}}
 
 
 @pytest.fixture
@@ -135,7 +140,9 @@ def test_partial_native_totals_sum_only_observed_records_and_keep_per_step_gaps(
                                           "cache_read": 0, "cache_write": 0}
     assert analysis.data_quality["fields"]["tokens.total"]["status"] == "partial"
     assert analysis.data_quality["fields"]["tokens.input"]["status"] == "observed"
-    assert analysis.metrics["avg_cache_ratio"] is None and analysis.metrics["output_tokens_per_sec"] is None
+    assert analysis.metrics["avg_cache_ratio"] is None and analysis.metrics["output_tokens_per_sec"] == 0
+    assert analysis.metrics["output_throughput_timed_steps"] == 1
+    assert analysis.metrics["output_throughput_total_steps"] == 2
     assert next(row for row in analysis.verdicts if row["metric"] == "Cache Efficiency")["status"] == "unavailable"
     view = project_view(run, run.view("token_usage"))
     assert view.data["steps"][0]["total"] == 2 and view.data["steps"][1]["total"] is None
@@ -180,6 +187,105 @@ def test_missing_native_clock_is_unknown_instead_of_a_zero_duration(native_run):
     summary = project_view(run, run.view("summary"))
     assert summary.data["wall_clock_s"] is None
     jsonschema.validate(summary.to_dict(), tv.view_schema("summary"))
+
+
+def test_generation_rates_use_the_same_timed_steps_for_both_tokens_and_seconds(native_run):
+    _, run = native_run([message("measured", usage(input=20, output=90, reasoning=0, read=0)),
+                         message("no output", {"input": 5}, completed=3000),
+                         message("no timing", usage(output=700), completed=None)])
+    analysis = project_analysis(run)
+    metrics = analysis.metrics
+    assert metrics["output_tokens_per_sec"] == 100
+    assert metrics["output_throughput_timed_tokens"] == 90
+    assert metrics["output_throughput_timed_seconds"] == 0.9
+    assert metrics["output_throughput_timed_steps"] == 1
+    assert metrics["output_throughput_total_steps"] == 3
+    assert metrics["median_tokens_per_second"] == 122.2
+    assert metrics["tokens_per_second"] is None
+    verdict = next(row for row in analysis.verdicts if row["metric"] == "Throughput")
+    assert verdict["status"] == "good" and "1/3 assistant steps" in verdict["detail"]
+    assert analysis.agent_summaries[0]["output_tokens_per_sec"] == metrics["output_tokens_per_sec"]
+    assert analysis.agent_summaries[0]["output_throughput_timed_steps"] == 1
+
+
+def test_no_paired_throughput_evidence_stays_unavailable_in_browser_and_views(native_run):
+    from agent_trajviz.insight.session import session_from_run
+    from agent_trajviz.insight.ui.overview_tab import pack_load
+
+    _, run = native_run([message("known tokens", usage(), completed=None), message("known duration", {"input": 5})])
+    session = project_dashboard_session(session_from_run(run))
+    assert session.metrics["avg_duration"] == 0.9  # Observed step duration, even without matching tokens.
+    assert session.metrics["median_tokens_per_second"] is None
+    assert session.metrics["output_tokens_per_sec"] is None
+    verdict = next(row for row in session.verdicts if row["metric"] == "Throughput")
+    assert verdict["status"] == "unavailable" and "0/2 assistant steps" in verdict["detail"]
+    assert [row["total"] for row in session.shown.view("token_usage").data["steps"]] == [13, None]
+    assert [row["total"] for row in run.view("token_usage").data["steps"]] == [13, 0]
+    rendered = pack_load(session)
+    assert "Generation throughput: N/A" in rendered["overview_kpi_html"]["value"]
+    assert "0/2 timed" in rendered["overview_kpi_html"]["value"]
+
+
+def test_context_growth_uses_adjacent_measured_prompts_of_the_same_agent(native_run):
+    def prompt(mid, started, tokens):
+        return {**message(mid, tokens), "time": {"created": BASE + started, "completed": BASE + started + 90}}
+
+    child = {"session": {"id": "child"}, "messages": [prompt("other agent", 400, usage(input=1000, read=0))]}
+    _, run = native_run([prompt("before gap", 100, usage(input=10, read=0)),
+                         prompt("missing", 200, {"input": 20}),
+                         {**prompt("observed", 300, usage(input=100, read=0)), "content": [child_dispatch()]},
+                         prompt("next observed", 500, usage(input=175, read=0))], [child])
+    assert run.steps[3]["session_id"] == "child"
+    view = project_view(run, run.view("hotspots"))
+    assert [(row["index"], row["growth"]) for row in view.data["top_growth"]] == [(2, 75)]
+    jsonschema.validate(view.to_dict(), tv.view_schema("hotspots"))
+
+
+def test_repeated_user_messages_exclude_synthetic_messages_and_child_dispatches(native_run):
+    from agent_trajviz.insight.session import session_from_run
+
+    phrase = "Please verify the final results"
+    messages = [
+        {"type": kind, "id": f"u{i}", "text": text, "time": {"created": BASE + i * 10}}
+        for i, (kind, text) in enumerate([
+            ("user", phrase), ("synthetic", phrase), ("user", "Please verify\n the final results"),
+            ("user", phrase), ("user", phrase.lower()), ("user", phrase), ("user", phrase)])
+    ]
+    child = {"session": {"id": "child"}, "messages": [
+        {"type": "user", "id": "task", "text": phrase, "time": {"created": BASE + 200}},
+        {**message(tokens=usage()), "time": {"created": BASE + 300, "completed": BASE + 400}},
+    ]}
+    path, run = native_run([*messages, message(tokens=usage(), content=[child_dispatch()])], [child])
+    view = project_view(run, run.view("issues"))
+    issue = next(row for row in view.data if row["title"].startswith("User repeated a message"))
+    assert issue["title"].endswith("(5×)")
+    assert issue["steps"] == [0, 1, 2, 4, 5] and phrase in issue["detail"]
+    assert issue["why"]
+    assert any(step["role"] == "user" and step["session_id"] == "child" for step in run.steps)
+    session = project_dashboard_session(session_from_run(run))
+    assert session.user_repeats == [{"message": phrase, "count": 5, "steps": [0, 1, 2, 4, 5]}]
+    jsonschema.validate(view.to_dict(), tv.view_schema("issues"))
+    assert len(json.loads(path.read_bytes())["messages"]) == 8
+
+
+@pytest.mark.parametrize("child_tokens", [None, usage(0, 0, 0, 0, 0), usage(8, 4, 0, 2, 0)])
+def test_browser_agent_token_chart_loads_missing_and_mixed_measurements(native_run, child_tokens):
+    from agent_trajviz.insight.session import session_from_run
+    from agent_trajviz.insight.ui.overview_tab import pack_load
+
+    child = {"session": {"id": "child"}, "messages": [message(tokens=child_tokens)]}
+    _, run = native_run([message(content=[child_dispatch()])], [child])
+    session = project_dashboard_session(session_from_run(run))
+    fig = pack_load(session)["agent_token_chart"]
+    annotations = " ".join(annotation.text for annotation in fig.layout.annotations)
+    if child_tokens is None:
+        assert not fig.data and "Agent token totals were not" in annotations
+    elif child_tokens["input"] == 0:
+        assert list(fig.data[0].y) == [0] and "unavailable" in annotations
+    else:
+        assert len(fig.data) >= 2 and all(trace.y[0] is None for trace in fig.data)
+        assert "unavailable" in annotations
+    assert project_view(run, run.view("agent_tokens")).data["agents"][0]["total"] is None
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -434,7 +540,7 @@ def test_native_family_agent_coverage_uses_summary_identity_across_sessions_and_
     projected = project_view(run, run.view("agents"))
     for row in projected.data:
         for field in ("total_tokens", "input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens",
-                      "cache_write_tokens", "total_duration_s", "cache_efficiency_pct", "output_tokens_per_sec",
+                      "cache_write_tokens", "total_duration_s", "cache_efficiency_pct",
                       "error_count"):
             assert row[field] == original[row["agent_id"]][field]
         expected = 2 if row["agent_id"] == "" else 1
@@ -443,7 +549,16 @@ def test_native_family_agent_coverage_uses_summary_identity_across_sessions_and_
                 "status": "observed", "observed": expected, "partial": 0, "total": expected, "reasons": {}}
     child_row = next(row for row in projected.data if row["agent_id"] == "child")
     assert child_row["total_tokens"] == 2 and child_row["output_tokens"] == 0
+    assert child_row["output_tokens_per_sec"] == 0
     jsonschema.validate(projected.to_dict(), tv.view_schema("agents"))
+    usage_rows = project_view(run, run.view("token_usage")).data["steps"]
+    duration_rows = project_view(run, run.view("step_durations")).data["steps"]
+    assert [row["agent"] for row in duration_rows] == [row["agent"] for row in usage_rows]
+    assert next(row for row in usage_rows if row["agent"] == "child::general")["total"] == 2
+    lanes = project_view(run, run.view("agent_swimlane")).data["lanes"]
+    assert next(lane for lane in lanes if lane["id"] == "child::general")["segments"][0]["tokens"] == 2
+    per_agent = project_view(run, run.view("agent_tokens")).data["agents"]
+    assert next(row for row in per_agent if row["agent_id"] == "child")["total"] == 2
     assert path.read_bytes() == before and run.to_dict(include_raw=True) == canonical
 
 

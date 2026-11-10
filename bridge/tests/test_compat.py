@@ -218,7 +218,7 @@ def test_empty_session_is_signalled(tmp_path):
         load_run(str(p))
 
 
-@pytest.mark.parametrize("version", ["0.1.9", "0.2.0", "0.3.1", "0.4.0", "0.4.1", "0.5.0", "1.0.0", "unknown"])
+@pytest.mark.parametrize("version", ["0.1.9", "0.2.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2", "0.6.0", "1.0.0", "unknown"])
 def test_unsupported_trajviz_is_refused(monkeypatch, version):
     monkeypatch.setattr(compat, "TRAJVIZ_VERSION", version)
     with pytest.raises(BridgeError) as caught:
@@ -226,7 +226,7 @@ def test_unsupported_trajviz_is_refused(monkeypatch, version):
     assert caught.value.code == "unsupported_trajviz"
 
 
-@pytest.mark.parametrize("version", ["0.4.2", "0.4.99"])
+@pytest.mark.parametrize("version", ["0.5.0", "0.5.99"])
 def test_supported_published_minor_is_accepted(monkeypatch, version):
     monkeypatch.setattr(compat, "TRAJVIZ_VERSION", version)
     compat.check_supported()

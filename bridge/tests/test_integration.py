@@ -48,7 +48,7 @@ def test_every_subcommand_runs_on_fixture(run_cli, fixture_session, synthetic_se
     assert ok(["resolve", "--session", "bbb", *location])["session_id"] == BBB3
     assert ok(["sessions", *location])["sessions"][0]["id"] == BBB3
     assert {row["id"] for row in ok(["capture-sessions", "--transcript", str(captured_sessions)])["sessions"]} == {"A", "B"}
-    assert ok(["doctor"])["trajviz"]["version"].startswith("0.4")
+    assert ok(["doctor"])["trajviz"]["version"].startswith("0.5.")
 
     assert ok(["snapshot", *session])["context"]["window"] == 200000
     assert ok(["view", *session])["views"]

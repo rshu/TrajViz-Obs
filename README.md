@@ -13,7 +13,7 @@ Visualize and diagnose Claude Code and OpenCode 2 sessions with [TrajViz](https:
 
 For **OpenCode 2 terminal or Desktop**, follow the [OpenCode installation guide](opencode/README.md). The instructions below install the Claude Code plugin.
 
-Requires Claude Code with function hooks (mods) and process execution, plus [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Validated on Claude Code **2.1.309**; hosts limited to shell hooks and Markdown commands cannot run this plugin.
+Requires Claude Code with function hooks (mods) and process execution, plus [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Validated on Claude Code **2.1.311**.
 
 In Claude Code:
 
@@ -46,28 +46,28 @@ After the session's first assistant response:
 | Inspect diagnostics | `/obs issues`, `/obs agents`, `/obs view` |
 | Inspect recorded workflow evidence | `/obs attribution` |
 | Open a live pane | `/obs pane`; close with `/obs pane close` |
-| Export data | `/obs json --with-trajectory`, `/obs bundle` |
+| Export data | `/obs json`, `/obs bundle`, `/obs dashboard --html session.html` |
 | Compare runs | `/obs compare <session-id>`, `/obs converge` |
 | Ask for analysis or fixes | `/obs analyze [question]`, `/obs fixes` |
 | Label steps by phase and action | `/obs label --max-steps 20` |
 | List all commands and options | `/obs help` |
 
-In the dashboard, start with **Overview → Summary** for health and issues. Click an issue's step number to inspect it in **Workflow**. The selected session and its cached labels load automatically. Close the server with `/obs dashboard stop`.
+In the dashboard, start with **Overview → Summary** for health and issues. Click an issue's step number to inspect it in **Workflow**, where **Expanded** shows full step text and tool results. Overview also has an execution timeline with **Skip idle** and **Wallclock** modes, clickable token bars, issue JSON export, and context-growth hotspots. The selected session and its cached labels load automatically. Close the server with `/obs dashboard stop`.
 
 Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path>` to a session command. Run `/obs` without a selector to return to the current session.
 
-Both plugins use TrajViz **0.4.2** and expose all **36 views**. `/obs view data_quality` explains missing or partial evidence; unavailable measurements appear as unknown.
+Both plugins use TrajViz **0.5.0** and expose all **36 views**. `/obs view data_quality` explains missing or partial evidence. Measured zeros appear as zero, and unavailable measurements appear as unknown.
 
 Watch refreshes an open pane after turns. `/obs statusline on` pins a summary under the prompt. Use `/obs watch off` and `/obs statusline off` to stop automatic refreshes.
 
 <details>
 <summary>Saved imports and exports</summary>
 
-Imports include Codex, Pi, and compressed DeepSeek sessions. JSON view exports use schema version **2**.
+Imports include CodeAgent session exports, OpenCode Desktop and Windows exports, Codex, Pi, and compressed DeepSeek sessions. JSON view exports use schema version **2**.
 
 Saved OTLP captures can contain several sessions. List them with `/obs sessions --session /path/to/capture`, then select one with `/obs --session /path/to/capture --session-id <id>`. JSON, JSONL, bundle manifests, directories, and ZIP captures are supported. This imports saved telemetry; it does not enable live telemetry collection.
 
-Bundles preserve a complete OTLP capture; use `/obs json --with-trajectory` to export only the selected session. Other imported formats may bundle a portable `trajectory.json` that can also be loaded separately.
+`/obs json` exports the selected session as a reloadable `trajectory.json` alongside its views. Use `--views-only` with a fresh output directory to omit the trajectory. `/obs bundle` preserves a complete OTLP capture, including its other sessions.
 
 </details>
 
@@ -133,7 +133,7 @@ Overview, diagnostic views, and exports run locally without model calls. `/obs a
 
 The dashboard's AI analysis panel has its own **Settings**, independently of `llm`; environment values provide defaults. Keys stay in the current dashboard session, and remembered details exclude keys. Choose **Analyze trajectory** to start, or ask a question; opening the panel makes no model call. **Test API key** sends a small request without trajectory data.
 
-Exports and cached analysis contain session data and stay on the host unless shared. Dashboards bind to `127.0.0.1` and stop on request or plugin unload.
+Exports and cached analysis contain session data and stay on the host unless shared. Plugin dashboards bind to `127.0.0.1` and stop on request or plugin unload. For an authenticated remote dashboard, use the standalone TrajViz CLI with `TRAJVIZ_AUTH` and upload an exported trajectory. [Standalone dashboard options](https://github.com/rshu/TrajViz/tree/v0.5.0#dashboard-and-cli)
 
 ## Troubleshooting and limits
 
@@ -141,7 +141,7 @@ Run `/obs doctor` to check setup or `/obs setup` to install dependencies. If `/o
 
 - Timing is estimated from transcripts; workflow-spawned work and subagent finish times may be incomplete.
 - Operation-based OTLP captures support observed metrics and inspection; transcript alignment and reference-based capability diagnosis require supported native transcripts.
-- Imported sessions require manual refresh after their inputs change. Claude Code files above **32 MiB** also require manual refresh; OpenCode has [live-capture limits](opencode/README.md#options). Insight analyzes at most the first **2,000 steps**; `/obs json --with-trajectory` retains the full parsed trajectory.
+- Imported sessions require manual refresh after their inputs change. Claude Code files above **32 MiB** also require manual refresh. OpenCode has [live-capture limits](opencode/README.md#options). Insight analyzes at most the first **2,000 steps**. The `trajectory.json` export retains the full parsed trajectory.
 - Real-session validation covers **macOS**. Linux and Windows still need platform-specific end-to-end testing.
 
 ## Development

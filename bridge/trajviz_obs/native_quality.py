@@ -11,11 +11,15 @@ import copy
 import functools
 import json
 import math
+import statistics
 import types
 import weakref
 from collections import defaultdict
+from dataclasses import fields as dataclass_fields
 from dataclasses import replace
 from functools import cached_property
+
+from agent_trajviz import Trajectory
 
 TOKEN_LABELS = {"total": "Total Tokens", "input": "Input Tokens", "output": "Output Tokens",
                 "reasoning": "Reasoning Tokens", "cache_read": "Cache Read", "cache_write": "Cache Write"}
@@ -85,8 +89,7 @@ def _project_metrics(metrics, quality):
     dependencies = {
         "avg_cache_ratio": ("tokens.total", "tokens.cache_read"),
         "non_cache_ratio": ("tokens.total", "tokens.input"), "output_input_ratio": ("tokens.input", "tokens.output"),
-        "output_tokens_per_sec": ("tokens.output", "duration"),
-        "tokens_per_second": ("tokens.total", "duration"), "median_tokens_per_second": ("tokens.total", "duration"),
+        "tokens_per_second": ("tokens.total", "duration"),
         "avg_tokens_per_step": ("tokens.total",), "avg_tokens_per_assistant_step": ("tokens.total",),
         "median_step_tokens": ("tokens.total",), "p95_step_tokens": ("tokens.total",),
         "tokens_per_tool": ("tokens.total",),
@@ -107,6 +110,26 @@ def _project_metrics(metrics, quality):
     return result
 
 
+def _generation_metrics(steps):
+    from agent_trajviz.insight.metrics import output_throughput
+
+    assistant = [step for step in steps if step.get("role") == "assistant"]
+    measured = [step for step in assistant if _observed(step, "duration") and _observed(step, "tokens.output")]
+    sample = output_throughput(measured)
+    count, total = sample["timed_steps"], len(assistant)
+    seconds = sample["seconds"]
+    return {
+        "output_tokens_per_sec": round(sample["tokens"] / seconds, 1) if seconds > 0 else None,
+        "output_throughput_timed_steps": count,
+        "output_throughput_total_steps": total,
+        "output_throughput_coverage_pct": round(count / total * 100, 1) if total else None,
+        "output_throughput_incomplete": count < total,
+        "output_throughput_timed_tokens": sample["tokens"],
+        "output_throughput_timed_seconds": round(seconds, 3),
+        "output_throughput_tool_wait_seconds": round(sample["tool_wait_seconds"], 3),
+    }
+
+
 def _project_row(row, step):
     result = copy.deepcopy(row)
     fields = {"tokens_total": "total", "tokens_input": "input", "tokens_output": "output", "cache_read": "cache_read",
@@ -119,6 +142,10 @@ def _project_row(row, step):
                         "tok_per_s": ("total",), "non_cache_per_sec": ("input",)}.items():
         if key in result and not all(_observed(step, f"tokens.{token}") for token in tokens):
             result[key] = None
+    if not _observed(step, "duration"):
+        for key in ("duration", "duration_s", "tokens_per_sec", "tok_per_s", "non_cache_per_sec"):
+            if key in result:
+                result[key] = None
     if any(not _outcome(call) for call in step.get("tool_calls", [])) and "errors" in result:
         result["observed_errors"], result["errors"] = result["errors"], None
     from agent_trajviz.insight.metrics import tool_call_duration_ms
@@ -149,6 +176,12 @@ class _Projection:
     @cached_property
     def metrics(self):
         result = _project_metrics(self._original.metrics, self.data_quality)
+        result.update(_generation_metrics(self.steps))
+        rates = [row["tokens_per_sec"] for row in self.message_rows
+                 if row["role"] == "assistant" and row["tokens_per_sec"] is not None]
+        result["median_tokens_per_second"] = round(statistics.median(rates), 1) if rates else None
+        if not result["total_duration"]:
+            result["tokens_per_second"] = None
         if result["total_duration"] is None:
             from agent_trajviz.insight.metrics import session_wall_clock_seconds
 
@@ -159,10 +192,28 @@ class _Projection:
 
     @cached_property
     def verdicts(self):
+        from agent_trajviz.insight.metrics import compute_health_verdict
+
         rows = copy.deepcopy(self._original.verdicts)
         for row in rows:
+            if row["metric"] == "Throughput":
+                metrics = self.metrics
+                count = metrics["output_throughput_timed_steps"]
+                total = metrics["output_throughput_total_steps"]
+                basis = f"{count}/{total} assistant steps with measured output and generation time"
+                if metrics["output_tokens_per_sec"] is None:
+                    row.update(status="unavailable", label="N/A", detail=f"Throughput unavailable. {basis}.")
+                else:
+                    # Reuse the engine's verdict thresholds for the measured sample.
+                    verdict_input = {**self._original.metrics,
+                                     "output_tokens_per_sec": metrics["output_tokens_per_sec"],
+                                     "output_throughput_incomplete": False,
+                                     "output_throughput_tool_wait_seconds": metrics["output_throughput_tool_wait_seconds"]}
+                    verdict = next(item for item in compute_health_verdict(verdict_input, [])
+                                   if item["metric"] == "Throughput")
+                    row.update(verdict, detail=f"{verdict['detail']}. Based on {basis}.")
+                continue
             dependencies = {"Cache Efficiency": ("tokens.total", "tokens.cache_read"),
-                            "Throughput": ("tokens.output", "duration"),
                             "Tool Success": ("tool_outcomes",), "Errors": ("tool_outcomes",)}[row["metric"]]
             missing = [key for key in dependencies if not _complete(self.data_quality, key)]
             if missing:
@@ -198,8 +249,9 @@ class _Projection:
                 row["total_duration_s"] = None
             if not _complete(quality, "tokens.total", "tokens.cache_read"):
                 row["cache_efficiency_pct"] = None
-            if not _complete(quality, "tokens.output", "duration"):
-                row["output_tokens_per_sec"] = None
+            generation = _generation_metrics(grouped[row["agent_id"]])
+            for key in ("output_tokens_per_sec", "output_throughput_timed_steps"):
+                row[key] = generation[key]
             if not _complete(quality, "tool_outcomes"):
                 row["observed_errors"], row["error_count"] = row["error_count"], None
                 row["unknown_outcomes"] = quality["fields"]["tool_outcomes"]["total"] - quality["fields"]["tool_outcomes"]["observed"]
@@ -217,12 +269,29 @@ class _Projection:
 
     @cached_property
     def hotspots(self):
-        steps = {step["index"]: step for step in self.steps}
-        result = {key: [_project_row(row, steps[row["index"]]) for row in rows]
-                  for key, rows in self._original.hotspots.items()}
-        result["heaviest"] = [row for row in result["heaviest"] if row["tokens_total"] is not None]
-        result["lowest_cache_read"] = [row for row in result["lowest_cache_read"] if row["cache_ratio"] is not None]
-        return result
+        from agent_trajviz.insight.analysis import hotspots
+
+        # Rank the observed rows so an unavailable placeholder cannot displace
+        # a valid candidate or bridge two prompts across an unobserved call.
+        return hotspots(self.message_rows, steps=self.steps)
+
+    @cached_property
+    def user_repeats(self):
+        from agent_trajviz.insight.patterns import detect_user_repeats
+
+        conversations = defaultdict(list)
+        for step in self.steps:
+            if (step.get("role") == "user" and not step.get("is_sub_agent")
+                    and not step.get("parent_session_id")):
+                conversations[step.get("session_id") or ""].append(step)
+        repeats = [row for steps in conversations.values() for row in detect_user_repeats(steps)]
+        return sorted(repeats, key=lambda row: (-row["count"], row["steps"][0]))
+
+    @cached_property
+    def issues(self):
+        from agent_trajviz.insight.issues import prepare_overview_issues
+
+        return prepare_overview_issues(self)
 
 
 def project_analysis(run):
@@ -232,6 +301,63 @@ def project_analysis(run):
     if run not in _PROJECTED:
         _PROJECTED[run] = _Projection(run)
     return _PROJECTED[run]
+
+
+_DASHBOARD_AGENT_TOKENS = "_obs_agent_tokens"
+
+
+def _draw_nullable_agent_tokens(data, dark):
+    """Keep null labels and bars out of the engine's numeric-only renderer."""
+    from agent_trajviz.insight.charts._layout import _apply_dark, _empty_figure
+    from agent_trajviz.insight.charts.usage import draw_agent_tokens
+
+    # Input and output decide the renderer mode. Plotted segment values remain nullable.
+    agents = [{**row, "input": row["input"] or 0, "output": row["output"] or 0} for row in data["agents"]]
+    if not any(row["input"] > 0 or row["output"] > 0 for row in agents):
+        agents = [row for row in agents if row["total"] is not None]
+    if not agents:
+        fig = _empty_figure(240, "Agent token totals were not recorded.")
+        _apply_dark(fig, dark)
+        return fig
+    fig = draw_agent_tokens({"agents": agents}, dark=dark)
+    if data["note_partial"]:
+        fig.add_annotation(text="Some agent token measurements are unavailable.",
+                           xref="paper", yref="paper", x=0, y=-0.25, xanchor="left", showarrow=False)
+        fig.update_layout(margin_b=max(fig.layout.margin.b or 0, 80))
+    return fig
+
+
+class _DashboardTrajectory(Trajectory):
+    """Route chart reads through the same projection used for JSON exports."""
+
+    def view(self, view_id, **options):
+        view = project_view(self, super().view(view_id, **options))
+        if view_id == "agent_tokens" and any(
+                row[field] is None for row in view.data["agents"] for field in ("input", "output", "total")):
+            from agent_trajviz.figures import FIGURE_VIEWS, register_figure
+
+            if _DASHBOARD_AGENT_TOKENS not in FIGURE_VIEWS:
+                register_figure(_DASHBOARD_AGENT_TOKENS, _draw_nullable_agent_tokens, replace=True)
+            native = (view.availability or {}).get("basis") != "captured_operations"
+            return replace(view, id=_DASHBOARD_AGENT_TOKENS, data={**view.data, "note_partial": native})
+        return view
+
+
+def project_dashboard_session(session):
+    """Give the browser the same native observations as JSON views and the panes."""
+    run = session.shown
+    if run is None:
+        return session
+    projection = project_analysis(run)
+    shown = _DashboardTrajectory(**{field.name: getattr(run, field.name) for field in dataclass_fields(run)})
+    if projection is run._analysis:
+        return replace(session, shown=shown)
+    from agent_trajviz.insight.metrics import wall_clock_fmt
+
+    return replace(session, shown=shown, metrics=projection.metrics, verdicts=projection.verdicts,
+                   agent_summaries=projection.agent_summaries, message_rows=projection.message_rows,
+                   step_analytics=projection.step_analytics, user_repeats=projection.user_repeats,
+                   wall_clock=wall_clock_fmt(projection.metrics)[1])
 
 
 def project_view(run, view):
@@ -248,7 +374,12 @@ def project_view(run, view):
                     wall_clock_s=projection.metrics.get("wall_clock"),
                     tool_success_rate=projection.metrics.get("tool_success_rate"),
                     output_tokens_per_sec=projection.metrics.get("output_tokens_per_sec"),
-                    health={row["metric"]: row["status"] for row in projection.verdicts})
+                    health={row["metric"]: row["status"] for row in projection.verdicts},
+                    issues=len(projection.issues))
+    elif view.id == "issues":
+        from agent_trajviz.views import _jsonable
+
+        data = _jsonable(projection.issues)
     elif view.id == "token_usage":
         for row in data["steps"]:
             step = steps[row["step"]]

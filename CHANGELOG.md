@@ -1,5 +1,12 @@
 # Changelog
 
+## OpenCode 0.5.3 / Claude Code 0.3.7 — 2026-11-10
+
+- Sync TrajViz 0.5.0 for expanded Workflow steps, execution timelines, per-step token breakdowns, issue JSON export, context-growth hotspots, and repeated-prompt detection.
+- Show per-agent usage and timing, with coverage for partial or missing measurements.
+- Export a reloadable trajectory with `/obs json` by default. Use `--views-only` to omit it.
+- Add offline HTML export and theme options to `/obs dashboard`, and support CodeAgent and OpenCode Desktop/Windows imports.
+
 ## OpenCode 0.5.2 / Claude Code 0.3.6 — 2026-11-04
 
 - Sync both plugins and their managed runtimes with TrajViz 0.4.2.

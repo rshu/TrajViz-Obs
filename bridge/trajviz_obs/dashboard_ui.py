@@ -6,14 +6,26 @@ put session health in Overview's Summary, and bound dense charts and filters.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import textwrap
+import types
 from typing import TYPE_CHECKING, Any
 
+from .attribution_ui import public_translation_head
 from .compat import attribution_message
+from .errors import BridgeError
 
 if TYPE_CHECKING:
     import gradio as gr
+
+_MAX_EXPANDED_TOOL_CHARS = 200_000
+_EMPTY_CHART = {
+    "token-chart": ("y", "No step token usage was recorded."),
+    "duration-chart": ("y", "No step durations were recorded."),
+    "gantt-chart": ("x", "No drawable execution intervals. A recorded start and positive duration are required."),
+}
 
 _CSS = """
 .obs-dashboard .main { width: 100% !important; min-width: 0 !important; max-width: 1440px !important;
@@ -23,19 +35,23 @@ _CSS = """
 .obs-dashboard .tabs, .obs-dashboard .tabitem, .obs-dashboard .row, .obs-dashboard .column {
   min-width: 0 !important; max-width: 100%;
 }
-.obs-dashboard .obs-guide { padding: 12px 16px; border: 1px solid #dce3ef;
-  border-radius: 10px; background: #f8fafc; color: #0f172a; }
+.obs-dashboard .obs-guide { padding: 12px 16px; border: 1px solid var(--ov-border, #dce3ef);
+  border-radius: 10px; background: var(--ov-nav-bg, #f8fafc); color: var(--ov-text, #0f172a); }
+.obs-dashboard .obs-dashboard-heading { align-items: start; }
+.obs-dashboard .obs-dashboard-heading > #tv-app-header { padding: 0; margin: 0; flex: 0 0 auto; }
+.obs-dashboard .obs-dashboard-heading > #tv-app-header .form { flex: 0 0 auto; }
 .obs-dashboard .obs-guide-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
 .obs-dashboard .obs-guide h1 { font-size: 19px; margin: 0; line-height: 1.4; }
 .obs-dashboard .obs-guide details { margin-top: 6px; }
-.obs-dashboard .obs-guide summary { color: #1d4ed8; font-size: 12px; cursor: pointer; }
+.obs-dashboard .obs-guide summary { color: var(--ov-accent, #1d4ed8); font-size: 12px; cursor: pointer; }
 .obs-dashboard .obs-guide summary:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
 .obs-dashboard .obs-guide-block .html-container { padding: 0 !important; }
 .obs-dashboard .obs-guide-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px; margin-top: 12px; }
 .obs-dashboard .obs-guide p { font-size: 13px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
 .obs-dashboard .obs-guide strong { display: block; margin-bottom: 3px; }
-.obs-dashboard .obs-model-note { font-size: 12px !important; margin-top: 12px !important; color: #475569; }
+.obs-dashboard .obs-model-note { font-size: 12px !important; margin-top: 12px !important;
+  color: var(--ov-muted, #475569); }
 .obs-dashboard .obs-model-note strong { display: inline; }
 .obs-dashboard .obs-source-controls { margin-bottom: 0; }
 .obs-dashboard .upload-row { padding-top: 8px; }
@@ -65,6 +81,7 @@ _CSS = """
 .obs-dashboard .obs-chart > .js-plotly-plot { min-width: 0; width: 100%; }
 .obs-dashboard .obs-chart:has(> .empty) { display: none !important; }
 .obs-dashboard .obs-chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 640px), 1fr)); }
+.obs-dashboard .token-step-explain { min-width: 0; overflow-wrap: anywhere; }
 .obs-dashboard .obs-markdown { min-width: 0 !important; max-width: 100%; overflow-x: auto; }
 .obs-dashboard .obs-markdown table { width: max-content; min-width: 100%; }
 .obs-dashboard .obs-markdown th, .obs-dashboard .obs-markdown td { max-width: 360px; overflow-wrap: break-word; }
@@ -73,18 +90,23 @@ _CSS = """
 .obs-dashboard .obs-chart:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .obs-dashboard .insight-step-link:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .obs-dashboard .obs-workflow-filters { display: grid; align-items: start;
-  grid-template-columns: auto minmax(0, 1fr) minmax(220px, .6fr); }
+  grid-template-columns: auto minmax(160px, .45fr) minmax(0, 1fr) minmax(160px, .6fr); }
 .obs-dashboard .obs-workflow-filters > button { align-self: start !important; justify-self: start; height: auto !important; }
+.obs-dashboard .obs-workflow-filters > .obs-workflow-view-form { background: transparent !important;
+  border: 0; box-shadow: none; }
+.obs-dashboard .obs-workflow-view-form > .block { width: 100%; }
 .obs-dashboard .filter-group { align-items: start; }
 .obs-dashboard .filter-options { min-width: 0; max-height: 128px; overflow-y: auto; padding: 2px; }
 .obs-dashboard .filter-chip { flex-shrink: 0; }
 .obs-dashboard .obs-workflow-body { display: grid; align-items: start; gap: 16px;
-  grid-template-columns: 120px minmax(0, 1fr) minmax(280px, .9fr); }
+  grid-template-columns: 140px minmax(0, 1fr) minmax(280px, .9fr); }
 .obs-dashboard .wf-toc-sidebar { width: 100%; top: 56px; }
+.obs-dashboard .wf-toc-sidebar .toc-entry { gap: 3px; padding-right: 4px; }
+.obs-dashboard .wf-toc-sidebar .toc-num { min-width: 22px; }
 .obs-dashboard .detail-panel { top: 56px; }
 @media (max-width: 1100px) {
   .obs-dashboard .ov-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
-  .obs-dashboard .obs-workflow-body { grid-template-columns: 100px minmax(0, 1fr); }
+  .obs-dashboard .obs-workflow-body { grid-template-columns: 128px minmax(0, 1fr); }
   .obs-dashboard .obs-workflow-body > .column:first-child { grid-row: 1 / span 2; }
   .obs-dashboard .obs-workflow-body > .detail-panel { grid-column: 2; position: relative; top: auto; }
   .obs-dashboard .obs-workflow-body .wf-scroll { max-height: 50vh; }
@@ -116,12 +138,12 @@ _CSS = """
 /* Gradio 6 drops @container rules when scoping CSS. ResizeObserver sets these
    classes from the actual tab width, including space taken by the AI sidebar. */
 .obs-main-tabs.obs-content-medium .ov-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
-.obs-main-tabs.obs-content-medium .obs-workflow-body { grid-template-columns: 100px minmax(0, 1fr); }
+.obs-main-tabs.obs-content-medium .obs-workflow-body { grid-template-columns: 128px minmax(0, 1fr); }
 .obs-main-tabs.obs-content-medium .obs-workflow-body > .column:first-child { grid-row: 1 / span 2; }
 .obs-main-tabs.obs-content-medium .obs-workflow-body > .detail-panel { grid-column: 2; position: relative; top: auto; }
 .obs-main-tabs.obs-content-medium .obs-workflow-body .wf-scroll { max-height: 50vh; }
 .obs-main-tabs.obs-content-medium .obs-workflow-filters { grid-template-columns: auto minmax(0, 1fr); }
-.obs-main-tabs.obs-content-medium .obs-workflow-filters > .form { grid-column: 1 / -1; }
+.obs-main-tabs.obs-content-medium .obs-workflow-filters > #wf-filter-chips { grid-column: 1 / -1; }
 .obs-main-tabs.obs-content-narrow .ov-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
 .obs-main-tabs.obs-content-narrow .obs-workflow-filters { grid-template-columns: minmax(0, 1fr); }
 .obs-main-tabs.obs-content-narrow .obs-workflow-body { grid-template-columns: minmax(0, 1fr); }
@@ -132,11 +154,14 @@ _CSS = """
 .obs-main-tabs.obs-content-narrow .filter-options { width: 100%; max-height: 100px; }
 """
 
-_JS = """() => {
-  // Keep the dashboard presentation consistent with its native chart colors.
-  document.documentElement.style.colorScheme = 'light';
+_LIGHT = """document.documentElement.style.colorScheme = 'light';
   document.documentElement.classList.remove('dark');
-  document.body?.classList.remove('dark');
+  document.body?.classList.remove('dark');"""
+_DARK = """document.documentElement.style.colorScheme = 'dark';
+  document.documentElement.classList.add('dark', 'tv-theme-dark');
+  document.body?.classList.add('dark');"""
+
+_JS = "() => {\n  " + _LIGHT + """
   const root = document.querySelector('.gradio-container');
   if (!root || root.dataset.obsLayoutBound) return [];
   root.dataset.obsLayoutBound = 'true';
@@ -247,8 +272,8 @@ _GUIDE = {
     "insight": """<section class="obs-guide" aria-label="Dashboard guide">
 <div class="obs-guide-header"><h1>TrajViz Obs</h1><p>Session health, evidence, and comparisons.</p></div>
 <details><summary>How to use this dashboard</summary><div class="obs-guide-grid">
-<p><strong>1 · Overview</strong>Start with Summary for health and issues. Contents opens tools, agents, context, diagnostics, and labels.</p>
-<p><strong>2 · Workflow</strong>Follow individual steps. Click an issue’s step number to jump to its evidence.</p>
+<p><strong>1 · Overview</strong>Start with health and issues. Click a token bar for its breakdown, or switch the execution timeline to wall-clock time. Find context growth in Deep Dive.</p>
+<p><strong>2 · Workflow</strong>Follow individual steps and switch to Expanded for full evidence. Click an issue’s step number to jump to its evidence.</p>
 <p><strong>3 · Comparison</strong>Compare runs. Patterns, Raw Data, and Labels provide the supporting detail.</p>
 </div><p class="obs-model-note">Use <code>/obs analyze</code> or <code>/obs fixes</code> for your host’s configured model.
 The browser’s AI controls use the connection in Settings, with environment settings as defaults.</p></details></section>""",
@@ -269,13 +294,111 @@ def presentation(kind: str, upstream: dict[str, Any]) -> dict[str, Any]:
     # Gradio scopes media rules under .gradio-container .contain. A repeated
     # root selector there never matches; let Gradio scope component selectors.
     css = _CSS.replace(".obs-dashboard ", "").replace(".obs-dashboard", ".gradio-container")
-    # Both native dashboards render light charts. Their OS-dark media rules
-    # otherwise mix dark cards with light plots and Gradio controls.
+    # The plugin chooses an explicit palette. Ignore OS-dark media rules so
+    # an explicit light page stays light and a dark page uses tv-theme-dark.
     native_css = (upstream.get("css") or "").replace("@media (prefers-color-scheme: dark)", "@media not all")
-    return {**upstream, "css": f'{native_css}\n{css}'}
+    result = {**upstream, "css": f'{native_css}\n{css}'}
+    if kind == "insight" and isinstance(result.get("head"), str):
+        result["head"] = public_translation_head(result["head"])
+    return result
 
 
-def decorate_dashboard(app: gr.Blocks, kind: str) -> gr.Blocks:
+def configure_insight(app: gr.Blocks, *, dark: bool = False, inline_plotly: bool = False) -> None:
+    """Use the native callbacks with options scoped to this Insight app."""
+    from agent_trajviz.insight.session import LoadedSession
+    from agent_trajviz.insight.ui import upload
+
+    from .native_quality import project_dashboard_session
+
+    if dark:
+        _set_dark_theme(app)
+    _bound_expanded_workflow(app)
+    original = upload.prepare_html_export
+    exports = [entry for entry in app.fns.values() if entry.fn is original]
+    if not exports:
+        raise BridgeError("dashboard_incompatible", "TrajViz's browser HTML export changed.")
+
+    def write_report(source, *, dest, dark):
+        if isinstance(source, LoadedSession):
+            source = project_dashboard_session(source)
+        return upload.write_report_file(source, dest=dest, dark=dark, inline_plotly=inline_plotly)
+
+    callback = _replace_native_binding(original, "write_report_file", write_report)
+    for entry in exports:
+        entry.fn = callback
+
+
+def _replace_native_binding(original, name, replacement):
+    if name not in original.__globals__ or name not in original.__code__.co_names:
+        raise BridgeError("dashboard_incompatible", f"TrajViz's {original.__name__} browser callback changed.")
+    callback = types.FunctionType(original.__code__, {**original.__globals__, name: replacement},
+                                  original.__name__, original.__defaults__, original.__closure__)
+    callback.__kwdefaults__ = original.__kwdefaults__
+    return functools.update_wrapper(callback, original)
+
+
+def _bound_expanded_workflow(app: gr.Blocks) -> None:
+    """Cap tool I/O at the native detail pane's limit without touching search or source records."""
+    from agent_trajviz.insight.presenters import transcript, workflow
+    from agent_trajviz.insight.ui.shared import safe_callback
+
+    entries = [entry for entry in app.fns.values()
+               if getattr(entry.fn, "__module__", "") == "agent_trajviz.insight.ui.workflow_tab"
+               and getattr(entry.fn, "__name__", "") == "do_filter_workflow"]
+    if not entries or len({entry.fn for entry in entries}) != 1:
+        raise BridgeError("dashboard_incompatible", "TrajViz's Expanded Workflow callback changed.")
+
+    def render(steps, *, expanded=False):
+        if not expanded:
+            return workflow.render_workflow_html(steps)
+        shown = []
+        for step in steps:
+            parts = []
+            for part in step.get("parts", []):
+                clipped = {}
+                if part.get("type") == "tool_call":
+                    for key in ("input", "output", "error"):
+                        if key in part:
+                            text = transcript._plain(part[key])
+                            if len(text) > _MAX_EXPANDED_TOOL_CHARS:
+                                clipped[key] = text[:_MAX_EXPANDED_TOOL_CHARS] + "\n... (truncated at 200,000 chars)"
+                parts.append({**part, **clipped} if clipped else part)
+            shown.append({**step, "parts": parts})
+        return workflow.render_workflow_html(shown, expanded=True)
+
+    presenter = _replace_native_binding(workflow.build_filtered_workflow_outputs, "render_workflow_html", render)
+    original = inspect.unwrap(entries[0].fn)
+    callback = safe_callback("Workflow filter")(_replace_native_binding(original, "build_filtered_workflow_outputs", presenter))
+    for entry in entries:
+        entry.fn = callback
+
+
+def _set_dark_theme(app: gr.Blocks) -> None:
+    import gradio as gr
+
+    native = [entry for entry in app.fns.values()
+              if getattr(entry.fn, "__module__", "") == "agent_trajviz.insight.insight"
+              and "window.tvSetGradioText = " in (entry.js or "")]
+    if len(native) != 1 or len(native[0].outputs) != 1 or not isinstance(native[0].outputs[0], gr.State):
+        raise BridgeError("dashboard_incompatible", "TrajViz's browser theme initializer changed.")
+    callback = native[0]
+    replacements = {
+        "document.documentElement.style.colorScheme = 'light';":
+            "document.documentElement.style.colorScheme = 'dark';",
+        "document.documentElement.classList.remove('dark');":
+            "document.documentElement.classList.add('dark', 'tv-theme-dark');",
+        "if (document.body) document.body.classList.remove('dark');":
+            "document.body?.classList.add('dark');",
+    }
+    if any(callback.js.count(before) != 1 for before in replacements):
+        raise BridgeError("dashboard_incompatible", "TrajViz's browser theme script changed.")
+    for before, after in replacements.items():
+        callback.js = callback.js.replace(before, after)
+    callback.outputs[0].value = True
+    callback.fn = lambda _dark=False: True
+
+
+def decorate_dashboard(app: gr.Blocks, kind: str, *, dark: bool = False) -> gr.Blocks:
     """Wrap a native dashboard while preserving all its components and events."""
     import gradio as gr
 
@@ -315,8 +438,9 @@ def decorate_dashboard(app: gr.Blocks, kind: str) -> gr.Blocks:
         if isinstance(block, gr.Row) and any(child.elem_id == "wf-filter-chips" for child in block.children):
             block.elem_classes = [*(block.elem_classes or []), "obs-workflow-filters"]
             for child in block.children:
-                if isinstance(child, gr.Button) and child.value == "TOC":
-                    child.value = "Step index"
+                if any(isinstance(control, gr.Radio) and control.label == "View"
+                       for control in getattr(child, "children", [])):
+                    child.elem_classes = [*(child.elem_classes or []), "obs-workflow-view-form"]
         if isinstance(block, gr.Row) and any(
             isinstance(child, gr.Column) and any(part.elem_id == "wf-toc-container" for part in child.children)
             for child in block.children
@@ -327,13 +451,21 @@ def decorate_dashboard(app: gr.Blocks, kind: str) -> gr.Blocks:
             child.elem_classes = [*(child.elem_classes or []), "obs-main-tabs"]
     with gr.Blocks(title="TrajViz Obs", analytics_enabled=False,
                    elem_classes=["trajectory-viz", "obs-dashboard"]) as page:
-        gr.HTML(_GUIDE[kind], elem_classes=["obs-guide-block"])
+        with gr.Row(elem_classes=["obs-dashboard-heading"]) as heading:
+            gr.HTML(_GUIDE[kind], elem_classes=["obs-guide-block"], scale=1)
         app.render()
-        page.load(fn=None, js=_JS)
+        page.load(fn=None, js=_JS.replace(_LIGHT, _DARK) if dark else _JS)
     # Keep the original upload component and every callback referring to it.
     # Only move the native source row under a disclosure in this app's tree.
     if kind == "insight":
         _focus_overview(page)
+        header = next((child for child in page.children if child.elem_id == "tv-app-header"), None)
+        if header is not None:
+            page.children.remove(header)
+            heading.children.append(header)
+            for child in header.children:
+                if "app-title" in (child.elem_classes or []):
+                    child.visible = False
         source = next((child for child in page.children if "upload-row" in (child.elem_classes or [])), None)
         if source is not None:
             position = page.children.index(source)
@@ -342,11 +474,6 @@ def decorate_dashboard(app: gr.Blocks, kind: str) -> gr.Blocks:
                                         elem_classes=["obs-source-controls"])
             page.children.remove(controls)
             page.children[position] = controls
-            branding = next((child for child in page.children if isinstance(child, gr.HTML)
-                             and "Coding Agent Trajectory Analysis Dashboard" in str(child.value)), None)
-            if branding is not None:
-                page.children.remove(branding)
-                controls.children.append(branding)
             controls.children.append(source)
     elif kind == "converge":
         # The native comparison app is one long page. Put its unchanged sections
@@ -370,7 +497,7 @@ def decorate_dashboard(app: gr.Blocks, kind: str) -> gr.Blocks:
 
 
 
-def _responsive_plot_data(value: Any) -> Any:
+def _responsive_plot_data(value: Any, empty: tuple[str, str] | None = None) -> Any:
     """Size serialized Plotly figures to their container without changing cached figures."""
     data = value if isinstance(value, dict) else {"type": getattr(value, "type", None), "plot": getattr(value, "plot", None)}
     if data.get("type") != "plotly" or not isinstance(data.get("plot"), str):
@@ -381,6 +508,19 @@ def _responsive_plot_data(value: Any) -> Any:
         layout = figure["layout"] = {}
     layout.pop("width", None)
     layout["autosize"] = True
+    if empty is not None:
+        axis, note = empty
+        values = [trace.get(axis) for trace in figure.get("data", [])]
+        if not any(any(cell is not None for cell in series) if isinstance(series, list) else bool(series)
+                   for series in values):
+            figure["data"] = []
+            layout.update(height=160, showlegend=False, xaxis={"visible": False}, yaxis={"visible": False}, annotations=[{
+                "text": note, "showarrow": False, "xref": "paper", "yref": "paper", "x": 0.5, "y": 0.5,
+                "font": {"color": "#64748b"},
+            }])
+            for name in tuple(layout):
+                if name.startswith(("xaxis", "yaxis")):
+                    layout[name] = {"visible": False}
     if not figure.get("data"):
         for annotation in layout.get("annotations", []):
             annotation["text"] = _wrap_plot_text(annotation.get("text", ""))
@@ -413,12 +553,13 @@ def _responsive_plot(block: gr.Plot) -> None:
     if getattr(block, "_obs_responsive", False):
         return
     original = block.postprocess
+    empty = _EMPTY_CHART.get(block.elem_id)
 
     def postprocess(value: Any) -> Any:
-        return _responsive_plot_data(original(value))
+        return _responsive_plot_data(original(value), empty)
 
     block.postprocess = postprocess
-    block.value = _responsive_plot_data(block.value)
+    block.value = _responsive_plot_data(block.value, empty)
     block._obs_responsive = True
 
 
@@ -451,3 +592,27 @@ def _focus_overview(page: gr.Blocks) -> None:
     for column in warnings:
         column.elem_classes = [*(column.elem_classes or []), "obs-summary-status"]
     summary.children[:0] = [*cards, *warnings, *findings]
+    _focus_summary_charts(summary)
+
+
+def _focus_summary_charts(summary: gr.Column) -> None:
+    """Put each new chart control beside the content it affects, even when stacked."""
+    import gradio as gr
+
+    children = summary.children
+    token_explanation = next((child for child in children if "token-step-explain" in (child.elem_classes or [])), None)
+    token_row = next((child for child in children if isinstance(child, gr.Row)
+                      and any(plot.elem_id == "token-chart" for plot in child.children)), None)
+    if token_explanation is not None and token_row is not None:
+        duration = next((plot for plot in token_row.children if plot.elem_id == "duration-chart"), None)
+        if duration is not None:
+            token_row.children[token_row.children.index(duration)] = token_explanation
+            children[children.index(token_explanation)] = duration
+    gantt_row = next((child for child in children if isinstance(child, gr.Row)
+                     and any(plot.elem_id == "gantt-chart" for plot in child.children)), None)
+    gantt_control = next((child for child in children
+                          if any(isinstance(control, gr.Radio) and control.label == "Timeline axis"
+                                 for control in getattr(child, "children", []))), None)
+    if gantt_control is not None and gantt_row is not None:
+        children.remove(gantt_control)
+        children.insert(children.index(gantt_row), gantt_control)

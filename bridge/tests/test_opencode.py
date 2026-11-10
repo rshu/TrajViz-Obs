@@ -158,6 +158,37 @@ def test_native_flat_export_is_supported_without_capture_marker(source, tmp_path
     assert load_run(str(path)).steps[1]["role"] == "assistant"
 
 
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16", "utf-16-be"])
+def test_desktop_flat_export_uses_upstream_format_and_reloads(encoding, tmp_path, run_cli):
+    path = tmp_path / "desktop.json"
+    document = {
+        "info": {"id": "ses_desktop", "location": {"directory": r"C:\Work\Demo"},
+                 "time": {"created": BASE, "updated": BASE + 2_000}},
+        "messages": [
+            {"id": "u1", "type": "user", "text": "Check the café", "time": {"created": BASE}},
+            {"id": "a1", "type": "assistant", "agent": "build", "content": "Reviewed the café.",
+             "time": {"created": BASE + 500, "completed": BASE + 2_000},
+             "tokens": {"input": 10, "output": 2, "reasoning": 5, "cache": {"read": 3, "write": 0}}},
+            {"id": "i1", "type": "idle", "outcome": "succeeded", "time": {"created": BASE + 2_000}},
+        ],
+    }
+    source = json.dumps(document, ensure_ascii=False).encode(encoding)
+    if encoding == "utf-16-be":
+        source = b"\xfe\xff" + source
+    path.write_bytes(source)
+    run = load_run(str(path))
+    assert run.format == "opencode" and run.raw["metadata"]["directory"] == r"C:\Work\Demo"
+    assert [step["text_preview"] for step in run.steps] == ["Check the café", "Reviewed the café."]
+    assert run.steps[1]["agent"] == "build" and run.steps[1]["duration"] == 1.5
+    code, result = run_cli(["json", "--transcript", str(path), "--out", str(tmp_path / "export"), "--view", "steps"])
+    assert code == 0 and "trajectory.json" in result["files"]
+    assert load_run(str(tmp_path / "export" / "trajectory.json")).steps == run.steps
+    bundle = bundle_session(str(path), tmp_path / "portable.zip")
+    assert [step["text_preview"] for step in load_run(bundle["path"]).steps] == [
+        step["text_preview"] for step in run.steps]
+    assert path.read_bytes() == source
+
+
 def test_forks_and_unconfirmed_sessions_are_not_counted_as_subagents(source):
     _, raw = source
     fork = native("ses_fork", [assistant()])

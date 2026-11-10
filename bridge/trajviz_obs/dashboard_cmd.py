@@ -35,10 +35,12 @@ from .compat import (
     install_attribution_guard,
     load_plugins,
     load_run,
+    protect_run_outputs,
     resolve_input_path,
 )
-from .dashboard_ui import decorate_dashboard, presentation
+from .dashboard_ui import configure_insight, decorate_dashboard, presentation
 from .errors import BridgeError
+from .outputs import protect_inputs
 from .sessions import _positive_int, capture_session_id
 
 if TYPE_CHECKING:
@@ -88,11 +90,8 @@ def _add_preload(app: gr.Blocks, transcript_path: str) -> bool:
 
 
 def _apply_context_window(app: gr.Blocks, transcript_path: str, window: int | None, *,
-                          session_id: str | None = None, display_path: str | None = None,
-                          force: bool = False) -> None:
-    """Adapt the app's own loader only for its selected transcript, before it computes any views."""
-    if window is None and session_id is None and display_path is None and not force:
-        return
+                          session_id: str | None = None, display_path: str | None = None) -> None:
+    """Apply bridge evidence quality and scope host context options to the selected transcript."""
     callbacks = [block for block in app.fns.values()
                  if getattr(block.fn, "__module__", "") == "agent_trajviz.insight.ui.load"
                  and getattr(block.fn, "__name__", "") == "_do_load"]
@@ -275,7 +274,8 @@ def _display_source(transcript_path: str, session_id: str | None, display_path: 
 
 def build_preloaded_insight(transcript_path: str, *, window: int | None = None,
                             labels_path: str | None = None, session_id: str | None = None,
-                            display_path: str | None = None) -> gr.Blocks:
+                            display_path: str | None = None, dark: bool = False,
+                            inline_plotly: bool = False) -> gr.Blocks:
     """The Insight dashboard that loads *transcript_path* when the page opens (unchanged if that cannot be wired)."""
     display, temporary = _display_source(transcript_path, session_id, display_path)
     alias = display if Path(display).resolve() != Path(transcript_path).resolve() else None
@@ -284,13 +284,13 @@ def build_preloaded_insight(transcript_path: str, *, window: int | None = None,
         from .label_quality import install_chart
 
         install_chart()
-        _apply_context_window(app, transcript_path, window, session_id=session_id, display_path=alias,
-                              force=labels_path is not None)
+        _apply_context_window(app, transcript_path, window, session_id=session_id, display_path=alias)
         _apply_capture_default(app, transcript_path, display, session_id)
         preloaded = _add_preload(app, display)
         labels_preloaded = labels_path is not None and _add_labels_preload(app, transcript_path, labels_path,
             session_id=session_id, display_path=display)
-        page = decorate_dashboard(app, "insight")
+        configure_insight(app, dark=dark, inline_plotly=inline_plotly)
+        page = decorate_dashboard(app, "insight", dark=dark)
         page._obs_display_path, page._obs_display_owner = display, temporary
         page._obs_preloaded, page._obs_labels_preloaded = preloaded, labels_preloaded
         return page
@@ -342,7 +342,7 @@ def _wait_for_shutdown(*, exit_on_stdin: bool) -> None:
 
 def serve_insight(transcript_path: str, port: int | None, *, exit_on_stdin: bool = False,
                   window: int | None = None, labels_path: str | None = None, session_id: str | None = None,
-                  display_path: str | None = None) -> None:
+                  display_path: str | None = None, dark: bool = False, inline_plotly: bool = False) -> None:
     """Serve the preloaded Insight dashboard until terminated; ``{"url"}`` is the first stdout line.
 
     When the preload cannot be wired (a TrajViz release changed the upload row) the dashboard still starts and
@@ -351,7 +351,8 @@ def serve_insight(transcript_path: str, port: int | None, *, exit_on_stdin: bool
     _check_port(port)
     dashboard = _dashboard()
     app = build_preloaded_insight(transcript_path, window=window, labels_path=labels_path,
-                                  session_id=session_id, display_path=display_path)
+                                  session_id=session_id, display_path=display_path,
+                                  dark=dark, inline_plotly=inline_plotly)
     try:
         with contextlib.redirect_stdout(sys.stderr):  # Gradio's prints: the URL stays the first stdout line
             _, url, _ = app.launch(**dashboard_server_options(port), prevent_thread_lock=True, quiet=True,
@@ -400,12 +401,17 @@ def _port(text: str) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     port_help = "The port, 1 to 65535 (default: Gradio's first free one from 7860)."
     stdin_help = "Stop when stdin closes (standalone pipe use; default: serve until terminated)."
-    p = sub.add_parser("dashboard", help="The Insight dashboard with the session preloaded, until terminated.")
+    p = sub.add_parser("dashboard", help="Open the preloaded Insight dashboard or write an offline HTML snapshot.")
     p.add_argument("--transcript", required=True, help="The session transcript.")
     p.add_argument("--window", type=_positive_int, default=None, help="The preloaded session's context window.")
     p.add_argument("--session-id", type=capture_session_id, help="The exact session inside a saved OTLP capture.")
-    p.add_argument("--labels", type=Path, default=None, help="A labels sidecar to preload for this session.")
-    p.add_argument("--port", type=_port, default=None, help=port_help)
+    p.add_argument("--labels", type=Path, default=None, help="A labels sidecar to preload in the live dashboard.")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--port", type=_port, default=None, help=port_help)
+    mode.add_argument("--html", type=Path, metavar="PATH", help="Write a standalone HTML snapshot and exit.")
+    p.add_argument("--dark", action="store_true", help="Use a dark theme in the dashboard or HTML snapshot.")
+    p.add_argument("--inline-plotly", action="store_true",
+                   help="Make the browser's Export HTML download work offline (implied by --html).")
     p.add_argument("--exit-on-stdin", action="store_true", help=stdin_help)
 
     p = sub.add_parser("converge", help="The Converge comparison dashboard, until terminated.")
@@ -415,29 +421,59 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
 
 
 @register("dashboard")
-def _serve_dashboard(args: argparse.Namespace) -> None:
-    _dashboard()
+def _serve_dashboard(args: argparse.Namespace) -> dict | None:
     # The same directory selector accepted by /obs and /obs view must preload
     # its real parent file, so Gradio keeps its sibling subagent discovery.
     path = resolve_input_path(args.transcript)
     if not path.exists():
         raise BridgeError("not_found", f"No such transcript: {path}", path=str(path))
     load_plugins()  # as TrajViz's own dashboard command does on start, so the app reads plugins' formats
+    if args.html is None:
+        _dashboard()
     try:
-        load_run(str(path), session_id=args.session_id)
+        run = load_run(str(path), window_limit=args.window if args.html is not None else None,
+                       session_id=args.session_id)
     except LoadError as exc:
-        if args.session_id is not None or exc.code != "ambiguous_session":
+        if args.html is not None or args.session_id is not None or exc.code != "ambiguous_session":
             raise
     labels = args.labels.resolve() if args.labels is not None else None
-    if labels is not None:
+    if labels is not None and args.html is None:
         if not labels.is_file():
             raise BridgeError("not_found", f"No such labels sidecar: {labels}", path=str(labels))
         import agent_trajviz as tv
 
         tv.label_views(labels)  # Surface invalid sidecars before announcing a running dashboard.
+    if args.html is not None:
+        return _write_html(run, path, args.html.expanduser().absolute(), labels=labels, dark=args.dark)
     serve_insight(str(path), args.port, exit_on_stdin=args.exit_on_stdin,
                   window=args.window, labels_path=str(labels) if labels is not None else None,
-                  session_id=args.session_id)
+                  session_id=args.session_id, dark=args.dark, inline_plotly=args.inline_plotly)
+    return None
+
+
+def _write_html(run, source: Path, destination: Path, *, labels: Path | None, dark: bool) -> dict:
+    """Use TrajViz's atomic report writer and the bridge's source ownership checks."""
+    from agent_trajviz._extras import require
+
+    require("charts", "The HTML report")
+    from agent_trajviz.insight.report import ReportError, write_report_file
+    from agent_trajviz.insight.session import session_from_run
+
+    from .native_quality import project_dashboard_session
+
+    if destination.is_dir():
+        raise BridgeError("bad_output", "Give an HTML file path instead of a folder.", path=str(destination))
+    protect_run_outputs(run, [destination])
+    if labels is not None:
+        protect_inputs([destination], [labels])
+    try:
+        if not run.steps:
+            raise ReportError("The trajectory has no steps.")
+        session = project_dashboard_session(session_from_run(run, str(source)))
+        write_report_file(session, dest=str(destination), dark=dark, inline_plotly=True)
+        return {"path": str(destination), "bytes": destination.stat().st_size}
+    except (OSError, ReportError) as exc:
+        raise BridgeError("bad_output", str(exc), path=str(destination)) from exc
 
 
 @register("converge")

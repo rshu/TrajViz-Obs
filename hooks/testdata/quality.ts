@@ -41,7 +41,7 @@ export const PARTIAL_SNAPSHOT: Snapshot = {
     file_interactions: { status: 'unavailable', basis: 'captured_operations' },
     skill_calls: { status: 'unavailable', basis: 'captured_operations' },
   },
-  trajviz: { ...SNAPSHOT.trajviz, version: '0.4.2', warnings: [] },
+  trajviz: { ...SNAPSHOT.trajviz, version: '0.5.0', warnings: [] },
 }
 
 /** No usage was captured; internal source placeholders must never be drawn as zeros. */

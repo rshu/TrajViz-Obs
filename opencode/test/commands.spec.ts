@@ -121,6 +121,10 @@ describe('OpenCode obs command contract', () => {
     expect(calls[0]!.argv.slice(-7)).toEqual(['--out', '/tmp/export $(literal)', '--view', 'health', '--view', 'issues', '--with-trajectory'])
     await execute('bundle -o "/tmp/export bundle.zip"')
     expect(calls[1]!.argv).toEqual(['bundle', '--transcript', '/tmp/controlled project/ses_current.json', '--artifacts', '/tmp/controlled obs/artifacts', '--out', '/tmp/export bundle.zip'])
+    await execute('json --views-only')
+    expect(calls[2]!.argv.at(-1)).toBe('--views-only')
+    expect((await execute('json --with-trajectory --views-only')).text).toContain('Choose either')
+    expect(calls).toHaveLength(3)
   })
 
   test('bundle output retains format-specific guidance without claiming generic hosted ZIP support', async () => {
@@ -139,6 +143,21 @@ describe('OpenCode obs command contract', () => {
     expect(served[0]!.argv).toEqual(['dashboard', '--transcript', '/tmp/controlled project/ses_other.json', '--window', '200000', '--port', '7860'])
     await execute('dashboard stop')
     expect(stopped).toEqual([['dashboard', 'ses_current']])
+  })
+
+  test('HTML export runs once, while theme and Plotly settings reach the live server', async () => {
+    const { execute, calls, served, selections } = fixture({ dashboard: { path: '/tmp/session dashboard.html', bytes: 200 } })
+    expect((await execute('dashboard --html --dark')).text).toContain('--html needs')
+    expect((await execute('dashboard --html ""')).text).toContain('--html needs')
+    expect((await execute('dashboard --html file.html --port 7860')).text).toContain('cannot be combined')
+    expect(selections).toEqual([])
+    const result = await execute('dashboard --html "/tmp/session dashboard.html" --dark')
+    expect(result.path).toBe('/tmp/session dashboard.html')
+    expect(result.url).toBeUndefined()
+    expect(calls[0]!.argv.slice(-3)).toEqual(['--dark', '--html', '/tmp/session dashboard.html'])
+    expect(served).toEqual([])
+    await execute('dashboard --dark --inline-plotly')
+    expect(served[0]!.argv.slice(-2)).toEqual(['--dark', '--inline-plotly'])
   })
 
   test('a selected capture dashboard prints an executable stop command for that exact source and ID', async () => {

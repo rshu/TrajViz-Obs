@@ -76,6 +76,19 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(again["extras"], ["llm", "charts", "zstd", "app"])
         self.assertEqual(len((self.cache / "builds").read_text().splitlines()), 3)
 
+    def test_new_runtime_revision_replaces_same_source_without_mutating_the_old_generation(self):
+        req = request(self.cache, source="agent-trajviz")
+        with patch.object(b, "REVISION", b.REVISION - 1):
+            old = b.setup(req, builder=fake_builder)
+
+        new = b.setup(req, builder=fake_builder)
+        self.assertEqual(new["revision"], b.REVISION)
+        self.assertEqual(new["source"], old["source"])
+        self.assertNotEqual(new["python"], old["python"])
+        self.assertEqual(Path(old["python"]).read_text(), "ready")
+        self.assertEqual(b.setup(req, builder=fake_builder), new)
+        self.assertEqual(len((self.cache / "builds").read_text().splitlines()), 2)
+
     def test_failed_install_preserves_prior_environment_and_metadata(self):
         first = b.setup(request(self.cache), builder=fake_builder)
         def failed(generation, req, extras):

@@ -5,8 +5,8 @@ const OUTPUT = ['o', 'out']
 const FLAGS: Record<string, readonly string[]> = {
   overview: [], pane: [], view: VIEW, brief: [],
   issues: VIEW, health: VIEW, patterns: VIEW, agents: VIEW, context: VIEW, timeline: VIEW,
-  json: [...OUTPUT, 'view', 'with-trajectory'], bundle: OUTPUT, schemas: OUTPUT,
-  dashboard: ['port'], converge: ['data-root', 'port'],
+  json: [...OUTPUT, 'view', 'with-trajectory', 'views-only'], bundle: OUTPUT, schemas: OUTPUT,
+  dashboard: ['port', 'html', 'dark', 'inline-plotly'], converge: ['data-root', 'port'],
   compare: ['anchor-patch', 'fuzzy-commands', 'reverse'], scorecard: ['fuzzy-commands', 'labels', 'no-self'], labels: [],
   fixes: ['limit'], label: [...OUTPUT, 'assistant-only', 'model', 'max-steps', 'taxonomy', 'max-content-chars', 'delay', 'user-phase', 'user-action', 'max-tokens', 'temperature'],
   attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [],
@@ -37,6 +37,9 @@ export function validateArguments(args: string, parsed: Parsed = parseArgs(args)
     if (!BOOLEAN_FLAGS.includes(flag) && value === true) return `--${flag} needs a value.`
   }
   let invalid = passthrough.length > 0 || (NO_POSITIONALS.includes(sub) && positional.length > 0)
+  if (sub === 'json' && flags['with-trajectory'] && flags['views-only']) return 'Choose either --with-trajectory or --views-only.'
+  if (sub === 'dashboard' && typeof flags.html === 'string' && !flags.html.trim()) return '--html needs an output path.'
+  if (sub === 'dashboard' && flags.html !== undefined && flags.port !== undefined) return '--html exports a file and cannot be combined with --port.'
   if (sub === 'pane') invalid ||= positional.length > 1 || (positional.length === 1 && positional[0] !== 'close')
   if (sub === 'watch' || sub === 'statusline') invalid ||= positional.length > 1 || (positional.length === 1 && !['on', 'off'].includes(positional[0]!))
   if (sub === 'schemas') invalid ||= positional.length > 1

@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -82,6 +83,19 @@ def add_context_drop(path: Path) -> None:
     records = [json.loads(line) for line in path.read_text().splitlines()]
     first = next(row for row in records if row.get("type") == "assistant")
     first["message"]["usage"].update(input_tokens=5_000, cache_read_input_tokens=145_000)
+    path.write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+
+
+def add_idle_gap_and_long_tool_output(path: Path) -> None:
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    for row in records[5:]:
+        stamp = datetime.fromisoformat(row["timestamp"]) + timedelta(minutes=10)
+        row["timestamp"] = stamp.isoformat()
+    result = next(block for row in records for block in row["message"]["content"]
+                  if isinstance(block, dict) and block["type"] == "tool_result" and not block["is_error"])
+    result["content"] = "controlled output\n" * 200 + "expanded-end-marker"
+    final = next(row for row in reversed(records) if row["type"] == "assistant")
+    final["message"]["usage"]["input_tokens"] = 5_000
     path.write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
 
 
@@ -259,7 +273,8 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     source = app.raw(preload[0])[0]
     require(Path(source["path"]).resolve() == fixtures["agent_run"].resolve(), "Page load returned the wrong trajectory")
     loaded = app.mapped("_do_load", source, None, "", None, raw=True)
-    require(app.get_output(loaded, label="Window limit (tokens)") == 1_000_000, "Preloaded 1M context override was lost")
+    require(any("Capacity reported by the trajectory: 1,000,000 tokens." in str(value) for value in loaded.values()),
+            "Preloaded 1M context override was lost")
     details_markup = app.get_output(loaded, elem_id="wf-detail-store")
     encoded = re.search(r'data-b64="([^"]+)"', details_markup)
     require(encoded, "Workflow detail store is missing")
@@ -272,10 +287,37 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
                    if app.components[key]["type"] == "plot"}
     for name in ("Token Usage", "Tool Call Frequency", "Tool Outcome Timeline", "Agent Swimlane", "Token Breakdown by Agent", "Context Window Pressure", "File Interaction Timeline"):
         require(plot_values[name]["data"], f"Overview {name} has no data for a fixture that should populate it")
-    require(len(plot_values) == 11, "Overview stopped returning its full native chart set")
+    require(len(plot_values) == 12, "Overview stopped returning its full native chart set")
+    gantt = plot_values["Execution Timeline"]
+    wallclock = figure(app.call("on_gantt_axis_change", "wallclock"))
+    require(len(set(gantt["data"][0]["y"])) == 2, "Execution Gantt omitted a real timeline agent")
+    require(max(wallclock["data"][0]["base"]) - max(gantt["data"][0]["base"]) > 500,
+            "Execution Gantt did not switch between compressed idle time and the wall clock")
+    explanations = next(value for value in loaded.values() if isinstance(value, str) and "tv-token-step-detail" in value)
+    require(len(re.findall(r"class='tv-token-step-detail' data-step=", explanations)) == 11,
+            "Token usage did not supply a decomposition for each step")
+    require(any("token-summary-line" in str(value) for value in loaded.values()), "Missing Token Usage summary")
+    require(any("Top context-growth steps" in str(value) for value in loaded.values()), "Missing context-growth hotspots")
     full_json = json.loads(app.get_output(loaded, label="Full trajectory JSON"))
     require(full_json.get("metadata", {}).get("session_id") == fixtures["session_id"], "Raw Data belongs to another source")
-    ledger["checks"].extend(["exact-path page preload", "1M context override", "sibling subagent merge", "Overview native chart set", "Raw Data", "Workflow detail payload"])
+    ledger["checks"].extend(["exact-path page preload", "1M context override", "sibling subagent merge", "Overview native chart set",
+                             "Raw Data", "Workflow detail payload", "two-agent compressed and wall-clock Gantt",
+                             "token breakdown and summary", "context-growth hotspots"])
+
+    import httpx
+
+    exported_issues = app.call("prepare_issues_agent_download")
+    issue_file = value_of(exported_issues)
+    require(exported_issues.get("interactive") is True and issue_file.get("url"), "Issues JSON download was not armed")
+    issue_response = httpx.get(issue_file["url"], timeout=30, trust_env=False)
+    issue_response.raise_for_status()
+    issues = issue_response.json()
+    require(issues["schema"] == "trajviz.issues_agent_export.v1" and issues["session"]["session_id"] == fixtures["session_id"],
+            "Issues JSON does not identify the correct trajectory")
+    require(any(tool.get("failed") and tool.get("command") == "pytest -q tests/test_calculator.py"
+                for issue in issues["issues"] for step in issue["evidence"]["steps"] for tool in step.get("tools", [])),
+            "Issues JSON omitted the recorded failing command and its step evidence")
+    ledger["checks"].append("downloadable Issues JSON with failing-command evidence")
 
     # The browser's native change/click handlers expose five label plots through the same API.
     reset = app.raw("_reset_labels", source, None, None)
@@ -319,7 +361,7 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
                                   ("Assistant,Tool Calls", "", 7), ("Assistant,Errors", "", 1),
                                   ("Assistant,All", "pytest", 3), ("Assistant,All", "no-such-needle", 0),
                                   ("All", "", 0)):
-        rendered, counter, updated_toc = app.call("do_filter_workflow", filters, query, toc)
+        rendered, counter, updated_toc = app.call("do_filter_workflow", filters, query, toc, "Cards")
         require(len(cards(rendered)) == count and f"Showing {count} of 11 steps" in counter,
                 f"Workflow filtering failed: {filters}/{query}")
         require(set(re.findall(r"wf-card-(\d+)", updated_toc)) == set(cards(rendered)), "Filtered step index does not match cards")
@@ -329,26 +371,33 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     require(len(specific) == 2, "Workflow agent chips were not generated")
     filtered_agents = []
     for token in specific:
-        filtered, _count, _toc = app.call("do_filter_workflow_1", "Assistant,User,All," + token, "", toc)
+        filtered, _count, _toc = app.call("do_filter_workflow_1", "Assistant,User,All," + token, "", toc, "Cards")
         filtered_agents.append(set(cards(filtered)))
     # The worker task prompt belongs to its dispatching parent in the native timeline.
     require(sorted(map(len, filtered_agents)) == [4, 7] and not filtered_agents[0].intersection(filtered_agents[1])
             and filtered_agents[0] | filtered_agents[1] == set(details), "Agent chips did not partition the known parent/worker steps")
     hidden = app.call("on_toc_toggle", toc)
     require("toc-hidden" in hidden and "toc-hidden" not in app.call("on_toc_toggle", hidden), "Step index toggle did not round trip")
-    ledger["checks"].extend(["Workflow role/feature/agent filters", "Workflow search and empty results", "Workflow step index toggle"])
+    expanded, _, _ = app.call("do_filter_workflow", "Assistant,User,All", "", toc, "Expanded")
+    require(set(cards(expanded)) == set(details) and "expanded-end-marker" in expanded and "expanded-end-marker" not in workflow,
+            "Expanded Workflow lost full tool output or changed step identities")
+    ledger["checks"].extend(["Workflow role/feature/agent filters", "Workflow search and empty results", "Workflow step index toggle",
+                             "Workflow Cards/Expanded with full tool output"])
 
     initial_calls = len(provider.calls)
     history, status = app.call("on_trajectory_loaded")
     require(history == [] and "ANALYZE" in status and len(provider.calls) == initial_calls, "Closed AI sidebar triggered a model request")
     autoload = app.call("on_diagnose_autoload", attribution["reference_root"] if attribution else str(app.output / "missing-reference"))
-    require("No gold-grounded attribution" in autoload[1] and autoload[2:] == ("", ""),
-            "Native attribution autoload did not clear overrides or explain its unavailable verdict")
+    require(autoload[0] == "" and "Optional:" in autoload[1] and len(provider.calls) == initial_calls,
+            "Native attribution autoload attempted a diagnosis instead of explaining the optional step")
     if attribution:
         ledger["native_claude_attribution"] = text_of(autoload[0])
+    history, status = app.call("on_sidebar_expand", [])
+    require(history == [] and len(provider.calls) == initial_calls, "Opening the AI sidebar sent trajectory data")
     with provider.answering("analysis"):
-        history, status = app.call("on_sidebar_expand", [])
-    require("Synthetic analysis" in json.dumps(history) and "ANALYZE" in status, "AI sidebar did not show provider analysis")
+        history, status = app.call("on_analyze_trajectory")
+    require("Synthetic analysis" in json.dumps(history) and "ANALYZE" in status,
+            "Explicit trajectory analysis did not show provider analysis")
     count = len(provider.calls)
     repeated, _ = app.call("on_sidebar_expand", history)
     require(repeated == history and len(provider.calls) == count, "Reopening AI sidebar repeated analysis")
@@ -356,7 +405,6 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
         history, cleared_question = app.call("on_analysis_ask", "What failed first?", history)
     require("Synthetic follow-up" in json.dumps(history) and cleared_question == "", "AI follow-up did not update the chat")
     require("Synthetic analysis" in json.dumps(provider.calls[-1]["body"]), "AI follow-up forgot prior analysis")
-    app.call("on_sidebar_collapse")
     clear = [item["api_name"] for item in app.dependencies.values() if not item["inputs"] and
              len(item["outputs"]) == 1 and app.components[item["outputs"][0]]["type"] == "chatbot"]
     require(len(clear) == 1 and app.call(clear[0]) == [], "Clear chat did not clear analysis history")
@@ -369,7 +417,8 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
 
     # Additional real uploads must retain upstream defaults and not inherit the selected run's labels.
     switched = app.mapped("_do_load", handle_file(str(fixtures["before"])), "", None)
-    require(app.get_output(switched, label="Window limit (tokens)") == 200_000, "An unrelated upload inherited the selected 1M window")
+    require(not any("Capacity reported by the trajectory: 1,000,000 tokens." in str(value) for value in switched.values()),
+            "An unrelated upload inherited the selected 1M window")
     cleared = app.call("_reset_labels", handle_file(str(fixtures["before"])), None)
     require(value_of(cleared[-1]) is None, "An unrelated upload inherited another session's labels")
     reset_comparison = app.call("_reset_comparison")
@@ -394,11 +443,11 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     exported = app.call("prepare_html_export")
     file = value_of(exported)
     require(exported.get("interactive") is True and file.get("url"), "Native HTML export did not produce a download")
-    import httpx
-
     response = httpx.get(file["url"], timeout=30, trust_env=False)
     response.raise_for_status()
     require("<!doctype html" in response.text.lower() and "calculator.py" in response.text and "plotly" in response.text.lower(), "Downloaded HTML export is not a populated report")
+    require("plotly.js v" in response.text and not re.search(r"<script\b[^>]*\bsrc=", response.text),
+            "Dashboard --inline-plotly did not embed its chart library")
     (app.output / "before-export.html").write_bytes(response.content)
     ledger["checks"].append("downloadable populated HTML export")
 
@@ -454,7 +503,12 @@ def exercise_comparison_costs(app: Dashboard, paths: dict, ledger: dict) -> None
 
     upload = lambda key: handle_file(str(paths[key]))
     if app.kind == "dashboard":
-        app.call("_do_load", upload("missing"), "", None)
+        missing = app.mapped("_do_load", upload("missing"), "", None)
+        for label, reason in (("Token Usage", "No step token usage"), ("Step Duration", "No step durations"),
+                              ("Execution Timeline", "No drawable execution")):
+            chart = figure(app.get_output(missing, label=label))
+            require(not chart["data"] and reason in json.dumps(chart["layout"].get("annotations")),
+                    f"Missing {label} evidence has no useful explanation")
         report, _, _, status = app.call("on_run_comparison", upload("zero"), None, "", None, None)
         require("Comparison complete" in status and ["Total Tokens", "0", "unknown"] in table_rows(report)
                 and ["Duration", "0.0s", "unknown"] in table_rows(report), "Insight lost missing/zero cost distinction")
@@ -470,7 +524,7 @@ def exercise_comparison_costs(app: Dashboard, paths: dict, ledger: dict) -> None
         require("unknown means" not in str(cleared), "Changing Overview retained the old scorecard")
         report = app.call("on_run_comparison", upload("zero"), None, "", None, None)[0]
         require(["Total Tokens", "0", "20"] in table_rows(report), "Complete comparison did not recover after missing input")
-        ledger["checks"].extend(["Insight uploaded missing/partial/zero/positive costs", "scorecard timeline unknown hover",
+        ledger["checks"].extend(["missing chart evidence is explained", "Insight uploaded missing/partial/zero/positive costs", "scorecard timeline unknown hover",
                                  "comparison source reset and recovery"])
     else:
         report, _, segments, waterfall, _ = app.call("compare_uploads", upload("zero"), upload("missing"), None, 50, False)
@@ -497,6 +551,7 @@ def run(python: str, output: Path) -> dict:
     child = native_run(output / "fixtures" / sid / "subagents/agent-worker-a.jsonl", sid, agent="worker-a")
     add_context_drop(fixtures["agent_run"])
     add_context_drop(child)
+    add_idle_gap_and_long_tool_output(fixtures["agent_run"])
     hashes = source_hashes(output / "fixtures")
     ledger: dict = {"status": "running", "callbacks": [], "checks": [], "attribution": "bundled objective attribution"}
     provider = Provider()
@@ -525,7 +580,8 @@ def run(python: str, output: Path) -> dict:
             sidecar = json.loads(labels[name].read_text())
             expected = {"before": 5, "reference": 4, "agent": 9}[name]
             require(sum(step.get("label_source") == "llm" for step in sidecar["steps"]) == expected, "Fixture labeling did not classify every assistant step")
-        insight = Dashboard(python, "dashboard", ["--transcript", str(fixtures["agent_run"]), "--labels", str(labels["agent"]), "--window", "1000000"], output, env, ledger)
+        insight = Dashboard(python, "dashboard", ["--transcript", str(fixtures["agent_run"]), "--labels", str(labels["agent"]),
+                                                   "--window", "1000000", "--inline-plotly"], output, env, ledger)
         try:
             exercise_insight(insight, fixtures, labels, provider, ledger, attribution)
             exercise_comparison_costs(insight, costs, ledger)

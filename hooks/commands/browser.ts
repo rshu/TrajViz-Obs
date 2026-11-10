@@ -1,5 +1,5 @@
 import type { CommandRunResult, EngineInterface } from 'claude-code'
-import { BridgeError, launcherArgv } from '../lib/bridge'
+import { BridgeError, launcherArgv, runBridge } from '../lib/bridge'
 import { valueArgv } from '../lib/args'
 import { openTarget, type OpenResult } from '../lib/open'
 import { configDir, projectSlug } from '../lib/paths'
@@ -26,7 +26,7 @@ function checkGeneration(generation?: number): void {
 
 /** The usage row of `dashboard` or `converge`. */
 function usage(sub: 'dashboard' | 'converge'): string {
-  const flags = sub === 'dashboard' ? '[--port N]' : '[--data-root DIR] [--port N]'
+  const flags = sub === 'dashboard' ? '[--port N | --html PATH] [--dark] [--inline-plotly]' : '[--data-root DIR] [--port N]'
   return `Usage: /obs ${sub} ${flags} | ${sub} stop  (N from 1 to ${MAX_PORT})`
 }
 
@@ -81,16 +81,15 @@ async function serve($: EngineInterface, ctx: CommandContext, sub: 'dashboard' |
 }
 
 /**
- * `dashboard [--port N]`: the `app` extra, the bridge's `dashboard
- * --transcript … [--port N]` with the session (or `--session`'s) loaded.
+ * Serve the selected session or write a standalone copy using the same source and labels.
  * When the bridge could not wire the preload (`"preloaded": false`: a
  * TrajViz release changed the upload row) the dashboard is up but empty,
  * and the row names the `bundle` ZIP to drop into it.
  */
-async function dashboard($: EngineInterface, ctx: CommandContext, port: number | undefined): Promise<string> {
+async function dashboard($: EngineInterface, ctx: CommandContext, port: number | undefined, html?: string): Promise<string> {
   const spec = sessionSpec(ctx)
   try {
-    await ensureReady($, ctx.options, 'app')
+    await ensureReady($, ctx.options, html === undefined ? 'app' : 'charts')
     const { transcript, argv: session, generation } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
     const argv = ['dashboard', '--transcript', transcript.path]
     if (transcript.captureSessionId !== undefined) argv.push(...valueArgv('session-id', transcript.captureSessionId))
@@ -111,6 +110,12 @@ async function dashboard($: EngineInterface, ctx: CommandContext, port: number |
     }
     // Any imported file may be a manifest whose companions changed independently.
     if (spec) revision = JSON.stringify([revision, 'capture', ++unverifiedSidecar])
+    for (const flag of ['dark', 'inline-plotly']) if (ctx.parsed.flags[flag]) argv.push(`--${flag}`)
+    if (html !== undefined) {
+      checkGeneration(generation)
+      const doc = await runBridge<{ path: string }>($, [...argv, ...valueArgv('html', html)], { timeoutMs: 600_000 })
+      return `Standalone HTML dashboard written to ${doc.path}.`
+    }
     if (port !== undefined) argv.push('--port', String(port))
     const what = (preloaded: boolean): string =>
       preloaded
@@ -136,7 +141,7 @@ async function converge($: EngineInterface, ctx: CommandContext, port: number | 
   }
 }
 
-/** `/obs dashboard [--port N] | dashboard stop` and `/obs converge [--data-root DIR] [--port N] | converge stop`. */
+/** Start, export, or stop a dashboard. */
 export async function browser($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
   const sub = ctx.parsed.sub === 'converge' ? 'converge' : 'dashboard'
   const { kind, name } = KINDS[sub]
@@ -156,6 +161,9 @@ export async function browser($: EngineInterface, ctx: CommandContext): Promise<
   }
   const port = portFlag(ctx)
   const root = ctx.parsed.flags['data-root']
-  if (action !== undefined || port === null || root === true || (typeof root === 'string' && !root.trim())) return { text: usage(sub) }
-  return { text: sub === 'dashboard' ? await dashboard($, ctx, port) : await converge($, ctx, port) }
+  const html = ctx.parsed.flags.html
+  if (action !== undefined || port === null || root === true || (typeof root === 'string' && !root.trim())
+      || html === true || (typeof html === 'string' && !html.trim())) return { text: usage(sub) }
+  if (html !== undefined && port !== undefined) return { text: '--html exports a file and cannot be combined with --port.' }
+  return { text: sub === 'dashboard' ? await dashboard($, ctx, port, html) : await converge($, ctx, port) }
 }

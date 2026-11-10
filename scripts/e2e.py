@@ -334,6 +334,16 @@ def validate_http(url: str, timeout: float = 20) -> dict:
     raise AssertionError(f'Dashboard did not become healthy: {url}: {last_error}')
 
 
+def validate_html_dashboard(path: Path) -> dict:
+    document = path.read_text(encoding='utf-8')
+    require(document.startswith('<!DOCTYPE html>') and 'TrajViz report' in document, 'HTML dashboard is not a report')
+    require("class='tv-theme-dark'" in document and 'python3: Exit code 1' in document,
+            'HTML dashboard lost its theme or detected failure')
+    require('Plotly.newPlot(' in document and not re.search(r'<script\b[^>]*\bsrc\s*=', document, re.IGNORECASE),
+            'HTML dashboard did not embed its chart runtime')
+    return {'bytes': path.stat().st_size, 'theme': 'dark', 'external_scripts': False}
+
+
 def exercise_command_matrix(turn, output: Path, session_id: str) -> dict:
     """Exercise native routing and validation without additional model calls."""
     index = json_object(output / 'export' / 'index.json')
@@ -381,7 +391,7 @@ def exercise_command_matrix(turn, output: Path, session_id: str) -> dict:
     require((output / 'session.zip').is_file(), 'Native bundle export missing')
     require((output / 'schemas/health.schema.json').is_file(), 'Native schemas export missing')
     selected = output / 'selected views'
-    turn(f'/obs json --view health --view issues -o "{selected}"', 'native filtered JSON export',
+    turn(f'/obs json --view health --view issues --views-only -o "{selected}"', 'native filtered JSON export',
          expected=r'3 files .* written to ')
     require({path.name for path in selected.iterdir()} == {'index.json', 'health.json', 'issues.json'},
             'Native JSON --view selection wrote unintended files')
@@ -545,7 +555,7 @@ Use the tools to do this work; do not merely describe commands.'''
             require(FAILURE in overview['result'], 'Overview did not identify the intentional failure')
             turn('/obs health', 'health view', expected=r'obs view health.*\n[\s\S]*Tool Success')
             turn('/obs view tool_usage', 'tool usage view', expected=r'obs view tool_usage.*\n[\s\S]*python')
-            turn(f'/obs json --with-trajectory -o "{output / "export"}"', 'JSON export',
+            turn(f'/obs json -o "{output / "export"}"', 'JSON export',
                  expected=r'\d+ files .* written to ')
             check('JSON export content and live-session identity',
                   lambda: validate_export(output / 'export', ledger['session_id']))
@@ -571,6 +581,11 @@ Use the tools to do this work; do not merely describe commands.'''
                       lambda: validate_bundle(output / 'session.zip', ledger['session_id'], subagents=bool(subagent)))
             extras = ['app'] if not args.skip_dashboard else []
             if extras:
+                html_dashboard = output / 'session dashboard.html'
+                turn(f'/obs dashboard --html "{html_dashboard}" --dark', 'offline HTML dashboard', timeout=180,
+                     expected=r'Standalone HTML dashboard written to ')
+                check('offline HTML dashboard contains inline charts and native issue evidence',
+                      lambda: validate_html_dashboard(html_dashboard))
                 turn('/obs setup --extras ' + ','.join(extras), 'optional extras setup', timeout=600,
                      expected=r'TrajViz \S+ is set up at .*extras ')
                 require(set(extras) <= set(json_object(cache / 'trajviz-obs' / 'state.json').get('extras', [])),

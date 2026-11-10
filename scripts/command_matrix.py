@@ -92,7 +92,7 @@ def run_matrix(python: str, output: Path) -> dict:
         for filename in schemas['files']:
             Draft202012Validator.check_schema(document(output / 'schemas' / filename))
         exported = output / 'export'
-        call('json', *common, '--out', str(exported), '--with-trajectory')
+        call('json', *common, '--out', str(exported))
         index = document(exported / 'index.json')
         require({row['id'] for row in index['views']} == ids, 'Export and catalog differ')
         for entry in catalog:
@@ -119,7 +119,7 @@ def run_matrix(python: str, output: Path) -> dict:
         call('snapshot', *common, '--max-points', '2')
         call('snapshot', '--transcript', str(exported / 'trajectory.json'))
         selected = output / 'selected'
-        selected_doc = call('json', *common, '--out', str(selected), '--view', 'health', '--view', 'issues')
+        selected_doc = call('json', *common, '--out', str(selected), '--view', 'health', '--view', 'issues', '--views-only')
         require(set(selected_doc['files']) == {'index.json', 'health.json', 'issues.json'}, 'View filtering failed')
         require({row['id'] for row in document(selected / 'index.json')['views']} == {'health', 'issues'},
                 'Filtered index advertises unexported views')

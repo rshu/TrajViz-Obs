@@ -23,7 +23,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
-FORMATS = {'claude_code', 'codex', 'cursor', 'codearts', 'icode', 'opencode', 'pi', 'dsh', 'otlp'}
+FORMATS = {'claude_code', 'codex', 'cursor', 'codearts', 'codeagent', 'icode', 'opencode', 'pi', 'dsh', 'otlp'}
 BASE_MS = 1_792_660_800_000
 
 
@@ -79,6 +79,17 @@ def fixtures(root: Path) -> dict[str, Path]:
         elif name == 'codearts':
             raw['export_metadata'] = {'schema_version': 2, 'source_format': 'codearts_opencode_sqlite'}
         result[name] = write(root / f'{name}.json', raw)
+    def codeagent_message(message: dict) -> dict:
+        return {'id': message['info']['id'], 'data': message['info'],
+                'parts': [{'id': f"part-{message['info']['id']}-{index}", 'data': part}
+                          for index, part in enumerate(message['parts'])]}
+    result['codeagent'] = write(root / 'codeagent.json', {
+        'source_db': 'codeagent.db',
+        'session': {'id': 'codeagent', 'directory': '/synthetic', 'time_created': BASE_MS,
+                    'time_updated': BASE_MS + 4000, 'messages': [codeagent_message(m) for m in object_messages[:2]]},
+        'child_sessions': [{'id': 'codeagent-child', 'parent_id': 'codeagent', 'title': 'Worker',
+                            'messages': [codeagent_message(object_messages[2])]}],
+    })
     codex_payloads = [
         ('session_meta', {'id': 'codex', 'cwd': '/synthetic', 'model': 'synthetic'}),
         ('response_item', {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'Run check'}]}),
@@ -197,13 +208,16 @@ def run(python: str, output: Path) -> dict:
                     f'{name}: native format identity, assistant steps or failed tool was lost')
             require(snapshot['tokens']['total'] == 25, f'{name}: logged 25-token total changed')
             inline = call('view', *args, 'tool_outcomes', '--json')
-            exported = Path(call('json', *args, '--with-trajectory')['path'])
+            exported = Path(call('json', *args)['path'])
             validate(exported, schemas)
             trajectory = doc(exported / 'trajectory.json')
             calls = [tool for step in trajectory['steps'] for tool in step.get('tool_calls', [])]
             require(trajectory['format'] == name and len(calls) == 1 and calls[0]['tool_name'] == 'Bash'
                     and calls[0]['status'] == 'error' and calls[0]['input']['command'] == 'pytest -q',
                     f'{name}: normalized tool identity, command or result did not survive export')
+            if name == 'codeagent':
+                require(any(step.get('parent_session_id') == 'codeagent' and step.get('is_sub_agent')
+                            for step in trajectory['steps']), 'CodeAgent child ancestry was lost')
             require(doc(Path(inline['path'])) == doc(exported / 'tool_outcomes.json'),
                     f'{name}: inline view and full exported view disagree')
             reloaded = call('snapshot', '--transcript', str(exported / 'trajectory.json'))

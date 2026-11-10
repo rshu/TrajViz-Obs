@@ -4,7 +4,7 @@ Inspect session health, tools, subagents, context use, and step labels with `/ob
 
 ## Install
 
-Requires **OpenCode 2** (tested with **2.2.5**), [Bun](https://bun.sh) **1.3.0+**, and either [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**.
+Requires **OpenCode 2**, [Bun](https://bun.sh) **1.3.0+**, and either [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Tested on terminal **2.2.5** and Desktop **2.2.6**.
 
 ### 1. Build the adapter and find its path
 
@@ -84,6 +84,8 @@ To disable the adapter, remove its entry from the configuration you edited and r
 
 After an assistant response, run `/obs` for a summary, `/obs pane` for the live panel, or `/obs dashboard` for the browser dashboard. Use **Open dashboard** in Desktop or **Open URL** in the terminal; remote servers need port forwarding.
 
+Use `/obs dashboard --html session.html` to save an offline copy. Add `--dark` for dark charts, or `--inline-plotly` to a live dashboard command to make its browser HTML exports work offline.
+
 The panel has Overview, Tools, Issues, Patterns, Agents, Context, and Timeline tabs. See the [demo screenshots](../README.md#demo). `/obs pane close` closes it. `/obs watch off` disables automatic refresh; `/obs statusline on` adds a compact status summary. `/obs cancel` cancels a running command.
 
 Overview charts show tokens, context, and step time excluding recorded subagent waits. Tools ranks calls and outcomes; Agents shows activity by work step. Charts follow OpenCode's theme and distinguish missing measurements from zero. Set `NO_COLOR=1` for monochrome terminal charts.
@@ -92,7 +94,7 @@ Focus the panel to switch tabs with **1–7**. In Desktop, use **Expand** for a 
 
 Use `/obs help` for all commands. Diagnostics, exports, comparisons, analysis, fixes, step labeling, and attribution follow the [shared usage guide](https://github.com/rshu/TrajViz-Obs#use). `/obs sessions` lists this project's saved sessions; session commands accept `--session <id|prefix|path>`.
 
-For a saved OTLP capture, use `/obs sessions --session /path/to/capture`, then `/obs --session /path/to/capture --session-id <id>`. Each selected session has separate artifacts and model history. Refresh imported sessions manually after their inputs change. TrajViz **0.4.2** provides all **36 views**, including `/obs view data_quality`; view JSON uses schema version **2**.
+For a saved OTLP capture, use `/obs sessions --session /path/to/capture`, then `/obs --session /path/to/capture --session-id <id>`. Each selected session has separate artifacts and model history. Refresh imported sessions manually after their inputs change. TrajViz **0.5.0** provides all **36 views**, including `/obs view data_quality`.
 
 ## Options
 
@@ -127,4 +129,4 @@ bun run test
 npm pack
 ```
 
-The package includes terminal and Desktop components plus the shared Python runtime. The Desktop extension uses OpenCode's experimental GUI API, tested with **2.2.5**. Keep private session fixtures, logs, and test output outside the repository. OpenCode 1 is unsupported.
+The package includes terminal and Desktop components plus the shared Python runtime. The Desktop extension uses OpenCode's experimental GUI API. Keep private session fixtures, logs, and test output outside the repository.

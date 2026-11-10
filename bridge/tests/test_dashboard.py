@@ -5,7 +5,9 @@ from __future__ import annotations
 import errno
 import io
 import json
+import os
 import queue
+import re
 import socket
 import subprocess
 import sys
@@ -239,6 +241,102 @@ def test_dashboard_rejects_missing_label_sidecar_before_launch(fixture_session, 
 def test_dashboard_rejects_nonpositive_window(fixture_session, run_cli):
     code, out = run_cli(["dashboard", "--transcript", str(fixture_session), "--window", "0"])
     assert code == 2 and out["error"]["code"] == "usage"
+
+
+@pytest.mark.parametrize("dark", [False, True])
+def test_dashboard_writes_offline_html_without_starting_a_server(fixture_session, tmp_path, monkeypatch, run_cli, dark):
+    from trajviz_obs import dashboard_cmd
+
+    monkeypatch.setattr(dashboard_cmd, "_dashboard", lambda: pytest.fail("No app is needed for a static export"))
+    output = tmp_path / "new folder" / "session.html"
+    labels = tmp_path / "old-labels.json"
+    labels.write_text("{}", encoding="utf-8")
+    original = fixture_session.read_bytes()
+    flags = ["--dark"] if dark else []
+    code, result = run_cli(["dashboard", "--transcript", str(fixture_session), "--window", "1000000",
+                            "--labels", str(labels), "--html", str(output), *flags])
+    markup = output.read_text(encoding="utf-8")
+    assert code == 0 and result == {"path": str(output), "bytes": output.stat().st_size}
+    assert markup.startswith("<!DOCTYPE html>") and "plotly.js v" in markup
+    assert not re.search(r"<script\b[^>]*\bsrc=", markup) and "Deep dive" in markup
+    assert f"class='tv-theme-{'dark' if dark else 'light'}'" in markup
+    if os.name != "nt":
+        assert output.stat().st_mode & 0o077 == 0
+    assert fixture_session.read_bytes() == original
+
+
+@pytest.mark.parametrize("alias", ["input", "hardlink", "symlink", "labels"])
+def test_dashboard_html_rejects_source_and_sidecar_aliases(fixture_session, dashboard_labels, tmp_path, run_cli, alias):
+    source = tmp_path / "session.jsonl"
+    source.write_bytes(fixture_session.read_bytes())
+    dest = tmp_path / "report.html"
+    if alias == "input":
+        dest = source
+    elif alias == "hardlink":
+        dest.hardlink_to(source)
+    elif alias == "symlink":
+        dest.symlink_to(source)
+    else:
+        dest.symlink_to(dashboard_labels)
+    before = dest.read_bytes()
+    code, result = run_cli(["dashboard", "--transcript", str(source), "--labels", str(dashboard_labels),
+                            "--html", str(dest)])
+    assert code == 1 and result["error"]["code"] == "bad_output"
+    assert dest.read_bytes() == before
+
+
+def test_dashboard_html_rejects_listen_options(fixture_session, tmp_path, run_cli):
+    output = tmp_path / "session.html"
+    code, result = run_cli(["dashboard", "--transcript", str(fixture_session), "--html", str(output), "--port", "1234"])
+    assert code == 2 and result["error"]["code"] == "usage" and not output.exists()
+
+
+def test_dashboard_html_requires_a_session_for_ambiguous_capture(captured_sessions, tmp_path, run_cli):
+    output = tmp_path / "selected.html"
+    argv = ["dashboard", "--transcript", str(captured_sessions.directory), "--html", str(output)]
+    code, result = run_cli(argv)
+    assert code == 1 and result["error"]["trajviz_code"] == "ambiguous_session" and not output.exists()
+    code, result = run_cli([*argv, "--session-id", "capture-a"])
+    assert code == 0 and result["path"] == str(output)
+    assert "<script" in output.read_text(encoding="utf-8")
+
+
+def test_live_theme_and_inline_download_apply_only_to_the_selected_dashboard(fixture_session, tmp_path, monkeypatch):
+    from agent_trajviz.insight.ui import upload
+
+    monkeypatch.setenv("GRADIO_TEMP_DIR", str(tmp_path / "gradio"))
+    normal = build_preloaded_insight(str(fixture_session))
+    customized = build_preloaded_insight(str(fixture_session), dark=True, inline_plotly=True)
+    for app, dark in ((normal, False), (customized, True)):
+        initializer = next(entry for entry in app.fns.values() if "window.tvSetGradioText = " in (entry.js or ""))
+        assert initializer.fn() is dark and initializer.outputs[0].value is dark
+        assert f"colorScheme = '{'dark' if dark else 'light'}'" in initializer.js
+        outputs = _loader(app).fn(str(fixture_session), initializer.fn())
+        run = next(value for value in outputs.values() if isinstance(value, tv.Trajectory))
+        export = next(entry.fn for entry in app.fns.values() if entry.api_name == "prepare_html_export")
+        assert export is not upload.prepare_html_export
+        exported = export(run, None, initializer.fn(), request=SimpleNamespace(session_hash=f"theme-{dark}"))
+        html = Path(exported["value"]).read_text(encoding="utf-8")
+        assert ("plotly.js v" in html) is dark
+        assert bool(re.search(r"<script\b[^>]*\bsrc=", html)) is not dark
+        assert f"class='tv-theme-{'dark' if dark else 'light'}'" in html
+
+
+def test_expanded_workflow_caps_tool_io_and_keeps_full_source(fixture_session, fixture_run):
+    app = build_preloaded_insight(str(fixture_session))
+    render = next(entry.fn for entry in app.fns.values() if entry.api_name == "do_filter_workflow")
+    step, part = next((step, part) for step in fixture_run.steps for part in step["parts"]
+                      if part.get("type") == "tool_call")
+    recorded = "<img src=x onerror=alert(1)>" + "a" * 200_000 + "beyond-the-limit"
+    part = {**part, "input": recorded, "output": recorded}
+    step = {**step, "parts": [part]}
+    cards, _, _ = render([step], "Assistant,User,All", "", "", "Cards")
+    expanded, _, _ = render([step], "Assistant,User,All", "", "", "Expanded")
+    assert "class='wf-expand-body'" in expanded and "class='wf-expand-body'" not in cards
+    assert expanded.count("truncated at 200,000 chars") == 2
+    assert "beyond-the-limit" not in expanded
+    assert "&lt;img src=x onerror=alert(1)&gt;" in expanded and "<img src=x" not in expanded
+    assert part["input"] == recorded == part["output"]
 
 
 def test_dashboard_launch_preserves_native_auth_and_upload_limit(monkeypatch):

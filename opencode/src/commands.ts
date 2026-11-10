@@ -22,9 +22,11 @@ export const HELP_TEXT = [
   '  issues | health | patterns | agents | context | timeline · diagnostic views',
   '  view [<id>] [k=v]... [--limit 1–500] [--offset N] [--json] · catalog or one view',
   'Export',
-  '  json [-o DIR] [--view ID]... [--with-trajectory]    bundle [-o PATH]    schemas [DIR]',
+  '  json [-o DIR] [--view ID]... [--views-only] · views and a reloadable trajectory',
+  '  bundle [-o PATH]    schemas [DIR]',
   'Browser',
-  '  dashboard [--port N] | dashboard stop · session dashboard',
+  '  dashboard [--port N] [--dark] [--inline-plotly] | dashboard stop · local session dashboard',
+  '  dashboard --html PATH [--dark] · save a standalone HTML dashboard',
   '  converge [--data-root DIR] [--port N] | converge stop · comparison dashboard',
   'Compare',
   '  compare <session|path> [--anchor-patch P] [--fuzzy-commands] [--reverse]',
@@ -125,7 +127,7 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
     ? { text: EMPTY } : { text: `${doc.text ?? `${label}: ${doc.path}${doc.bytes === undefined ? '' : ` (${doc.bytes.toLocaleString()} bytes)`}`}${doc.note ? `\n${doc.note}` : ''}`, path: doc.path, data: doc }
 
   if (sub === 'help') return { text: HELP_TEXT }
-  if (sub === 'report') return { text: 'HTML reports have been removed. Run /obs dashboard for the full interactive view.' }
+  if (sub === 'report') return { text: 'The /obs report command was removed. Use /obs dashboard to inspect the session or /obs dashboard --html PATH to save an offline copy.' }
   if (sub === 'analyze' || sub === 'fixes' || sub === 'label') return runModel(backend, input, signal)
   if (sub === 'watch' || sub === 'statusline' || sub === 'cancel' || (sub === 'pane' && positional[0] === 'close')) return { text: `Use /obs ${sub}${positional.length ? ` ${positional.join(' ')}` : ''} in the OpenCode terminal UI.` }
   if (sub === 'overview' || sub === 'pane') {
@@ -167,6 +169,7 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
     if (output) args.push('--out', output)
     for (const id of views) args.push('--view', String(id))
     if (flags['with-trajectory'] !== undefined) args.push('--with-trajectory')
+    if (flags['views-only'] !== undefined) args.push('--views-only')
     return { ...result(await run<Written | EmptySnapshot>(args), sub === 'json' ? 'View data written' : 'Session bundle written'), sessionID: source.sessionID }
   }
   if (sub === 'schemas') return result(await run<Written>(['schemas', ...((output ?? positional[0]) ? ['--out', (output ?? positional[0])!] : [])]), 'View schemas written')
@@ -187,6 +190,13 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
       if (window >= 0) args.push('--window', source.argv[window + 1]!)
       const labels = path.join(source.artifacts, 'labels.json')
       if (await exists(labels)) args.push('--labels', labels)
+      for (const name of ['dark', 'inline-plotly']) if (flags[name]) args.push(`--${name}`)
+      const html = flag(flags.html)
+      if (html !== undefined) {
+        args.push(...valueArgv('html', html))
+        const doc = await run<Written>(args)
+        return { ...result(doc, 'Standalone HTML dashboard written'), sessionID: target }
+      }
     } else {
       const dataRoot = flag(root) ?? backend.root
       if (root === undefined) await mkdir(dataRoot, { recursive: true, mode: 0o700 })

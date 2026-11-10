@@ -18,11 +18,11 @@ resolution-markers = [
 
 [[package]]
 name = "agent-trajviz"
-version = "0.4.2"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/bb/41/87b50b2cbe537fee1d3b2d27da81c0320a76caa33b32f39769660cf6d304/agent_trajviz-0.4.2.tar.gz", hash = "sha256:391d01d9a852f833f2006600d7dc8967ed0a03b2e668aa2a234f12cfbbaf84e3", size = 934781, upload-time = "2026-11-04T04:18:24.509Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9e/44/e5f134c2f65b174db89cc8f62e45e11ac7f6cf4b1e6589e47ab9f2dd7451/agent_trajviz-0.5.0.tar.gz", hash = "sha256:8a9e9570ab6114a985c8f0d53e60a9f80531ba91138c2e1c1474a06ddd9e4faf", size = 1055942, upload-time = "2026-11-09T08:26:36.036Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/37/75/303b3adea520e22f116a730eadce18b7db7dc50dc266d7a1332cd4a6fdcf/agent_trajviz-0.4.2-py3-none-any.whl", hash = "sha256:eca6c79c6c2eab4098cbab96697c1567de290b2189c666c54e42d24aba721859", size = 1114007, upload-time = "2026-11-04T04:18:22.494Z" },
+    { url = "https://files.pythonhosted.org/packages/44/5b/1a164dba048097d21df6bc1b65d04fea8b6cc14a26a09688f1f2f424bd2d/agent_trajviz-0.5.0-py3-none-any.whl", hash = "sha256:4dd3a48b8fa8fb583de6cbbaa15c4a8a7fa9ec15c7ea0f8c92ba8b259df356b0", size = 1247696, upload-time = "2026-11-09T08:26:34.147Z" },
 ]
 
 [package.optional-dependencies]
@@ -1805,7 +1805,7 @@ wheels = [
 
 [[package]]
 name = "trajviz-obs-bridge"
-version = "0.3.6"
+version = "0.3.7"
 source = { virtual = "." }
 dependencies = [
     { name = "agent-trajviz", extra = ["all"] },
@@ -1820,7 +1820,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-trajviz", extras = ["all"], specifier = "==0.4.2" },
+    { name = "agent-trajviz", extras = ["all"], specifier = "==0.5.0" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.23,<5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },

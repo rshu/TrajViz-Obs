@@ -25,6 +25,7 @@ from trajviz_obs.cli import main
 sys.exit(main(sys.argv[1:]))
 """
     env = {key: value for key, value in os.environ.items() if not key.startswith(("ANALYZE_", "LABEL_"))}
+    env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
 
     def run(argv: list[str], *, error: str | None = None) -> dict:
         proc = subprocess.run([sys.executable, "-I", "-c", script, *argv], cwd=tmp_path, env=env,
@@ -65,5 +66,9 @@ sys.exit(main(sys.argv[1:]))
             run(["labels", "--sidecar", result["path"]])
     for feature in ("ask", "fixes", "label"):
         run([feature, *session], error="llm_not_configured")
+    report = tmp_path / "report.html"
+    result = run(["dashboard", "--transcript", str(fixture_session), "--html", str(report)])
+    assert result["path"] == str(report) and result["bytes"] == report.stat().st_size
+    assert "Plotly.newPlot(" in report.read_text(encoding="utf-8")
     run(["dashboard", "--transcript", str(fixture_session)], error="missing_extra")
     run(["converge", "--data-root", str(tmp_path)], error="missing_extra")

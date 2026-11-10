@@ -134,7 +134,7 @@ def render_overview(snap: dict) -> str:
 
 def _cell(value: Any) -> str:
     if value is None:
-        return ""
+        return "Unknown"
     text = json.dumps(value, ensure_ascii=False, default=str) if isinstance(value, dict | list) else str(value)
     return _clip(text, CELL_CHARS).replace("|", "\\|")
 
@@ -149,7 +149,7 @@ def render_table(rows: list[dict], *, limit: int, offset: int) -> str:
         return f"rows 0 of {len(rows)}"
     keys = list(dict.fromkeys(k for row in page for k in row))
     lines = ["| " + " | ".join(_cell(k) for k in keys) + " |", "|" + "---|" * len(keys)]
-    lines += ["| " + " | ".join(_cell(row.get(k)) for k in keys) + " |" for row in page]
+    lines += ["| " + " | ".join(_cell(row.get(k, "")) for k in keys) + " |" for row in page]
     return "\n".join(lines) + f"\n\nrows {offset + 1}–{offset + len(page)} of {len(rows)}"
 
 

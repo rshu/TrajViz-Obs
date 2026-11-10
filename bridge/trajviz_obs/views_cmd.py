@@ -161,14 +161,16 @@ def _groups(rows: list[dict], group: str | None) -> dict[str, list[dict]]:
     return groups
 
 
-def _sparklines(rows: list[dict], group: str | None, fields: tuple[str, ...], *, limit: int, offset: int) -> str:
+def _sparklines(rows: list[dict], group: str | None, fields: tuple[str, ...], *, limit: int, offset: int,
+                labels: dict[str, str]) -> str:
     """One sparkline per field (per group), lines ``offset`` to ``offset + limit``, then a points footer."""
     lines = []
     for name, members in _groups(rows, group).items():
         for field in fields:
             values = [row.get(field) for row in members]
             present = [v for v in values if isinstance(v, int | float) and not isinstance(v, bool)]
-            label = " ".join(part for part in (name, "" if group and len(fields) == 1 else field) if part)
+            label = " ".join(part for part in (labels.get(name, name), "" if group and len(fields) == 1 else field)
+                             if part)
             lines.append((label, render_series(values), _num(max(present)) if present else "?"))
     page = lines[offset:offset + limit]
     width = max((len(label) for label, _, _ in page), default=0)
@@ -248,7 +250,11 @@ def view_payload(run: Trajectory, view_id: str, options: dict, *, limit: int, of
         inline: dict[str, Any] = {"data": view.data}
     elif view.kind == "chart" and view_id in _SPARKS:
         group, fields = _SPARKS[view_id]
-        inline = {"series": _fit(lambda n: _sparklines(rows, group, fields, limit=n, offset=offset),
+        labels = {}
+        if view_id in {"token_usage", "step_durations"} and len(view.data.get("agents", [])) > 1:
+            group = "agent"
+            labels = {agent["id"]: agent["label"] for agent in view.data["agents"]}
+        inline = {"series": _fit(lambda n: _sparklines(rows, group, fields, limit=n, offset=offset, labels=labels),
                                  len(_groups(rows, group)) * len(fields), unit="line", **paging)}
     elif view.kind == "chart" and view_id in _BARS:
         inline = {"series": _fit(lambda n: _bars(rows, *_BARS[view_id], limit=n, offset=offset), len(rows),
@@ -265,30 +271,25 @@ def view_payload(run: Trajectory, view_id: str, options: dict, *, limit: int, of
             **({"notice": notice} if notice else {})}
 
 
-def export(run: Trajectory, out_dir: Path, *, only: list[str] | None, with_trajectory: bool) -> dict:
-    """Every view (or those in *only*) as ``<id>.json`` plus ``index.json``; ``trajectory.json`` only with
-    *with_trajectory* (it is tens of MB for a long session)."""
+def export(run: Trajectory, out_dir: Path, *, only: list[str] | None, with_trajectory: bool = True) -> dict:
+    """Write selected views and the reloadable TrajViz trajectory unless explicitly omitted."""
     for view_id in only or ():
         _options_help(view_id)
     names = [f"{view_id}.json" for view_id in (only if only is not None else tv.VIEW_CATALOG)]
     protect_run_outputs(run, [out_dir / name for name in [*names, "index.json",
                                                         *(["trajectory.json"] if with_trajectory else [])]])
     out_dir.mkdir(parents=True, exist_ok=True)
-    # TrajViz's exporter uses fixed <name>.tmp files. Give each invocation a private directory so its
-    # internal staging cannot collide with another export or follow an existing staging symlink.
+    # Stage the entire export before replacing files in the destination.
     with tempfile.TemporaryDirectory(prefix=".trajviz-obs-", dir=out_dir) as scratch:
         source_views = run.views(only=only)
         projected = {view_id: project_view(run, view) for view_id, view in source_views.items()}
         if with_trajectory:
             written = tv.export_json(run, scratch, only=only)
-            # The normalized trajectory preserves native observations and provenance.
-            # Project only the display views, retaining the trajectory's index metadata.
-            if any(projected[view_id] is not view for view_id, view in source_views.items()):
-                index_path = Path(scratch) / "index.json"
-                index = json.loads(index_path.read_text(encoding="utf-8"))
-                tv.export_json(projected, scratch)
-                updated = json.loads(index_path.read_text(encoding="utf-8"))
-                _write_json(index_path, {**index, **updated})
+            # Keep the upstream trajectory and index. Apply the same evidence
+            # projection as the inline views to the staged view documents.
+            for view_id, view in projected.items():
+                if view is not source_views[view_id]:
+                    _write_json(Path(scratch) / f"{view_id}.json", view.to_dict())
         else:
             written = tv.export_json(projected, scratch)
         final = [out_dir / path.name for path in written]
@@ -359,11 +360,16 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--json", action="store_true",
                    help="The view's data inline when its file is at most 256 KB (and it fits in 200 KB on stdout).")
 
-    p = sub.add_parser("json", help="Every view (or the named ones) as <id>.json plus index.json.")
+    p = sub.add_parser("json", help="Export view data and a reloadable TrajViz trajectory.")
     _session_args(p)
     p.add_argument("--out", type=Path, default=None, help="The folder (default: <artifacts>/views).")
     p.add_argument("--view", action="append", default=None, dest="views", metavar="ID", help="A view (repeatable).")
-    p.add_argument("--with-trajectory", action="store_true", help="Add TrajViz's reloadable trajectory.json.")
+    trajectory = p.add_mutually_exclusive_group()
+    trajectory.add_argument("--with-trajectory", dest="with_trajectory", action="store_true",
+                            help="Include TrajViz's reloadable trajectory.json (the default).")
+    trajectory.add_argument("--views-only", dest="with_trajectory", action="store_false",
+                            help="Skip writing trajectory.json.")
+    p.set_defaults(with_trajectory=True)
 
     p = sub.add_parser("schemas", help="The JSON Schema of every view, written as files.")
     p.add_argument("--out", type=Path, default=None, help="The folder (default: <cache>/trajviz-obs/schemas).")

@@ -39,7 +39,7 @@ export function outFlag(ctx: CommandContext): string | undefined {
 }
 
 /**
- * `json [-o DIR] [--view ID]… [--with-trajectory]`: every view (or the named
+ * `json [-o DIR] [--view ID]… [--views-only]`: every view (or the named
  * ones) as files. `--view` repeats, so its ids come from `flagValues` over the
  * raw arguments (`parsed.flags` keeps only the last); a bare `--view` is
  * refused before anything runs.
@@ -47,6 +47,7 @@ export function outFlag(ctx: CommandContext): string | undefined {
 async function exportJson($: EngineInterface, ctx: CommandContext, spec: string | undefined): Promise<string> {
   const views = flagValues(ctx.args, 'view')
   if (views.some(v => v === true || !v.trim())) return VIEW_USAGE
+  if (ctx.parsed.flags['with-trajectory'] && ctx.parsed.flags['views-only']) return 'Choose either --with-trajectory or --views-only.'
   await ensureReady($, ctx.options)
   const { argv } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
   const call = ['json', ...argv]
@@ -54,6 +55,7 @@ async function exportJson($: EngineInterface, ctx: CommandContext, spec: string 
   if (out) call.push('--out', out)
   for (const id of views) call.push('--view', String(id))
   if (ctx.parsed.flags['with-trajectory'] !== undefined) call.push('--with-trajectory')
+  if (ctx.parsed.flags['views-only'] !== undefined) call.push('--views-only')
   const doc = await runBridge<JsonDoc>($, call, { timeoutMs: EXPORT_TIMEOUT_MS })
   if ('empty' in doc) return EMPTY_TEXT
   return `${count(doc.files.length, 'file')} (${fmtBytes(doc.bytes)}) written to ${doc.path}.`

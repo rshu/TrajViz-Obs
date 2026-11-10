@@ -40,9 +40,17 @@ def test_view_payload_pages_and_writes_file(synthetic_run, tmp_artifacts):
     assert (tmp_artifacts / "views" / "steps.json").exists() and p["rows_total"] > 25 and "rows 1–25" in p["inline"]["table"]
 
 
-def test_export_without_trajectory_by_default(fixture_run, tmp_artifacts):
-    export(fixture_run, tmp_artifacts / "views", only=None, with_trajectory=False)
-    assert not (tmp_artifacts / "views" / "trajectory.json").exists() and (tmp_artifacts / "views" / "index.json").exists()
+def test_cli_export_defaults_to_a_reloadable_trajectory_and_can_skip_it(run_cli, fixture_session, tmp_path):
+    common = ["json", "--transcript", str(fixture_session), "--view", "health"]
+    full, only = tmp_path / "full", tmp_path / "views"
+    code, result = run_cli([*common, "--out", str(full)])
+    assert code == 0 and "trajectory.json" in result["files"]
+    assert tv.load(full / "trajectory.json").sha256 == tv.load(fixture_session).sha256
+    code, result = run_cli([*common, "--out", str(only), "--views-only"])
+    assert code == 0 and result["files"] == ["health.json", "index.json"]
+    assert not (only / "trajectory.json").exists()
+    code, result = run_cli([*common, "--views-only", "--with-trajectory"])
+    assert code == 2 and result["error"]["code"] == "usage"
 
 
 def test_catalog_entries():
@@ -98,9 +106,13 @@ def test_every_view_draws_inline(synthetic_run, tmp_artifacts, view_id):
 def test_chart_views_draw_series_and_bars(synthetic_run, tmp_artifacts):
     tokens = view_payload(synthetic_run, "token_usage", {}, limit=25, offset=0, out_dir=tmp_artifacts, inline_json=False)
     lines = tokens["inline"]["series"].splitlines()
-    assert lines[0].startswith("fresh_input ") and any(line.startswith("total ") for line in lines)
+    assert lines[0].startswith("main fresh_input ")
+    assert any(line.startswith("Worker 0 total ") for line in lines)
     assert tokens["rows_total"] == len(synthetic_run.view("token_usage").data["steps"])
     assert lines[-1] == f"{tokens['rows_total']} points · steps 0–{tokens['rows_total'] - 1}"
+    durations = view_payload(synthetic_run, "step_durations", {}, limit=25, offset=0, out_dir=tmp_artifacts,
+                             inline_json=False)
+    assert [line.split()[0] for line in durations["inline"]["series"].splitlines()[:2]] == ["main", "Worker"]
     pressure = view_payload(synthetic_run, "context_pressure", {}, limit=25, offset=0, out_dir=tmp_artifacts,
                             inline_json=False)
     assert [line.split()[0] for line in pressure["inline"]["series"].splitlines()[:2]] == ["main", "Worker"]
@@ -196,7 +208,7 @@ def test_cli_json(run_cli, fixture_session, tmp_artifacts):
     code, out = run_cli(["json", "--transcript", str(fixture_session), "--artifacts", str(tmp_artifacts),
                          "--view", "health", "--view", "issues"])
     assert code == 0 and out["path"] == str(tmp_artifacts / "views")
-    assert out["files"] == ["health.json", "issues.json", "index.json"]
+    assert out["files"] == ["health.json", "issues.json", "trajectory.json", "index.json"]
     code, out = run_cli(["json", "--transcript", str(fixture_session), "--out", str(tmp_artifacts / "x"),
                          "--with-trajectory"])
     assert code == 0 and "trajectory.json" in out["files"] and Path(out["path"]) == tmp_artifacts / "x"

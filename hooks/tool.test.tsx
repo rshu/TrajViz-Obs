@@ -13,7 +13,7 @@ const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const ARTIFACTS = `${CACHE}/sessions/abc`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 12 }, rateLimits: [] }
 const NOW = 1_761_150_000_000
-const STATE_JSON = JSON.stringify({ revision: 5, python: VENV_PY, trajviz: '0.4.2', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.4.2', createdAt: NOW })
+const STATE_JSON = JSON.stringify({ revision: 6, python: VENV_PY, trajviz: '0.5.0', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.5.0', createdAt: NOW })
 
 /** The argv every session-bound bridge subcommand gets for the current session. */
 const SESSION_ARGV = ['--transcript', DERIVED, '--window', '1000000', '--artifacts', ARTIFACTS, '--kind', 'current']

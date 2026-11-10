@@ -218,6 +218,11 @@ def normalize(payload: Any) -> Any:
     """Return the shared OpenCode analysis envelope without mutating native input."""
     if not is_native(payload):
         return payload
+    # TrajViz handles standalone Desktop and Windows exports, including
+    # their alternate text/tool shapes. Keep our adapter for family captures.
+    if (payload.get("source_format") != "opencode_v2" and isinstance(payload.get("info"), dict)
+            and not payload.get("session") and not payload.get("children")):
+        return payload
     if payload.get("source_format") == "opencode_v2" and payload.get("schema_version") != 1:
         raise ValueError("Unsupported OpenCode materialization schema; expected schema_version 1.")
     root = _session(payload)
@@ -292,7 +297,7 @@ def normalize(payload: Any) -> Any:
                                 if _number(_dict(m["info"].get("time")).get("created")) else math.inf))
     info = copy.deepcopy(root)
     location = _dict(root.get("location"))
-    info["directory"] = payload.get("directory") or location.get("directory") or ""
+    info["directory"] = payload.get("directory") or location.get("directory") or root.get("directory") or ""
     info["version"] = payload.get("host_version", "2")
     history_errors = list(dict.fromkeys(history_errors))
     warnings.extend(f"OpenCode model/session error: {error}" for error in history_errors)

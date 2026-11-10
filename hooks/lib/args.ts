@@ -96,7 +96,7 @@ export const SUBCOMMANDS: readonly string[] = [
 
 const DEFAULT_SUB = 'overview'
 /** Flags that never consume the next positional, regardless of their order. */
-export const BOOLEAN_FLAGS: readonly string[] = ['with-trajectory', 'json', 'fuzzy-commands', 'reverse', 'no-self', 'assistant-only']
+export const BOOLEAN_FLAGS: readonly string[] = ['with-trajectory', 'views-only', 'dark', 'inline-plotly', 'json', 'fuzzy-commands', 'reverse', 'no-self', 'assistant-only']
 
 /**
  * Splits as a POSIX shell would: whitespace separates, single quotes keep

@@ -15,7 +15,7 @@ function host(on: On) {
   on('session.cwd', () => ({ value: '/project' }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000, percent: live.percent }, rateLimits: [], cost: { usd: live.usd } } }))
   on('fs.exists', () => ({ value: true }))
-  on('fs.read', () => ({ value: JSON.stringify({ revision: 5, python: PYTHON, trajviz: '0.4.2', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.4.2', createdAt: 1 }) }))
+  on('fs.read', () => ({ value: JSON.stringify({ revision: 6, python: PYTHON, trajviz: '0.5.0', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.5.0', createdAt: 1 }) }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify(NATIVE_SNAPSHOT), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   return live
 }

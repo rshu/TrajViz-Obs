@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { Runtime } from '../src/runtime.js'
+import { atomicJSON, Runtime } from '../src/runtime.js'
 
 const owned: { runtime: Runtime; folder: string }[] = []
 afterEach(async () => {
@@ -14,6 +14,35 @@ async function runtime(): Promise<Runtime> {
   owned.push({ runtime: instance, folder })
   return instance
 }
+
+test('runtime replaces a previous engine generation and reuses its current one', async () => {
+  const instance = await runtime()
+  const interpreter = (generation: string) => path.join(instance.cache, 'envs', 'a'.repeat(24), generation.repeat(32),
+    ...(process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python']))
+  const old = { revision: 5, source: 'agent-trajviz==0.5.0', python: interpreter('b'), extras: ['llm', 'charts', 'zstd'] }
+  const current = { ...old, revision: 6, python: interpreter('c') }
+  const statePath = path.join(instance.cache, 'state.json')
+  await atomicJSON(old.python, 'old interpreter')
+  await atomicJSON(current.python, 'current interpreter')
+  await atomicJSON(statePath, old)
+  let bootstraps = 0
+  instance.execute = async <T>(argv: readonly string[]) => {
+    if (argv[0] === 'uv' && argv[1] === '--version') return 'uv 0.11.28' as T
+    expect(argv.at(-2)).toBe('--request')
+    expect(JSON.parse(argv.at(-1)!)).toMatchObject({ source: current.source, extras: [] })
+    bootstraps++
+    await atomicJSON(statePath, current)
+    return current as T
+  }
+
+  expect(await instance.ready()).toEqual(current)
+  expect(bootstraps).toBe(1)
+  const fresh = new Runtime({ cacheRoot: instance.cache }, instance.cwd)
+  try {
+    fresh.execute = async () => { throw new Error('Unexpected bootstrap') }
+    expect(await fresh.ready()).toEqual(current)
+  } finally { fresh.close() }
+})
 
 test('runtime executes argument arrays literally and keeps stdout as one JSON result', async () => {
   const instance = await runtime()
