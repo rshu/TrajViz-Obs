@@ -9,6 +9,10 @@
 
 Visualize and diagnose Claude Code and OpenCode 2 sessions with [TrajViz](https://github.com/rshu/TrajViz). Use `/obs` for a quick health check and `/obs dashboard` to inspect steps, tools, subagents, and context use.
 
+## Telemetry service
+
+This branch contains the collector and HTML publisher for opt-in usage telemetry from Claude Code and OpenCode. The client instrumentation lives on `codex/usage-telemetry`. See the [telemetry service setup guide](telemetry/README.md) for configuration, local testing, and deployment.
+
 ## Install
 
 For **OpenCode 2 terminal or Desktop**, follow the [OpenCode installation guide](opencode/README.md). The instructions below install the Claude Code plugin.
