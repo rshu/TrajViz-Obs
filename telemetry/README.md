@@ -53,7 +53,7 @@ application = create_production_app("/var/lib/trajviz-obs/usage.sqlite3")
 | Setting | Default and behavior |
 | --- | --- |
 | `--database PATH` | Required before the subcommand, except for `credentials`. Use the same SQLite file for collection, reporting, and maintenance. Pass the path as `database` to the WSGI factory. |
-| `--retention-days DAYS` | Defaults to 90, accepts 32–365. Place before the subcommand and use the same value throughout, including the WSGI factory’s `retention_days`. |
+| `--retention-days DAYS` | Defaults to 365 days (one year), accepts 32–365. Place before the subcommand and use the same value throughout, including the WSGI factory’s `retention_days`. |
 | `serve --port PORT` | Development only. Binds to `127.0.0.1:8765` by default. Use `0` to pick a free port. |
 | `serve --credentials PATH` and `--require-auth` | The absolute path overrides `TRAJVIZ_OBS_INGEST_CREDENTIALS`. A configured registry enables authentication. `--require-auth` makes startup fail if no registry is configured. |
 | `serve --requests-per-minute N` and `--global-requests-per-minute N` | Defaults to 60 per credential and 600 overall per UTC minute for authenticated uploads. Set `1 ≤ per credential ≤ global ≤ 60,000`. The factory accepts the same settings as `requests_per_minute` and `global_requests_per_minute`. |

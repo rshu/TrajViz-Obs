@@ -258,6 +258,21 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(adoption["new_installations"], 0)
         self.assertEqual(adoption["returning_engaged_in_period"], 1)
 
+    def test_default_retention_keeps_365_utc_days_including_today(self):
+        oldest = self.today - timedelta(days=364)
+        expired = oldest - timedelta(days=1)
+        for arrival in (expired, oldest):
+            self.assertEqual(self.request(batch(uuid4().hex, event(arrival)), arrival=arrival)[0], 204)
+        self.assertEqual(self.count("events"), 2)
+
+        with patch("telemetry.collector.utc_day", return_value=self.today):
+            create_app(self.database)
+
+        self.assertEqual((self.count("events"), self.count("installations")), (1, 1))
+        summary = report(self.database, today=self.today, days=365)
+        self.assertEqual(summary["retained_from"], oldest.isoformat())
+        self.assertEqual(summary["features"][0]["invocations"], 1)
+
     def test_report_counts_activity_outcomes_versions_and_exact_day_returns(self):
         active, returning_late, activated = uuid4().hex, uuid4().hex, uuid4().hex
         first = self.today - timedelta(days=35)
@@ -307,11 +322,12 @@ class CollectorTest(unittest.TestCase):
 
     def test_historical_report_requires_full_retained_window(self):
         report_day = self.today - timedelta(days=60)
-        result = report(self.database, today=report_day, retained_on=self.today)
+        result = report(self.database, today=report_day, retained_on=self.today, retention_days=self.retention_days)
         self.assertEqual(result["as_of"], report_day.isoformat())
         self.assertEqual(len(result["daily"]), 60)
         with self.assertRaises(ValueError):
-            report(self.database, today=report_day - timedelta(days=1), retained_on=self.today)
+            report(self.database, today=report_day - timedelta(days=1), retained_on=self.today,
+                   retention_days=self.retention_days)
 
 
 if __name__ == "__main__":

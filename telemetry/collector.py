@@ -16,7 +16,7 @@ from bridge.telemetry_protocol import BACKFILL_DAYS, MAX_BODY, validate_payload
 
 from .credentials import CredentialRegistry, registry_path
 
-DEFAULT_RETENTION_DAYS = 90
+DEFAULT_RETENTION_DAYS = 365
 EVENTS_PATH = "/v1/events"
 DEFAULT_REQUESTS_PER_MINUTE = 60
 DEFAULT_GLOBAL_REQUESTS_PER_MINUTE = 600

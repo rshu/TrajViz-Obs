@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, help="Path to the receiver's SQLite database.")
     parser.add_argument("--retention-days", type=int, default=DEFAULT_RETENTION_DAYS,
-                        help="Days of data retained, from 32 to 365. Use the same value for all operations.")
+                        help="Days of data retained, from 32 to 365 (default: %(default)s). Use the same value for all operations.")
     commands = parser.add_subparsers(dest="command", required=True)
     serve = commands.add_parser("serve", help="Run a development receiver on localhost.")
     serve.add_argument("--port", type=_port, default=8765)
