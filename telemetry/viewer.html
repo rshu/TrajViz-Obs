@@ -31,11 +31,12 @@
     .frame { width: min(1260px, 100% - 48px); margin-inline: auto; }
     .masthead { padding: 36px 0 28px; background: #e8f0f4; border-bottom: 1px solid var(--line); }
     .masthead-inner, .section-head, .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
-    .masthead-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
-    .language { display: inline-flex; align-items: center; gap: .15rem; padding: .2rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); }
-    .language button { min-width: 2.35rem; min-height: 2rem; padding: .2rem .35rem; border: 0; border-radius: 5px; background: transparent; color: var(--accent); font-weight: 700; }
-    .language button:hover { background: var(--tint); }
-    .language button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+    .masthead-actions, .section-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
+    .view-switch, .language { display: inline-flex; align-items: center; gap: .15rem; padding: .2rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); }
+    :is(.view-switch, .language) button { min-width: 2.35rem; min-height: 2rem; padding: .2rem .5rem; border: 0; border-radius: 5px; background: transparent; color: var(--accent); font-weight: 700; }
+    :is(.view-switch, .language) button:hover { background: var(--tint); }
+    :is(.view-switch, .language) button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+    .view-switch { font-size: .8rem; }
     .brand { margin: 0 0 7px; color: var(--accent); font-size: .8rem; font-weight: 750; letter-spacing: .06em; }
     h1 { margin: 0; font-size: clamp(1.85rem, 4vw, 2.8rem); line-height: 1.07; letter-spacing: -.045em; }
     h2 { margin: 0; font-size: 1.2rem; letter-spacing: -.025em; }
@@ -51,6 +52,7 @@
     .toolbar .subtle { margin: 0; }
     .field { display: flex; gap: .5rem; align-items: center; font-size: .875rem; font-weight: 650; }
     .field input, .field select { min-width: 0; padding: .43rem .55rem; border: 1px solid #aebfc9; border-radius: 7px; color: var(--ink); background: var(--surface); }
+    .field input { width: min(10rem, 42vw); }
     .kpis, .pair { display: grid; gap: 14px; }
     .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     .pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -72,6 +74,17 @@
     .chart line { stroke: var(--line); stroke-width: 1; }
     .chart polyline { fill: none; stroke: var(--series); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
     .chart circle { fill: var(--series); }
+    .bar-chart { margin: 0; }
+    .bar-chart figcaption { color: var(--muted); font-size: .83rem; font-weight: 650; }
+    .bar-chart ul { display: grid; gap: .65rem; margin: .65rem 0 0; padding: 0; list-style: none; }
+    .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: .24rem .65rem; font-size: .83rem; }
+    .bar-label { display: flex; flex-wrap: wrap; align-items: baseline; gap: .16rem .6rem; min-width: 0; }
+    .bar-label .adapter { font-size: .76rem; color: var(--muted); }
+    .bar-name { overflow-wrap: anywhere; font-weight: 650; }
+    #features .bar-name { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .bar-value { font-weight: 700; }
+    .bar-track { grid-column: 1 / -1; display: block; height: .48rem; border-radius: 5px; background: var(--tint); }
+    .bar-fill { display: block; height: 100%; border-radius: inherit; background: var(--series); }
     .table-wrap { overflow: auto; }
     .feature-table { max-height: 30rem; }
     table { border-collapse: separate; border-spacing: 0; width: 100%; text-align: left; font-size: .83rem; }
@@ -143,18 +156,33 @@
       <section class="panel block pad" aria-labelledby="features-title">
         <div class="section-head">
           <h2 id="features-title" data-copy="features">Feature usage</h2>
-          <label class="field"><span data-copy="filterFeatures">Filter features</span> <input id="feature-filter" type="search" maxlength="80" autocomplete="off"></label>
+          <div class="section-actions">
+            <label class="field"><span data-copy="filterFeatures">Filter features</span> <input id="feature-filter" type="search" maxlength="80" autocomplete="off"></label>
+            <div class="view-switch" role="group" data-view-switch="features"></div>
+          </div>
         </div>
-        <p class="subtle" data-copy="featureHint">Success and latency use completed command outcomes. Browser observations count as actions.</p>
-        <div id="features" class="table-wrap feature-table block" role="region" aria-label="Feature usage table" data-copy-aria="featureTable" tabindex="0"></div>
+        <p id="feature-hint" class="subtle" data-copy="featureHint">Success and latency use completed command outcomes. Browser observations count as actions.</p>
+        <div id="features" class="table-wrap feature-table block" role="region" aria-label="Feature usage table" tabindex="0"></div>
       </section>
       <div class="pair block">
         <section id="adoption" class="panel pad" aria-label="Installation activity" data-copy-aria="installationActivity"></section>
         <section id="retention" class="panel pad" aria-label="Exact-day retention" data-copy-aria="retention"></section>
       </div>
       <div class="pair block">
-        <section id="surfaces" class="panel pad" aria-label="Surfaces" data-copy-aria="surfaces"></section>
-        <section id="versions" class="panel pad" aria-label="Plugin versions" data-copy-aria="versions"></section>
+        <section id="surfaces" class="panel pad" aria-labelledby="surfaces-title">
+          <div class="section-head">
+            <h2 id="surfaces-title" data-copy="surfaces">Surfaces</h2>
+            <div class="view-switch" role="group" data-view-switch="surfaces"></div>
+          </div>
+          <div id="surfaces-data" class="table-wrap block" role="region" tabindex="0"></div>
+        </section>
+        <section id="versions" class="panel pad" aria-labelledby="versions-title">
+          <div class="section-head">
+            <h2 id="versions-title" data-copy="versions">Plugin versions</h2>
+            <div class="view-switch" role="group" data-view-switch="versions"></div>
+          </div>
+          <div id="versions-data" class="table-wrap block" role="region" tabindex="0"></div>
+        </section>
       </div>
     </div>
   </main>
@@ -183,7 +211,11 @@
       features: ['Feature usage', '功能使用情况'],
       filterFeatures: ['Filter features', '筛选功能'],
       featureHint: ['Success and latency use completed command outcomes. Browser observations count as actions.', '成功率和耗时基于已完成的命令。浏览器中观测到的事件也计为操作。'],
-      featureTable: ['Feature usage table', '功能使用统计表'],
+      tableView: ['Table', '表格'],
+      barView: ['Bar chart', '条形图'],
+      viewMode: ['{title} view', '{title}显示方式'],
+      barRegion: ['{title} bar chart', '{title}条形图'],
+      barLimit: ['Showing the top {shown} of {total} rows by tracked actions.', '按记录的操作数显示前 {shown} 行，共 {total} 行。'],
       feature: ['Feature', '功能'],
       actions: ['Actions', '操作数'],
       installations: ['Installations', '安装实例数'],
@@ -265,9 +297,13 @@
     const VERSION = 1;
     const MAX_FILE_SIZE = 5 * 1024 * 1024;
     const VERSION_ROWS = 100;
+    const BAR_ROWS = 12;
     const DAY_MS = 86_400_000;
     const ADAPTER_IDS = Object.keys(ADAPTERS);
     const VIEW_SECTIONS = ['adoption', 'daily', 'engagement', 'features', 'surfaces', 'versions', 'retention'];
+    const BREAKDOWNS = { surfaces: 'surface', versions: 'version' };
+    const viewModes = { features: 'table', surfaces: 'table', versions: 'table' };
+    const expandedFeatures = new Set();
     let locale = 'en';
     let number, percent, axisNumber, shortDate, date;
     const localized = pair => pair[locale === 'en' ? 0 : 1];
@@ -456,13 +492,55 @@
       target.append(chart);
     }
 
-    function drawFeatures(report, expanded = new Set()) {
+    function drawBars(target, rows, rowName) {
+      const shown = rows.slice(0, BAR_ROWS);
+      const max = Math.max(1, ...shown.map(row => row.invocations));
+      const figure = node('figure', undefined, 'bar-chart');
+      const list = node('ul');
+      list.setAttribute('role', 'list');
+      for (const row of shown) {
+        const item = node('li', undefined, 'bar-row');
+        const label = node('span', undefined, 'bar-label');
+        label.append(node('span', rowName(row), 'bar-name'), adapterLabel(row.adapter));
+        const track = node('span', undefined, 'bar-track');
+        track.setAttribute('aria-hidden', 'true');
+        const fill = node('span', undefined, `bar-fill ${row.adapter}`);
+        fill.style.width = `${row.invocations / max * 100}%`;
+        track.append(fill);
+        item.append(label, node('span', valueLabel(row.invocations), 'bar-value num'), track);
+        list.append(item);
+      }
+      figure.append(node('figcaption', localized(ENGAGEMENT.invocations)), list);
+      if (shown.length < rows.length) {
+        figure.append(node('p', t('barLimit', { shown: valueLabel(shown.length), total: valueLabel(rows.length) }), 'subtle'));
+      }
+      target.replaceChildren(figure);
+    }
+
+    function updateViewRegion(target, id) {
+      const chart = viewModes[id] === 'bars';
+      target.setAttribute('aria-label', t(chart ? 'barRegion' : 'table', { title: t(id) }));
+      return chart;
+    }
+
+    function drawFeatures(report) {
       const target = element('features');
+      for (const details of target.querySelectorAll('details[data-feature]')) {
+        if (details.open) expandedFeatures.add(details.dataset.feature);
+        else expandedFeatures.delete(details.dataset.feature);
+      }
+      const chart = updateViewRegion(target, 'features');
+      target.classList.toggle('feature-table', !chart);
+      element('feature-hint').hidden = chart;
       const filter = element('feature-filter').value.trim().toLowerCase();
       const features = visibleRows(report.features).filter(row => row.feature.includes(filter));
       features.sort((a, b) => b.invocations - a.invocations || a.feature.localeCompare(b.feature) || a.adapter.localeCompare(b.adapter));
       if (!features.length) {
         target.replaceChildren(node('p', t(filter ? 'noMatchingFeatures' : 'noFeatureActions'), 'no-data'));
+        return;
+      }
+      if (chart) {
+        drawBars(target, features, row => row.feature);
         return;
       }
       const rows = features.map(row => {
@@ -483,7 +561,7 @@
           latency.append(node('span', `p95 ${localized(BUCKETS[row.p95_duration_bucket] ?? COPY.unavailable)}`, 'compact'));
           const buckets = node('details');
           buckets.dataset.feature = `${row.adapter}/${row.feature}`;
-          buckets.open = expanded.has(buckets.dataset.feature);
+          buckets.open = expandedFeatures.has(buckets.dataset.feature);
           buckets.append(node('summary', t('buckets')));
           for (const key of Object.keys(BUCKETS)) {
             if (own(row.duration_buckets, key)) buckets.append(node('span', `${localized(BUCKETS[key])} · ${valueLabel(row.duration_buckets[key])}`, 'compact'));
@@ -495,7 +573,27 @@
       target.replaceChildren(table(labels(['feature', 'adapter', 'actions', 'installations', 'outcomes', 'reliability', 'latency']), rows, { numeric: [2, 3], rowHeader: true }));
     }
 
-    function render(report, expandedFeatures) {
+    function drawBreakdown(report, id) {
+      const target = element(`${id}-data`);
+      const chart = updateViewRegion(target, id);
+      const rows = visibleRows(report[id]).sort((a, b) => b.invocations - a.invocations || a.adapter.localeCompare(b.adapter));
+      const rowName = row => id === 'surfaces' ? localized(SURFACES[row.surface]) : row.version;
+      if (!rows.length) {
+        target.replaceChildren(node('p', t('noActivity'), 'no-data'));
+      } else if (chart) {
+        drawBars(target, rows, rowName);
+      } else {
+        const shown = rows.slice(0, VERSION_ROWS);
+        target.replaceChildren(table(labels([BREAKDOWNS[id], 'adapter', 'actions', 'installations']), shown.map(row => [
+          rowName(row), adapterLabel(row.adapter), valueLabel(row.invocations), valueLabel(row.installations),
+        ]), { numeric: [2, 3], rowHeader: true }));
+        if (shown.length < rows.length) {
+          target.append(node('p', t('versionLimit', { shown: valueLabel(shown.length), total: valueLabel(rows.length) }), 'subtle'));
+        }
+      }
+    }
+
+    function render(report) {
       const adoption = visibleRows(report.adoption);
       const engagement = visibleRows(report.engagement);
       const tiles = [
@@ -516,7 +614,7 @@
       element('daily').replaceChildren(table([...labels(['utcDay', 'adapter']), ...Object.values(DAILY).map(localized)], daily.map(row => [
         row.day, adapterLabel(row.adapter), ...Object.keys(DAILY).map(key => valueLabel(row[key])),
       ]), { numeric: [2, 3, 4, 5, 6], rowHeader: true }));
-      drawFeatures(report, expandedFeatures);
+      drawFeatures(report);
 
       const metrics = [...Object.entries(ADOPTION).map(([key, label]) => [label, adoption, key]),
         ...Object.entries(ENGAGEMENT).filter(([key]) => key !== 'engaged_installations').map(([key, label]) => [label, engagement, key])];
@@ -528,21 +626,14 @@
       addTable(element('retention'), t('retention'), labels(['adapter', 'day', 'returned', 'eligible', 'rate']),
         retention.map(row => [adapterLabel(row.adapter), valueLabel(row.days_after_first_seen), valueLabel(row.returned_installations), valueLabel(row.eligible_installations), rateLabel(row.rate)]), [1, 2, 3, 4]);
       element('retention').append(node('p', t('retentionNote', { date: date.format(dateMillis(report.retained_from)) }), 'subtle'));
-      for (const [id, column] of [['surfaces', 'surface'], ['versions', 'version']]) {
-        const rows = visibleRows(report[id]).sort((a, b) => b.invocations - a.invocations || a.adapter.localeCompare(b.adapter));
-        addTable(element(id), t(id), labels([column, 'adapter', 'actions', 'installations']), rows.slice(0, VERSION_ROWS).map(row => [
-          id === 'surfaces' ? localized(SURFACES[row.surface]) : row.version, adapterLabel(row.adapter), valueLabel(row.invocations), valueLabel(row.installations),
-        ]), [2, 3]);
-        if (rows.length > VERSION_ROWS) {
-          element(id).append(node('p', t('versionLimit', { shown: valueLabel(VERSION_ROWS), total: valueLabel(rows.length) }), 'subtle'));
-        }
-      }
+      for (const id of Object.keys(BREAKDOWNS)) drawBreakdown(report, id);
     }
 
     let currentReport;
     let currentError;
     let loadGeneration = 0;
     const languageButtons = document.querySelectorAll('[data-language]');
+    const viewSwitches = document.querySelectorAll('[data-view-switch]');
     const languageStorageKey = 'trajviz-obs-usage-language';
 
     function updateError() {
@@ -574,15 +665,13 @@
       for (const button of languageButtons) button.setAttribute('aria-pressed', String(button.dataset.language === locale));
       for (const item of document.querySelectorAll('[data-copy]')) item.textContent = t(item.dataset.copy);
       for (const item of document.querySelectorAll('[data-copy-aria]')) item.setAttribute('aria-label', t(item.dataset.copyAria));
+      for (const group of viewSwitches) group.setAttribute('aria-label', t('viewMode', { title: t(group.dataset.viewSwitch) }));
       number = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 });
       percent = new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 2 });
       axisNumber = new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 });
       shortDate = new Intl.DateTimeFormat(locale, { timeZone: 'UTC', month: 'short', day: 'numeric' });
       date = new Intl.DateTimeFormat(locale, { timeZone: 'UTC', year: 'numeric', month: 'short', day: 'numeric' });
-      if (currentReport) {
-        const openDetails = document.querySelectorAll('#features details[open]');
-        render(currentReport, new Set(Array.from(openDetails, item => item.dataset.feature)));
-      }
+      if (currentReport) render(currentReport);
       updateReportMeta();
       if (currentError) updateError();
     }
@@ -594,6 +683,8 @@
       catch { throw new ReportError('invalidJson'); }
       const report = validate(data);
       element('feature-filter').value = '';
+      element('features').replaceChildren();
+      expandedFeatures.clear();
       render(report);
       currentReport = report;
       currentError = undefined;
@@ -614,6 +705,27 @@
       } catch (error) {
         if (generation === loadGeneration) showError(error);
       }
+    }
+
+    for (const group of viewSwitches) {
+      const id = group.dataset.viewSwitch;
+      const buttons = ['table', 'bars'].map(mode => {
+        const button = node('button');
+        button.type = 'button';
+        button.dataset.copy = mode === 'table' ? 'tableView' : 'barView';
+        button.dataset.mode = mode;
+        button.setAttribute('aria-pressed', String(mode === viewModes[id]));
+        button.setAttribute('aria-controls', id === 'features' ? id : `${id}-data`);
+        button.addEventListener('click', () => {
+          if (!currentReport || viewModes[id] === mode) return;
+          viewModes[id] = mode;
+          for (const choice of buttons) choice.setAttribute('aria-pressed', String(choice.dataset.mode === mode));
+          if (id === 'features') drawFeatures(currentReport);
+          else drawBreakdown(currentReport, id);
+        });
+        return button;
+      });
+      group.append(...buttons);
     }
 
     let savedLanguage;

@@ -81,6 +81,7 @@ python3 -m telemetry --database "$usage_db" publish \
 - `publish` requires `--html PATH`. It defaults to `--days 30` and a refresh every 3,600 seconds.
 - `report` defaults to 30 UTC days ending today. Set `--days N` or `--as-of YYYY-MM-DD` to change the window. Both the requested window and the rolling 30-day window must fit within retention. Use either `--html PATH` or `--json PATH`, or omit both for JSON on stdout.
 - Use **EN | 中** to switch between English and Simplified Chinese in the offline HTML report or [JSON viewer](viewer.html). The viewer accepts JSON snapshots up to 5 MiB and displays up to 100 plugin-version rows ranked by tracked actions. JSON retains all rows. A `null` metric has no eligible data and `0` is a measured zero. [JSON schema](report.schema.json)
+- Feature usage, Surfaces, and Plugin versions have **Table** and **Bar chart** views. Each chart shows up to 12 rows ranked by tracked actions and follows the adapter filter and the feature search where applicable.
 
 Reports show observed opt-in installations, daily and rolling 30-day activity, repeat use, command and dashboard or pane interactions, success rates, and latency by adapter, surface, and version. Automatic refresh and polling are excluded. Installation IDs are random and scoped to the local state, adapter, and collector. A shared OpenCode server can represent multiple people. Clearing state or exceeding retention can affect first-seen counts.
 
