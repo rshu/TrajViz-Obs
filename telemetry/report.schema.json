@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TrajViz Obs usage report v1",
+  "description": "An aggregate snapshot of opt-in plugin activity. All dates are UTC and windows include both endpoints.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format", "schema_version", "as_of", "period_start", "retained_from", "retention_days",
+    "adoption", "daily", "engagement", "features", "surfaces", "versions", "retention"
+  ],
+  "properties": {
+    "format": {"const": "trajviz-obs-usage-report"},
+    "schema_version": {"type": "integer", "const": 1},
+    "as_of": {"$ref": "#/$defs/day", "description": "Last day in the reporting window."},
+    "period_start": {"$ref": "#/$defs/day", "description": "First day in the reporting window."},
+    "retained_from": {"$ref": "#/$defs/day", "description": "First day in the available retention window."},
+    "retention_days": {"type": "integer", "minimum": 32, "maximum": 365},
+    "adoption": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/adoption"}},
+    "daily": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 730,
+      "items": {"$ref": "#/$defs/daily"},
+      "description": "One row per adapter per reporting day, including days with zero activity."
+    },
+    "engagement": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/engagement"}},
+    "features": {"type": "array", "items": {"$ref": "#/$defs/feature"}},
+    "surfaces": {"type": "array", "items": {"$ref": "#/$defs/surface"}},
+    "versions": {"type": "array", "items": {"$ref": "#/$defs/version"}},
+    "retention": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/retention"},
+      "description": "One cohort row per adapter and offset. The 7-day and 30-day rates use exact-day returns."
+    }
+  },
+  "$defs": {
+    "day": {"type": "string", "format": "date", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "adapter": {"enum": ["claude-code", "opencode"]},
+    "count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "invocations": {
+      "$ref": "#/$defs/count",
+      "description": "Recorded actions other than activation, including browser observations."
+    },
+    "average": {"type": ["number", "null"], "minimum": 0, "maximum": 9007199254740991},
+    "rate": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Fraction of the eligible denominator, rounded to four decimal places. Null means no eligible denominator."
+    },
+    "outcome": {"enum": ["success", "error", "cancelled", "empty", "rejected", "confirmation", "observed"]},
+    "duration_bucket": {"enum": ["lt_100ms", "100ms_1s", "1s_5s", "5s_30s", "gte_30s"]},
+    "percentile": {
+      "anyOf": [{"$ref": "#/$defs/duration_bucket"}, {"type": "null"}],
+      "description": "A latency bucket for completed attempts. Null means no completed attempts."
+    },
+    "plugin_version": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]{0,3})(?:\\.(?:0|[1-9][0-9]{0,3})){2}(?:-(?:alpha|beta|rc)\\.[0-9]{1,3})?$"
+    },
+    "feature_name": {
+      "enum": [
+        "overview", "pane", "pane.close", "pane.refresh", "pane.tab", "pane.expand", "issues", "health",
+        "patterns", "agents", "context", "timeline", "view", "json", "bundle", "schemas", "dashboard",
+        "dashboard.html", "dashboard.stop", "converge", "converge.stop", "compare", "scorecard", "labels",
+        "converge-cli", "analyze", "fixes", "label", "attribution", "collect", "sessions", "watch",
+        "statusline", "setup", "doctor", "help", "brief", "tool", "dashboard.render", "dashboard.tab",
+        "dashboard.inspect", "dashboard.load", "dashboard.export", "dashboard.compare", "dashboard.analyze",
+        "dashboard.attribution", "converge.render", "converge.tab", "converge.compare"
+      ]
+    },
+    "surface_name": {"enum": ["terminal", "desktop", "headless", "browser", "unknown"]},
+    "adoption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter", "observed_installations", "new_installations", "active_today", "active_last_30_days",
+        "active_in_period", "engaged_in_period", "activation_only_in_period", "returning_in_period",
+        "returning_engaged_in_period"
+      ],
+      "properties": {
+        "adapter": {"$ref": "#/$defs/adapter"},
+        "observed_installations": {
+          "$ref": "#/$defs/count",
+          "description": "Distinct opt-in installations with an event from retained_from through as_of."
+        },
+        "new_installations": {
+          "$ref": "#/$defs/count",
+          "description": "Installations first observed during the reporting window."
+        },
+        "active_today": {"$ref": "#/$defs/count", "description": "Distinct installations active on as_of."},
+        "active_last_30_days": {
+          "$ref": "#/$defs/count",
+          "description": "Distinct installations active in the 30 UTC days ending on as_of."
+        },
+        "active_in_period": {"$ref": "#/$defs/count"},
+        "engaged_in_period": {"$ref": "#/$defs/count"},
+        "activation_only_in_period": {"$ref": "#/$defs/count"},
+        "returning_in_period": {"$ref": "#/$defs/count"},
+        "returning_engaged_in_period": {"$ref": "#/$defs/count"}
+      }
+    },
+    "daily": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "day", "adapter", "active_installations", "engaged_installations", "new_installations",
+        "returning_installations", "invocations"
+      ],
+      "properties": {
+        "day": {"$ref": "#/$defs/day"},
+        "adapter": {"$ref": "#/$defs/adapter"},
+        "active_installations": {"$ref": "#/$defs/count"},
+        "engaged_installations": {"$ref": "#/$defs/count"},
+        "new_installations": {"$ref": "#/$defs/count"},
+        "returning_installations": {"$ref": "#/$defs/count"},
+        "invocations": {"$ref": "#/$defs/invocations"}
+      }
+    },
+    "engagement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter", "invocations", "engaged_installations", "engaged_on_multiple_days",
+        "average_invocations_per_engaged_installation", "average_days_per_engaged_installation"
+      ],
+      "properties": {
+        "adapter": {"$ref": "#/$defs/adapter"},
+        "invocations": {"$ref": "#/$defs/invocations"},
+        "engaged_installations": {"$ref": "#/$defs/count"},
+        "engaged_on_multiple_days": {"$ref": "#/$defs/count"},
+        "average_invocations_per_engaged_installation": {"$ref": "#/$defs/average"},
+        "average_days_per_engaged_installation": {"$ref": "#/$defs/average"}
+      }
+    },
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter", "feature", "invocations", "installations", "outcomes", "duration_buckets", "executed",
+        "success_rate", "error_rate", "p50_duration_bucket", "p95_duration_bucket"
+      ],
+      "properties": {
+        "adapter": {"$ref": "#/$defs/adapter"},
+        "feature": {"$ref": "#/$defs/feature_name"},
+        "invocations": {"$ref": "#/$defs/invocations"},
+        "installations": {"$ref": "#/$defs/count"},
+        "outcomes": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/outcome"},
+          "additionalProperties": {"$ref": "#/$defs/count"},
+          "description": "Sparse counts by outcome. An omitted outcome has zero observations."
+        },
+        "duration_buckets": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/duration_bucket"},
+          "additionalProperties": {"$ref": "#/$defs/count"},
+          "description": "Sparse latency histogram for successful and failed attempts."
+        },
+        "executed": {"$ref": "#/$defs/count", "description": "Attempts that ended with success or error."},
+        "success_rate": {"$ref": "#/$defs/rate"},
+        "error_rate": {"$ref": "#/$defs/rate"},
+        "p50_duration_bucket": {"$ref": "#/$defs/percentile"},
+        "p95_duration_bucket": {"$ref": "#/$defs/percentile"}
+      }
+    },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter", "surface", "invocations", "installations"],
+      "properties": {
+        "adapter": {"$ref": "#/$defs/adapter"},
+        "surface": {"$ref": "#/$defs/surface_name"},
+        "invocations": {"$ref": "#/$defs/invocations"},
+        "installations": {"$ref": "#/$defs/count"}
+      }
+    },
+    "version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter", "version", "invocations", "installations"],
+      "properties": {
+        "adapter": {"$ref": "#/$defs/adapter"},
+        "version": {"$ref": "#/$defs/plugin_version"},
+        "invocations": {"$ref": "#/$defs/invocations"},
+        "installations": {"$ref": "#/$defs/count"}
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter", "days_after_first_seen", "eligible_installations", "returned_installations", "rate"],
+      "properties": {
+        "adapter": {"$ref": "#/$defs/adapter"},
+        "days_after_first_seen": {"enum": [7, 30]},
+        "eligible_installations": {"$ref": "#/$defs/count"},
+        "returned_installations": {"$ref": "#/$defs/count"},
+        "rate": {"$ref": "#/$defs/rate"}
+      }
+    }
+  }
+}
