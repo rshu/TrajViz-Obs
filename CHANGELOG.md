@@ -1,5 +1,12 @@
 # Changelog
 
+## OpenCode 0.5.4 / Claude Code 0.3.8 — 2026-11-11
+
+- Keep browser Issues, AI analysis, and issue exports aligned with the recorded findings.
+- Preserve missing and partial token measurements in browser charts and step details.
+- Reset context-growth comparisons at compaction boundaries.
+- Keep sampled token, timing, and context values tied to their recorded steps.
+
 ## OpenCode 0.5.3 / Claude Code 0.3.7 — 2026-11-10
 
 - Sync TrajViz 0.5.0 for expanded Workflow steps, execution timelines, per-step token breakdowns, issue JSON export, context-growth hotspots, and repeated-prompt detection.

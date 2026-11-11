@@ -37,6 +37,7 @@ from .compat import (
     load_run,
     protect_run_outputs,
     resolve_input_path,
+    write_dashboard_report,
 )
 from .dashboard_ui import configure_insight, decorate_dashboard, presentation
 from .errors import BridgeError
@@ -470,7 +471,7 @@ def _write_html(run, source: Path, destination: Path, *, labels: Path | None, da
         if not run.steps:
             raise ReportError("The trajectory has no steps.")
         session = project_dashboard_session(session_from_run(run, str(source)))
-        write_report_file(session, dest=str(destination), dark=dark, inline_plotly=True)
+        write_dashboard_report(write_report_file, session, dest=str(destination), dark=dark, inline_plotly=True)
         return {"path": str(destination), "bytes": destination.stat().st_size}
     except (OSError, ReportError) as exc:
         raise BridgeError("bad_output", str(exc), path=str(destination)) from exc

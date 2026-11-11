@@ -191,7 +191,7 @@ test('pane metrics reduce inline rows and wrap large values without dropping unk
 test('pane trends align sparklines with explicit units at narrow and wide widths', async ($, on) => {
   const snap = { ...SNAPSHOT, context: { ...SNAPSHOT.context, window: 1000 }, series: {
     tokens: { steps: [1, 2], fresh: [10, 20], cache_read: [30, 40], cache_write: [0, 0], output: [5, 10] },
-    durations: { steps: [1, 2], seconds: [null, 65], outliers: [1] },
+    durations: { steps: [1, 2], seconds: [null, 65], outliers: [2] },
     context: { turns: [1, 2], occupancy: [100, 500], compactions: [] },
   } }
   const original = JSON.stringify(snap)

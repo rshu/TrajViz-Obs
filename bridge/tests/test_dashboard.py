@@ -88,6 +88,113 @@ def _loaded_run(block, path, session_id=None):
     return next(value for value in values.values() if isinstance(value, tv.Trajectory))
 
 
+def test_token_explanations_distinguish_missing_cache_counters_from_zero(tmp_path):
+    source = tmp_path / "opencode.json"
+    base = 1_790_000_000_000
+    usage = {"total": 50, "input": 45, "output": 5}
+    source.write_text(json.dumps({
+        "source_format": "opencode_v2", "schema_version": 1,
+        "session": {"id": "tokens", "time": {"created": base, "updated": base + 3000}},
+        "messages": [{
+            "id": f"message-{index}", "type": "assistant", "agent": "build",
+            "content": [{"type": "text", "text": "Recorded reply"}],
+            "time": {"created": base + index * 1000, "completed": base + (index + 1) * 1000},
+            "tokens": tokens,
+        } for index, tokens in enumerate([usage, {**usage, "reasoning": 0, "cache": {"read": 0, "write": 0}}])],
+    }))
+    app = build_preloaded_insight(str(source))
+    outputs = _loader(app).fn(str(source), False, "")
+
+    def markup(class_name):
+        component = next(block for block in app.blocks.values() if class_name in (block.elem_classes or []))
+        value = outputs[component]
+        return value["value"] if isinstance(value, dict) else value
+
+    summary = markup("token-summary-wrap")
+    assert "0% cache hit" not in summary and "Largest step" in summary
+    details = markup("token-step-explain")
+    partial, complete = details.split("data-step='1'", 1)
+    assert "Available token counts" in partial and "Some token counts are unavailable" in partial
+    assert "Total 50" in partial and "No prefix cache hits" not in partial
+    assert "No prefix cache hits" in complete
+
+
+@pytest.fixture
+def native_timed_parent_and_child(tmp_path):
+    """A human prompt and child dispatch with equal text, missing parent usage, and a measured child zero."""
+    base = 1_790_000_000_000
+
+    def prompt(mid, offset):
+        return {"type": "user", "id": mid, "text": "Please verify the final results",
+                "time": {"created": base + offset}}
+
+    def reply(mid, start, finish, content):
+        return {"type": "assistant", "id": mid, "agent": "build", "model": {"id": "controlled"},
+                "time": {"created": base + start, "completed": base + finish}, "content": content}
+
+    spawn = {"type": "tool", "id": "spawn", "name": "subagent",
+             "state": {"status": "completed", "metadata": {"sessionID": "child"}, "input": {}}}
+    child = reply("child-reply", 340, 420, [{"type": "text", "text": "Done."}])
+    child["tokens"] = {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}
+    path = tmp_path / "parent-and-child.json"
+    path.write_text(json.dumps({"source_format": "opencode_v2", "schema_version": 1,
+        "session": {"id": "root", "time": {"created": base, "updated": base + 420}},
+        "messages": [prompt("root-prompt", 100), reply("root-reply", 200, 260, [spawn])],
+        "children": [{"session": {"id": "child"}, "messages": [prompt("child-task", 300), child]}]}))
+    return path
+
+
+def test_dashboard_issues_stay_consistent_after_download_ai_and_settings_reset(native_timed_parent_and_child,
+                                                                                tmp_path, monkeypatch):
+    from agent_trajviz.insight.ui import overview_tab
+    from agent_trajviz.insight.ui.shared import drop_latest_run
+
+    monkeypatch.setenv("GRADIO_TEMP_DIR", str(tmp_path / "gradio"))
+    settings = SimpleNamespace(config=SimpleNamespace(ready=False, missing=("ANALYZE_API_KEY",)))
+    monkeypatch.setattr(overview_tab, "resolve_session_settings", lambda _settings: settings)
+    app = build_preloaded_insight(str(native_timed_parent_and_child))
+    request = SimpleNamespace(session_hash="controlled-issue-audit")
+    export = next(entry for entry in app.fns.values() if entry.api_name == "prepare_issues_agent_download")
+    suggest = next(entry.fn for entry in app.fns.values() if entry.api_name == "on_suggest_fixes")
+    reset = next(entry for entry in app.fns.values() if entry.api_name == "reset_settings")
+    loaded = _loader(app).fn(str(native_timed_parent_and_child), False, "", request=request)
+    run, issues = (loaded[field] for field in export.inputs)
+    try:
+        assert issues == []
+        result = export.fn(run, issues, request=request)
+        assert json.loads(Path(result["value"]).read_text())["issues"] == []
+        assert [payload for _, payload in suggest(run, request=request)] == [[]]
+        assert reset.fn(run.steps, run)[reset.outputs.index(export.inputs[1])] == []
+    finally:
+        drop_latest_run(request.session_hash)
+
+
+def test_dashboard_gantt_hover_distinguishes_missing_tokens_from_measured_zero(native_timed_parent_and_child):
+    app = build_preloaded_insight(str(native_timed_parent_and_child))
+    axis = next(entry for entry in app.fns.values() if entry.api_name == "on_gantt_axis_change")
+    loaded = _loader(app).fn(str(native_timed_parent_and_child), False, "")
+    steps = loaded[axis.inputs[1]]
+    for fig in (loaded[axis.outputs[0]], axis.fn("wallclock", steps, False), axis.fn("skip_idle", steps, False)):
+        hover = fig.data[0].hovertext
+        assert hover[0].startswith("<b>Step 1</b>") and hover[0].endswith("Tokens unavailable")
+        assert hover[1].startswith("<b>Step 3</b>") and hover[1].endswith("0 tokens")
+
+
+def test_dashboard_workflow_keeps_token_evidence_when_switching_modes(native_timed_parent_and_child):
+    app = build_preloaded_insight(str(native_timed_parent_and_child))
+    callback = next(entry for entry in app.fns.values() if entry.api_name == "do_filter_workflow")
+    loaded = _loader(app).fn(str(native_timed_parent_and_child), False, "")
+    steps = loaded[callback.inputs[0]]
+    original = loaded[callback.outputs[0]]
+    cards = callback.fn(steps, "Assistant,User,All", "", "", "Cards")[0]
+    expanded = callback.fn(steps, "Assistant,User,All", "", "", "Expanded")[0]
+    for markup in (original, cards, expanded):
+        steps_by_id = re.split(r"id=['\"]wf-card-(\d+)['\"]", markup)[1:]
+        by_step = dict(zip(steps_by_id[::2], steps_by_id[1::2], strict=True))
+        assert "<span>n/a tok</span>" in by_step["1"]
+        assert "<span>0 tok</span>" in by_step["3"]
+
+
 def test_host_context_window_reaches_native_dashboard_without_affecting_other_uploads(fixture_session,
                                                                                      synthetic_session):
     """The actual native load callback drives every chart/issue; no process-global loader is replaced."""

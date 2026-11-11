@@ -23,7 +23,16 @@ from agent_trajviz import Trajectory
 
 TOKEN_LABELS = {"total": "Total Tokens", "input": "Input Tokens", "output": "Output Tokens",
                 "reasoning": "Reasoning Tokens", "cache_read": "Cache Read", "cache_write": "Cache Write"}
+_TOKEN_FIELDS = frozenset(f"tokens.{key}" for key in TOKEN_LABELS)
 _PROJECTED = weakref.WeakKeyDictionary()
+
+
+def _clone_native_function(function, replacements):
+    copied = types.FunctionType(function.__code__, {**function.__globals__, **replacements},
+                                function.__name__, function.__defaults__, function.__closure__)
+    copied.__kwdefaults__ = function.__kwdefaults__
+    copied.__annotations__ = function.__annotations__
+    return copied
 
 
 def _number(value):
@@ -40,6 +49,18 @@ def _observed(step, field):
     value = (step.get("tokens") or {}).get(key)
     return (TOKEN_LABELS[key] not in step.get("_metrics_unavailable_fields", []) and _number(value)
             and value >= 0 and (isinstance(value, int) or value.is_integer()))
+
+
+def dashboard_field_observed(step, field):
+    from agent_trajviz.insight.telemetry_quality import field_observed, is_otel_step
+
+    if not is_otel_step(step) and (field == "duration" or field in _TOKEN_FIELDS):
+        return _observed(step, field)
+    return field_observed(step, field)
+
+
+def dashboard_token_total_observed(step):
+    return dashboard_field_observed(step, "tokens.total")
 
 
 def _usage_steps(steps):
@@ -69,6 +90,45 @@ def _coverage(steps):
                                "observed": observed, "partial": 0, "total": len(calls),
                                "reasons": {"outcome_not_recorded": len(calls) - observed} if observed < len(calls) else {}}
     return {"source": "native", "basis": "source_records", "capture_complete": None, "fields": fields}
+
+
+def _hotspot_context_steps(steps):
+    """Use one temporary identity per continuous context window when ranking growth."""
+    from agent_trajviz.insight.metrics import effective_agent
+
+    if not any(step.get("is_compaction_checkpoint") or step.get("role") == "compaction" for step in steps):
+        return steps
+    windows: dict[tuple[str, str], int] = defaultdict(int)
+    ids = {}
+    projected = []
+    for step in steps:
+        session = step.get("session_id") or ""
+        # Claude children may share the parent's session id. OpenCode mode
+        # changes in one native session still use the same context window.
+        child = step.get("agent") if step.get("is_sub_agent") and "parent_agent_id" in step else ""
+        conversation = (session, child or (effective_agent(step) if not session else ""))
+        if step.get("is_compaction_checkpoint") or step.get("role") == "compaction":
+            # Isolate the checkpoint itself as well as the new context window.
+            windows[conversation] += 1
+            projected.append({**step, "session_id": f"checkpoint-{step['index']}"})
+        else:
+            key = (conversation, windows[conversation])
+            projected.append({**step, "session_id": ids.setdefault(key, f"window-{len(ids)}")})
+    return projected
+
+
+@functools.cache
+def _hotspot_ranker():
+    from agent_trajviz.insight import analysis
+
+    growth = _clone_native_function(analysis._top_growth_rows, {"field_observed": dashboard_field_observed})
+    return _clone_native_function(analysis.hotspots, {"_top_growth_rows": growth})
+
+
+def project_hotspots(rows, limit=5, *, steps=None):
+    """Rank observed rows and skip incomplete calls and reset boundaries."""
+    steps = _hotspot_context_steps(steps) if steps is not None else None
+    return _hotspot_ranker()(rows, limit, steps=steps)
 
 
 def _complete(quality, *fields):
@@ -269,11 +329,9 @@ class _Projection:
 
     @cached_property
     def hotspots(self):
-        from agent_trajviz.insight.analysis import hotspots
-
         # Rank the observed rows so an unavailable placeholder cannot displace
         # a valid candidate or bridge two prompts across an unobserved call.
-        return hotspots(self.message_rows, steps=self.steps)
+        return project_hotspots(self.message_rows, steps=self.steps)
 
     @cached_property
     def user_repeats(self):
@@ -308,18 +366,27 @@ _DASHBOARD_AGENT_TOKENS = "_obs_agent_tokens"
 
 def _draw_nullable_agent_tokens(data, dark):
     """Keep null labels and bars out of the engine's numeric-only renderer."""
+    import plotly.graph_objects as go
     from agent_trajviz.insight.charts._layout import _apply_dark, _empty_figure
     from agent_trajviz.insight.charts.usage import draw_agent_tokens
 
-    # Input and output decide the renderer mode. Plotted segment values remain nullable.
-    agents = [{**row, "input": row["input"] or 0, "output": row["output"] or 0} for row in data["agents"]]
-    if not any(row["input"] > 0 or row["output"] > 0 for row in agents):
+    # The engine uses input/output only to select chart mode. A reported cache or
+    # reasoning segment is also a usable breakdown even with no known input/output.
+    agents = [{**row, "input": max(value or 0 for value in row["segments"].values()), "output": 0}
+              for row in data["agents"]]
+    breakdown = any(row["input"] > 0 for row in agents)
+    if not breakdown:
         agents = [row for row in agents if row["total"] is not None]
     if not agents:
         fig = _empty_figure(240, "Agent token totals were not recorded.")
         _apply_dark(fig, dark)
         return fig
     fig = draw_agent_tokens({"agents": agents}, dark=dark)
+    if breakdown:
+        totals = [row["total"] if not row["input"] and (row["total"] or 0) > 0 else None for row in agents]
+        if any(total is not None for total in totals):
+            fig.add_trace(go.Bar(x=[row["label"] for row in agents], y=totals, name="Total only",
+                                 hovertemplate="%{x}<br>%{y:,.0f} tokens<extra></extra>"))
     if data["note_partial"]:
         fig.add_annotation(text="Some agent token measurements are unavailable.",
                            xref="paper", yref="paper", x=0, y=-0.25, xanchor="left", showarrow=False)
@@ -473,12 +540,7 @@ def project_brief(run):
     if projection is run._analysis and run.format != "otlp":
         return llm.brief(run)
 
-    def clone(function, replacements):
-        copied = types.FunctionType(function.__code__, {**function.__globals__, **replacements},
-                                    function.__name__, function.__defaults__, function.__closure__)
-        copied.__kwdefaults__ = function.__kwdefaults__
-        return functools.update_wrapper(copied, function)
-
+    clone = _clone_native_function
     captured = run.format == "otlp"
 
     def value(number, unit=""):

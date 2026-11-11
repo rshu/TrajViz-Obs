@@ -111,7 +111,7 @@ export const SNAPSHOT: Snapshot = {
     durations: {
       steps,
       seconds: series(N, i => (i === 29 ? 184.2 : i === 12 ? 61.0 : 2.5 + ((i * 7) % 9))),
-      outliers: [12, 29],
+      outliers: [97, 233],
     },
     context: {
       turns: series(N, i => i * 8 + 1),

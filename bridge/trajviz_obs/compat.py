@@ -36,6 +36,7 @@ import types
 import weakref
 from collections.abc import Callable, Iterable, Iterator
 from contextvars import ContextVar
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +44,7 @@ import agent_trajviz
 from agent_trajviz import LoadError, Trajectory
 
 from .errors import BridgeError
-from .native_quality import project_analysis, project_brief, project_view  # noqa: F401 - shared projection API
+from .native_quality import _clone_native_function, project_analysis, project_brief, project_view  # noqa: F401
 from .native_records import normalize_native_records
 
 #: The installed TrajViz version.
@@ -358,6 +359,53 @@ def window_info(run: Trajectory) -> dict[str, Any]:
             "window_note": stats.get("window_note") or ""}
 
 
+def _dashboard_overview_presenter():
+    from agent_trajviz.insight import formatting
+    from agent_trajviz.insight.presenters import overview
+
+    from .native_quality import project_hotspots
+
+    render_hotspots = _clone_native_function(formatting._build_hotspots_md, {"hotspots": project_hotspots})
+    return _clone_native_function(overview.build_overview_outputs, {"_build_hotspots_md": render_hotspots})
+
+
+def write_dashboard_report(writer, source, *, dest, dark, inline_plotly):
+    """Use the same hotspot presentation in the downloadable and live dashboard."""
+    from agent_trajviz.insight import report
+
+    render = _clone_native_function(report.build_report_html, {"build_overview_outputs": _dashboard_overview_presenter()})
+    write = _clone_native_function(writer, {"build_report_html": render})
+    return write(source, dest=dest, dark=dark, inline_plotly=inline_plotly)
+
+
+def _dashboard_load_packer():
+    """Apply evidence-aware presenters only to this app's initial and upload loads."""
+    from agent_trajviz.insight.presenters import workflow
+    from agent_trajviz.insight.ui import load
+
+    from .dashboard_tokens import token_presenters
+    from .native_quality import dashboard_field_observed
+
+    def build_brief(session):
+        return (project_brief(session.shown) if session.shown is not None
+                else load.build_analysis_brief_from_session(session))
+
+    clone = _clone_native_function
+    workflow_outputs = clone(workflow.build_workflow_outputs, {
+        "render_workflow_html": clone(workflow.render_workflow_html, {"field_observed": dashboard_field_observed}),
+    })
+    packers = {
+        "shell": clone(load.pack_shell, {"build_analysis_brief_from_session": build_brief}),
+        "workflow_tab": clone(load.workflow_tab.pack_load, {"build_workflow_outputs": workflow_outputs}),
+        "overview_tab": clone(load.overview_tab.pack_load, {
+            "build_overview_outputs": _dashboard_overview_presenter(),
+            **token_presenters(clone),
+        }),
+    }
+    units = tuple(replace(unit, pack=packers.get(unit.name, unit.pack)) for unit in load.LOAD_UNITS)
+    return clone(load.pack_load_outputs, {"collect_pack": clone(load.collect_pack, {"LOAD_UNITS": units})})
+
+
 def dashboard_window_callback(callback: Callable, transcript: str, window: int | None, *,
                               session_id: str | None = None, display_path: str | None = None) -> Callable:
     """Give one Insight load callback defaults for its preloaded source only.
@@ -405,14 +453,10 @@ def dashboard_window_callback(callback: Callable, transcript: str, window: int |
             return SessionLoadError(code="analysis_error", message=(
                 f"The file loaded but could not be analysed ({type(exc).__name__}: {str(exc)[:160]})."))
 
-    def clone(function: types.FunctionType, replacements: dict[str, Any]) -> types.FunctionType:
-        copied = types.FunctionType(function.__code__, {**function.__globals__, **replacements},
-                                    function.__name__, function.__defaults__, function.__closure__)
-        copied.__kwdefaults__ = function.__kwdefaults__
-        copied.__annotations__ = function.__annotations__
-        return copied
-
-    return clone(callback, {"do_load": clone(ui_load.do_load, {"load_session": load_selected})})
+    clone = _clone_native_function
+    return clone(callback, {"do_load": clone(ui_load.do_load, {
+        "load_session": load_selected, "pack_load_outputs": _dashboard_load_packer(),
+    })})
 
 
 def dashboard_server_options(port: int | None) -> dict[str, Any]:

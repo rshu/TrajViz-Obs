@@ -306,6 +306,30 @@ def test_downsample_keeps_bucket_maxima():
     assert downsample([1, 5, 2, None, None, None, 3], 3) == [5, None, 3]
 
 
+def test_snapshot_sampling_keeps_chart_measurements_with_their_recorded_steps(tmp_path):
+    source = tmp_path / "native.json"
+    base = 1_790_000_000_000
+    source.write_text(json.dumps({
+        "source_format": "opencode_v2", "schema_version": 1,
+        "session": {"id": "sample", "time": {"created": base, "updated": base + 5000}},
+        "messages": [{
+            "id": f"step-{index}", "type": "assistant", "agent": "build",
+            "content": [{"type": "text", "text": "Recorded output"}],
+            "time": {"created": base + start, "completed": base + end},
+            "tokens": {"input": fresh, "output": output, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+        } for index, (start, end, fresh, output) in enumerate([(0, 3000, 100, 0), (4000, 5000, 0, 110)])],
+    }))
+    path = str(source)
+    snap = build_snapshot(load_run(path), transcript_path=path, facts=scan_transcript(path), agents_meta={},
+                          artifacts=None, max_points=1)
+    assert snap["series"]["tokens"] == {"steps": [1], "fresh": [0], "cache_read": [0], "cache_write": [0],
+                                        "output": [110]}
+    assert snap["series"]["durations"]["steps"] == [0]
+    assert snap["series"]["durations"]["seconds"] == [3]
+    assert snap["series"]["context"]["turns"] == [0]
+    assert snap["series"]["context"]["occupancy"] == [100]
+
+
 def test_swimlane_bucketing_keeps_measured_zero_and_unknown_tokens_distinct():
     spans = [{"start": i * 2, "end": i * 2, "tokens": tokens, "tool_calls": i}
              for i, tokens in enumerate([0, 0, None, 17])]

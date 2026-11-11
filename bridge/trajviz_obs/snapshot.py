@@ -61,11 +61,7 @@ MAX_POINTS = 2000
 
 
 def downsample(values: list[float | None], n: int) -> list[float | None]:
-    """*values* in at most *n* equal buckets, each its maximum (``None`` when it holds only ``None``).
-
-    Applied to a list of step numbers, it gives the last step of each bucket: the index list that goes
-    alongside the downsampled values.
-    """
+    """Take the maximum from each of at most *n* equal buckets, retaining all-missing gaps."""
     if n < 1:
         raise ValueError(f"n must be positive, not {n}")
     if len(values) <= n:
@@ -76,6 +72,19 @@ def downsample(values: list[float | None], n: int) -> list[float | None]:
         present = [v for v in values[start:start + size] if v is not None]
         out.append(max(present) if present else None)
     return out
+
+
+def _sample_rows(rows: list[dict], n: int, fields: tuple[str, ...]) -> list[dict]:
+    """Keep the largest observed row per bucket, with all its fields and its step index."""
+    if len(rows) <= n:
+        return rows
+
+    def score(row: dict) -> float:
+        values = [row[field] for field in fields if row[field] is not None]
+        return sum(values) if values else -1
+
+    size = math.ceil(len(rows) / n)
+    return [max(rows[start:start + size], key=score) for start in range(0, len(rows), size)]
 
 
 def _native_cost(run: Trajectory) -> float | None:
@@ -245,8 +254,9 @@ def _context(run: Trajectory, pressure: dict, n: int) -> tuple[dict, dict]:
     context = {**window, "current_occupancy": current, "current_pct": pct,
                "peak_occupancy": stats.get("peak_occupancy"), "peak_pct": stats.get("peak_pct"),
                "compaction_count": stats.get("compaction_count"), "largest_drop": stats.get("largest_drop")}
-    series = {"turns": downsample([p["step"] for p in points], n),
-              "occupancy": downsample([p["occupancy"] for p in points], n),
+    sampled = _sample_rows(points, n, ("occupancy",))
+    series = {"turns": [point["step"] for point in sampled],
+              "occupancy": [point["occupancy"] for point in sampled],
               "compactions": [c["step"] for c in (main["compactions"] if main else [])][:n]}
     return context, series
 
@@ -348,6 +358,8 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
     lanes = views["agent_swimlane"]["lanes"]
     lane_cap = min(max_points, max(10, LANE_BUDGET * max_points // max(1, len(lanes))))
     plan = views["plan"]["metrics"]
+    token_points = _sample_rows(tokens, max_points, ("fresh_input", "cache_read", "cache_write", "output"))
+    duration_points = _sample_rows(durations, max_points, ("duration_s",))
     snap = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -385,13 +397,13 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
                         for b in views["bottlenecks"][:TOP_BOTTLENECKS]],
         "context": context,
         "series": {
-            "tokens": {"steps": downsample([t["step"] for t in tokens], max_points),
-                       "fresh": downsample([t["fresh_input"] for t in tokens], max_points),
-                       "cache_read": downsample([t["cache_read"] for t in tokens], max_points),
-                       "cache_write": downsample([t["cache_write"] for t in tokens], max_points),
-                       "output": downsample([t["output"] for t in tokens], max_points)},
-            "durations": {"steps": downsample([d["step"] for d in durations], max_points),
-                          "seconds": downsample([d["duration_s"] for d in durations], max_points),
+            "tokens": {"steps": [t["step"] for t in token_points],
+                       "fresh": [t["fresh_input"] for t in token_points],
+                       "cache_read": [t["cache_read"] for t in token_points],
+                       "cache_write": [t["cache_write"] for t in token_points],
+                       "output": [t["output"] for t in token_points]},
+            "durations": {"steps": [d["step"] for d in duration_points],
+                          "seconds": [d["duration_s"] for d in duration_points],
                           "outliers": [d["step"] for d in durations if d.get("outlier")][:max_points]},
             "context": context_series,
         },

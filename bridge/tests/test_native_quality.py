@@ -2,6 +2,7 @@
 
 import copy
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import agent_trajviz as tv
@@ -241,6 +242,66 @@ def test_context_growth_uses_adjacent_measured_prompts_of_the_same_agent(native_
     jsonschema.validate(view.to_dict(), tv.view_schema("hotspots"))
 
 
+@pytest.mark.parametrize("shared_session", [False, True])
+def test_context_growth_restarts_after_compaction_in_its_own_conversation(native_run, shared_session):
+    def prompt(mid, started, tokens, *, content=None):
+        return {**message(mid, usage(input=tokens, read=0), content=content),
+                "time": {"created": BASE + started, "completed": BASE + started + 80}}
+
+    child = {"session": {"id": "child"},
+             "messages": [prompt("child before", 200, 30), prompt("child after", 400, 80)]}
+    compact = {"type": "compaction", "status": "completed", "id": "compact", "agent": "compaction",
+               "time": {"created": BASE + 300}, "summary": "Reset the parent context", "tokens": usage()}
+    _, run = native_run([prompt("parent before", 100, 10, content=[child_dispatch()]), compact,
+                         prompt("parent after", 500, 110), prompt("parent next", 600, 150)], [child])
+    if shared_session:
+        # Native Claude Code tags children with their agent id but can retain
+        # the parent's session id for every step.
+        steps = [{**step, "session_id": "root", "parent_agent_id": "", "agent": "worker"}
+                 if step.get("is_sub_agent") else step for step in run.steps]
+        run = replace(run, format="claude_code", steps=steps)
+    canonical = copy.deepcopy(run.to_dict(include_raw=True))
+    growth = project_view(run, run.view("hotspots")).data["top_growth"]
+    assert [(row["index"], row["growth"]) for row in growth] == [(1, 50), (4, 40)]
+    assert run.to_dict(include_raw=True) == canonical
+
+
+def test_context_growth_skips_incomplete_breakdowns_even_with_a_recorded_total(native_run):
+    _, run = native_run([message("before", usage(input=10, read=0)),
+                         message("missing cache", {"input": 100, "total": 110, "output": 10}),
+                         message("after", usage(input=150, read=0))])
+    totals = [row["tokens_total"] for row in project_analysis(run).message_rows]
+    assert totals[1] == 110
+    assert project_view(run, run.view("hotspots")).data["top_growth"] == []
+
+
+def test_live_and_offline_dashboard_keep_workflow_and_growth_evidence_aligned(native_run, tmp_path, run_cli):
+    from trajviz_obs.dashboard_cmd import build_preloaded_insight
+
+    compact = {"type": "compaction", "status": "completed", "id": "compact", "agent": "compaction",
+               "time": {"created": BASE + 200}, "summary": "Reset the context", "tokens": usage()}
+    source, _ = native_run([
+        message("before", usage(input=10, read=0)), compact,
+        {**message("after", usage(input=110, read=0)), "time": {"created": BASE + 300, "completed": BASE + 380}},
+        {**message("next", usage(input=150, read=0)), "time": {"created": BASE + 400, "completed": BASE + 480}},
+        {**message("missing"), "time": {"created": BASE + 500, "completed": BASE + 580}},
+        {**message("zero", usage(0, 0, 0, 0, 0)), "time": {"created": BASE + 600, "completed": BASE + 680}},
+    ])
+    app = build_preloaded_insight(str(source))
+    load = next(entry.fn for entry in app.fns.values() if entry.api_name == "_do_load")
+    outputs = load(str(source), False, "")
+    markdown = next(value for value in outputs.values() if isinstance(value, str) and "Top context-growth steps" in value)
+    assert "| +40 |" in markdown and "| +100 |" not in markdown
+    cards = next(value for value in outputs.values() if isinstance(value, str) and 'id="wf-card-0"' in value)
+    missing, zero = cards.split('id="wf-card-4"', 1)[1].split('id="wf-card-5"', 1)
+    assert "<span>n/a tok</span>" in missing and "<span>0 tok</span>" in zero
+    path = tmp_path / "report.html"
+    code, payload = run_cli(["dashboard", "--transcript", str(source), "--html", str(path)])
+    assert code == 0, payload
+    growth = path.read_text().split("Top context-growth steps", 1)[1].split("</section>", 1)[0]
+    assert "+40" in growth and "+100" not in growth
+
+
 def test_repeated_user_messages_exclude_synthetic_messages_and_child_dispatches(native_run):
     from agent_trajviz.insight.session import session_from_run
 
@@ -286,6 +347,21 @@ def test_browser_agent_token_chart_loads_missing_and_mixed_measurements(native_r
         assert len(fig.data) >= 2 and all(trace.y[0] is None for trace in fig.data)
         assert "unavailable" in annotations
     assert project_view(run, run.view("agent_tokens")).data["agents"][0]["total"] is None
+
+
+def test_browser_agent_token_chart_retains_observed_cache_without_a_total(native_run):
+    from agent_trajviz.insight.session import session_from_run
+    from agent_trajviz.insight.ui.overview_tab import pack_load
+
+    child = {"session": {"id": "child"}, "messages": [message()]}
+    _, run = native_run([message(tokens={"cache": {"read": 125}}, content=[child_dispatch()])], [child])
+    session = project_dashboard_session(session_from_run(run))
+    fig = pack_load(session)["agent_token_chart"]
+    cache_trace, = fig.data
+    assert cache_trace.name == "Cache Read" and list(cache_trace.y) == [125, None]
+    assert any("unavailable" in annotation.text for annotation in fig.layout.annotations)
+    rows = project_view(run, run.view("agent_tokens")).data["agents"]
+    assert [(row["total"], row["cache_read"]) for row in rows] == [(None, 125), (None, None)]
 
 
 @pytest.mark.parametrize("reverse", [False, True])

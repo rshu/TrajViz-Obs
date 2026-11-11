@@ -9,13 +9,14 @@ from __future__ import annotations
 import functools
 import inspect
 import json
+import re
 import textwrap
-import types
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_type_hints
 
 from .attribution_ui import public_translation_head
-from .compat import attribution_message
+from .compat import attribution_message, write_dashboard_report
 from .errors import BridgeError
+from .native_quality import _clone_native_function
 
 if TYPE_CHECKING:
     import gradio as gr
@@ -26,6 +27,8 @@ _EMPTY_CHART = {
     "duration-chart": ("y", "No step durations were recorded."),
     "gantt-chart": ("x", "No drawable execution intervals. A recorded start and positive duration are required."),
 }
+_GANTT_STEP = re.compile(r"^<b>Step (\d+)</b> ")
+_GANTT_TOKEN_COUNT = re.compile(r"(?<=<br>)-?[\d,]+ tokens$")
 
 _CSS = """
 .obs-dashboard .main { width: 100% !important; min-width: 0 !important; max-width: 1440px !important;
@@ -313,6 +316,8 @@ def configure_insight(app: gr.Blocks, *, dark: bool = False, inline_plotly: bool
     if dark:
         _set_dark_theme(app)
     _bound_expanded_workflow(app)
+    _scope_overview_issues(app)
+    _scope_gantt_hover(app)
     original = upload.prepare_html_export
     exports = [entry for entry in app.fns.values() if entry.fn is original]
     if not exports:
@@ -321,7 +326,7 @@ def configure_insight(app: gr.Blocks, *, dark: bool = False, inline_plotly: bool
     def write_report(source, *, dest, dark):
         if isinstance(source, LoadedSession):
             source = project_dashboard_session(source)
-        return upload.write_report_file(source, dest=dest, dark=dark, inline_plotly=inline_plotly)
+        return write_dashboard_report(upload.write_report_file, source, dest=dest, dark=dark, inline_plotly=inline_plotly)
 
     callback = _replace_native_binding(original, "write_report_file", write_report)
     for entry in exports:
@@ -331,10 +336,84 @@ def configure_insight(app: gr.Blocks, *, dark: bool = False, inline_plotly: bool
 def _replace_native_binding(original, name, replacement):
     if name not in original.__globals__ or name not in original.__code__.co_names:
         raise BridgeError("dashboard_incompatible", f"TrajViz's {original.__name__} browser callback changed.")
-    callback = types.FunctionType(original.__code__, {**original.__globals__, name: replacement},
-                                  original.__name__, original.__defaults__, original.__closure__)
-    callback.__kwdefaults__ = original.__kwdefaults__
-    return functools.update_wrapper(callback, original)
+    return functools.update_wrapper(_clone_native_function(original, {name: replacement}), original)
+
+
+def _scope_overview_issues(app: gr.Blocks) -> None:
+    """Use the displayed findings when a native action rebuilds Overview issues."""
+    from agent_trajviz.insight.session import session_from_run
+    from agent_trajviz.insight.ui import overview_tab, settings
+
+    from .native_quality import project_dashboard_session
+
+    def displayed_session(run, path=None):
+        return project_dashboard_session(session_from_run(run, path))
+
+    offline = _replace_native_binding(settings._offline_issues, "session_from_run", displayed_session)
+    issue_callbacks = {
+        function: _replace_native_binding(function, "session_from_run", displayed_session)
+        for function in (overview_tab.prepare_issues_agent_download, overview_tab.on_suggest_fixes)
+    }
+    settings_callbacks = {"on_apply_settings", "on_reset_settings"}
+    found = set()
+    for entry in app.fns.values():
+        original = entry.fn
+        if original in issue_callbacks:
+            entry.fn = issue_callbacks[original]
+            found.add(original.__name__)
+        elif (getattr(original, "__module__", "") == settings.__name__
+              and original.__name__ in settings_callbacks):
+            entry.fn = _replace_native_binding(original, "_offline_issues", offline)
+            found.add(original.__name__)
+    if found != settings_callbacks | {function.__name__ for function in issue_callbacks}:
+        raise BridgeError("dashboard_incompatible", "TrajViz's Overview issue callbacks changed.")
+
+
+def _scope_gantt_hover(app: gr.Blocks) -> None:
+    """Preserve native timing and disclose missing tokens in Gantt hover text."""
+    from .native_quality import dashboard_token_total_observed
+
+    loaders = [entry for entry in app.fns.values() if getattr(entry.fn, "__name__", "") == "_do_load"]
+    axes = [entry for entry in app.fns.values() if getattr(entry.fn, "__name__", "") == "on_gantt_axis_change"]
+    if len(loaders) != 1 or len(axes) != 1:
+        raise BridgeError("dashboard_incompatible", "TrajViz's Execution Timeline callbacks changed.")
+    loader, axis = loaders[0], axes[0]
+    original_load, original_axis = loader.fn, axis.fn
+    slots = inspect.getclosurevars(inspect.unwrap(original_load)).nonlocals.get("slots")
+    if (not isinstance(slots, dict) or slots.get("gantt_chart") not in loader.outputs
+            or slots.get("state_steps") not in loader.outputs or axis.outputs != [slots["gantt_chart"]]):
+        raise BridgeError("dashboard_incompatible", "TrajViz's Execution Timeline outputs changed.")
+    chart, steps_state = slots["gantt_chart"], slots["state_steps"]
+
+    def mark_missing(fig, steps):
+        missing = {step["index"] for step in (steps or []) if not dashboard_token_total_observed(step)}
+        if not missing:
+            return fig
+
+        def hover_label(label):
+            match = _GANTT_STEP.match(label)
+            if match and int(match[1]) in missing:
+                return _GANTT_TOKEN_COUNT.sub("Tokens unavailable", label)
+            return label
+
+        for trace in fig.data:
+            if trace.type == "bar" and trace.hovertext is not None:
+                trace.hovertext = tuple(hover_label(label) for label in trace.hovertext)
+        return fig
+
+    @functools.wraps(original_load)
+    def load(*args, **kwargs):
+        outputs = original_load(*args, **kwargs)
+        mark_missing(outputs[chart], outputs[steps_state])
+        return outputs
+
+    @functools.wraps(original_axis)
+    def change_axis(axis_mode, steps, dark):
+        return mark_missing(original_axis(axis_mode, steps, dark), steps)
+
+    load.__annotations__ = get_type_hints(original_load)  # Retain Gradio's typed request injection.
+    loader.fn = load
+    axis.fn = change_axis
 
 
 def _bound_expanded_workflow(app: gr.Blocks) -> None:
@@ -342,15 +421,19 @@ def _bound_expanded_workflow(app: gr.Blocks) -> None:
     from agent_trajviz.insight.presenters import transcript, workflow
     from agent_trajviz.insight.ui.shared import safe_callback
 
+    from .native_quality import dashboard_field_observed
+
     entries = [entry for entry in app.fns.values()
                if getattr(entry.fn, "__module__", "") == "agent_trajviz.insight.ui.workflow_tab"
                and getattr(entry.fn, "__name__", "") == "do_filter_workflow"]
     if not entries or len({entry.fn for entry in entries}) != 1:
         raise BridgeError("dashboard_incompatible", "TrajViz's Expanded Workflow callback changed.")
 
+    native_render = _replace_native_binding(workflow.render_workflow_html, "field_observed", dashboard_field_observed)
+
     def render(steps, *, expanded=False):
         if not expanded:
-            return workflow.render_workflow_html(steps)
+            return native_render(steps)
         shown = []
         for step in steps:
             parts = []
@@ -364,7 +447,7 @@ def _bound_expanded_workflow(app: gr.Blocks) -> None:
                                 clipped[key] = text[:_MAX_EXPANDED_TOOL_CHARS] + "\n... (truncated at 200,000 chars)"
                 parts.append({**part, **clipped} if clipped else part)
             shown.append({**step, "parts": parts})
-        return workflow.render_workflow_html(shown, expanded=True)
+        return native_render(shown, expanded=True)
 
     presenter = _replace_native_binding(workflow.build_filtered_workflow_outputs, "render_workflow_html", render)
     original = inspect.unwrap(entries[0].fn)

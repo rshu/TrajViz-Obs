@@ -360,11 +360,6 @@ const OCCUPANCY = 0xec4899
 /** `a, b, c` of the numbers, or '' with none. */
 const list = (ns: number[]): string => ns.map(n => fmtInt(n)).join(', ')
 
-/** The steps of the duration outliers: each an index into the series (the step number when the index is past it). */
-function outlierSteps(d: Snapshot['series']['durations']): number[] {
-  return d.outliers.map(i => d.steps[i] ?? i)
-}
-
 type SeriesProps = { els: Els; surface: RenderSurface; snap: Snapshot; columns: number }
 
 /** The context occupancy series, keyed `context`, the compaction turns named on its label. */
@@ -393,7 +388,7 @@ export function seriesOf(p: SeriesProps): RenderElement[] {
   const { els, surface, snap, columns } = p
   const t = snap.series.tokens
   const d = snap.series.durations
-  const outliers = outlierSteps(d)
+  const outliers = d.outliers
   return [
     StackedBlock({
       els,
