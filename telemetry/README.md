@@ -6,25 +6,20 @@ This guide uses the collector from `codex/telemetry-service` and plugins install
 
 ## Try it locally
 
-1. Start the receiver in one terminal. With no credential registry configured, this loopback test accepts uploads without a token.
+1. Start the local service. With no credential registry configured, it accepts loopback uploads without a token.
 
    ```sh
    python3 -m telemetry --database "$HOME/.local/state/trajviz-obs/usage.sqlite3" serve
    ```
 
-2. In another terminal, set the plugin environment and launch Claude Code or the OpenCode server from that environment. Run `/obs help` or `/obs`, then `/obs telemetry` to check delivery.
+2. Open [the local report](http://127.0.0.1:8765/) in a browser. It shows the most recent 30 UTC days and reads fresh data on each reload.
+
+3. In another terminal, set the plugin environment and launch Claude Code or the OpenCode server from that environment. Run `/obs help` or `/obs`, then `/obs telemetry` to check delivery.
 
    ```sh
    export TRAJVIZ_OBS_TELEMETRY=1
    export TRAJVIZ_OBS_TELEMETRY_URL=http://127.0.0.1:8765/v1/events
    unset TRAJVIZ_OBS_TELEMETRY_TOKEN
-   ```
-
-3. Export the aggregate snapshot and open the resulting file in a browser.
-
-   ```sh
-   usage_db="$HOME/.local/state/trajviz-obs/usage.sqlite3"
-   python3 -m telemetry --database "$usage_db" report --html /tmp/trajviz-usage.html
    ```
 
 ## Plugin configuration
@@ -54,8 +49,8 @@ application = create_production_app("/var/lib/trajviz-obs/usage.sqlite3")
 | --- | --- |
 | `--database PATH` | Required before the subcommand, except for `credentials`. Use the same SQLite file for collection, reporting, and maintenance. Pass the path as `database` to the WSGI factory. |
 | `--retention-days DAYS` | Defaults to 365 days (one year), accepts 32–365. Place before the subcommand and use the same value throughout, including the WSGI factory’s `retention_days`. |
-| `serve --port PORT` | Development only. Binds to `127.0.0.1:8765` by default. Use `0` to pick a free port. |
-| `serve --credentials PATH` and `--require-auth` | The absolute path overrides `TRAJVIZ_OBS_INGEST_CREDENTIALS`. A configured registry enables authentication. `--require-auth` makes startup fail if no registry is configured. |
+| `serve --port PORT` | The local service binds to `127.0.0.1:8765` by default. Use `0` to pick a free port. Startup prints the upload endpoint and the browser report URL. |
+| `serve --credentials PATH` and `--require-auth` | The absolute path overrides `TRAJVIZ_OBS_INGEST_CREDENTIALS`. A configured registry authenticates uploads to `/v1/events`. `--require-auth` makes startup fail if no registry is configured. The browser report is available to local users. |
 | `serve --requests-per-minute N` and `--global-requests-per-minute N` | Defaults to 60 per credential and 600 overall per UTC minute for authenticated uploads. Set `1 ≤ per credential ≤ global ≤ 60,000`. The factory accepts the same settings as `requests_per_minute` and `global_requests_per_minute`. |
 
 Issue one credential per installation or shared server. Run registry commands as the WSGI service account. The registry stores token hashes and labels. `issue` prints the token once, so store it in the plugin host’s protected launch environment.
@@ -71,7 +66,7 @@ For the following commands, set `usage_db` to the collector’s database path. R
 
 ## Reports
 
-For continuous operation, run the publisher as a separate process. It writes immediately and replaces the HTML atomically after each successful refresh. If a refresh fails, it keeps the previous report and retries at the next interval. Stop it with Ctrl+C or SIGTERM.
+To keep a standalone HTML snapshot up to date, run the publisher as a separate process. It writes immediately and replaces the HTML atomically after each successful refresh. If a refresh fails, it keeps the previous report and retries at the next interval. Stop it with Ctrl+C or SIGTERM.
 
 ```sh
 python3 -m telemetry --database "$usage_db" publish \

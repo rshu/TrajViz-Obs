@@ -1,14 +1,16 @@
-"""Run a loopback test receiver or inspect its aggregates."""
+"""Run a loopback telemetry service or inspect its aggregates."""
 
 from __future__ import annotations
 
 import argparse
+import re
 import signal
 import sqlite3
 import sys
 from datetime import date
 from pathlib import Path
 from wsgiref.simple_server import WSGIRequestHandler, make_server
+from wsgiref.types import WSGIApplication
 
 from .collector import (
     DEFAULT_GLOBAL_REQUESTS_PER_MINUTE,
@@ -22,14 +24,45 @@ from .collector import (
     utc_day,
 )
 from .credentials import issue_credential, list_credentials, revoke_credential
-from .export import export_report, report_json
+from .export import export_report, render_html, report_json
 from .publish import publish_reports
 from .report import report
+
+_LOCAL_HOST = re.compile(r"(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?", re.IGNORECASE)
 
 
 class _QuietHandler(WSGIRequestHandler):
     def log_message(self, format, *args):
         """The development server does not write request metadata to its logs."""
+
+
+def _with_local_report(ingest: WSGIApplication, database: Path, retention_days: int) -> WSGIApplication:
+    def app(environ, start_response):
+        if environ["PATH_INFO"] != "/":
+            return ingest(environ, start_response)
+
+        method = environ["REQUEST_METHOD"]
+        headers = [("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY")]
+        content_type = "text/plain; charset=utf-8"
+        if not _LOCAL_HOST.fullmatch(environ.get("HTTP_HOST", "")):
+            status, body = "403 Forbidden", b"Use a loopback address to view the usage report.\n"
+        elif method not in {"GET", "HEAD"}:
+            status, body = "405 Method Not Allowed", b"Use GET or HEAD to view the usage report.\n"
+            headers.append(("Allow", "GET, HEAD"))
+        else:
+            try:
+                snapshot = report(database, today=utc_day(), retention_days=retention_days)
+                body = render_html(snapshot).encode("utf-8")
+            except (OSError, sqlite3.Error, ValueError):
+                status, body = "503 Service Unavailable", b"The usage report is temporarily unavailable.\n"
+            else:
+                status = "200 OK"
+                content_type = "text/html; charset=utf-8"
+        headers.extend([("Content-Type", content_type), ("Content-Length", str(len(body)))])
+        start_response(status, headers)
+        return [] if method == "HEAD" else [body]
+
+    return app
 
 
 def _day(value: str) -> date:
@@ -67,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--retention-days", type=int, default=DEFAULT_RETENTION_DAYS,
                         help="Days of data retained, from 32 to 365 (default: %(default)s). Use the same value for all operations.")
     commands = parser.add_subparsers(dest="command", required=True)
-    serve = commands.add_parser("serve", help="Run a development receiver on localhost.")
+    serve = commands.add_parser("serve", help="Run the local event receiver and browser report on loopback.")
     serve.add_argument("--port", type=_port, default=8765)
     serve.add_argument("--credentials", type=Path, help="Path to the collector's credential registry.")
     serve.add_argument("--require-auth", action="store_true", help="Fail startup without a credential registry.")
@@ -132,11 +165,13 @@ def main(argv: list[str] | None = None) -> int:
             init_database(database)
             prune(database, today, args.retention_days)
         else:
-            app = create_app(database, retention_days=args.retention_days, credentials=args.credentials,
-                             require_auth=args.require_auth, requests_per_minute=args.requests_per_minute,
-                             global_requests_per_minute=args.global_requests_per_minute)
+            ingest = create_app(database, retention_days=args.retention_days, credentials=args.credentials,
+                                require_auth=args.require_auth, requests_per_minute=args.requests_per_minute,
+                                global_requests_per_minute=args.global_requests_per_minute)
+            app = _with_local_report(ingest, database, args.retention_days)
             with make_server("127.0.0.1", args.port, app, handler_class=_QuietHandler) as server:
-                print(f"http://127.0.0.1:{server.server_port}{EVENTS_PATH}", file=sys.stderr, flush=True)
+                address = f"http://127.0.0.1:{server.server_port}"
+                print(f"{address}{EVENTS_PATH}", f"{address}/", sep="\n", file=sys.stderr, flush=True)
                 try:
                     server.serve_forever()
                 except KeyboardInterrupt:

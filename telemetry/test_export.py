@@ -6,12 +6,15 @@ import json
 import re
 import subprocess
 import sys
+from http.client import HTTPConnection
 from pathlib import Path
+from time import monotonic, sleep
+from uuid import uuid4
 
 import pytest
 
 from . import export
-from .collector import create_app
+from .collector import create_app, utc_day
 from .export import export_report, render_html
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +46,76 @@ def test_cli_exports_the_same_snapshot_as_json_and_html(tmp_path):
     assert json.loads(json_file.read_text()) == snapshot
     assert json.loads(embedded_text(html_file.read_text())) == snapshot
     assert not list(html_file.parent.glob(".trajviz-obs-*.tmp"))
+
+
+def test_cli_serves_live_report_and_ingests_events_on_the_same_port(tmp_path, monkeypatch):
+    monkeypatch.delenv("TRAJVIZ_OBS_INGEST_CREDENTIALS", raising=False)
+    command = [sys.executable, "-m", "telemetry", "--database", str(tmp_path / "usage.sqlite3"),
+               "serve", "--port", "0"]
+    log = tmp_path / "server.log"
+    with log.open("wb") as stderr, subprocess.Popen(command, cwd=ROOT, stderr=stderr) as worker:
+        try:
+            deadline = monotonic() + 10
+            while monotonic() < deadline:
+                lines = log.read_text(encoding="utf-8").splitlines()
+                if len(lines) >= 2 or worker.poll() is not None:
+                    break
+                sleep(0.03)
+            assert len(lines) >= 2, lines
+            address = re.fullmatch(r"http://127\.0\.0\.1:(\d+)/v1/events", lines[0])
+            assert address is not None, lines
+            port = int(address[1])
+            assert lines[1].endswith(f"http://127.0.0.1:{port}/")
+
+            def request(method, path="/", *, body=None, headers=None):
+                connection = HTTPConnection("127.0.0.1", port, timeout=5)
+                try:
+                    connection.request(method, path, body=body, headers=headers or {})
+                    with connection.getresponse() as response:
+                        return response.status, response.headers, response.read()
+                finally:
+                    connection.close()
+
+            status, headers, page = request("GET")
+            assert status == 200
+            assert headers.get_content_type() == "text/html"
+            assert headers["Cache-Control"] == "no-store"
+            assert json.loads(embedded_text(page.decode("utf-8")))["features"] == []
+            head_status, head_headers, head_body = request("HEAD")
+            assert (head_status, head_body) == (200, b"")
+            assert head_headers["Content-Type"] == headers["Content-Type"]
+            assert int(head_headers["Content-Length"]) == len(page)
+            post_status, post_headers, _ = request("POST")
+            assert post_status == 405
+            assert set(post_headers["Allow"].replace(" ", "").split(",")) == {"GET", "HEAD"}
+            assert request("GET", headers={"Host": f"example.invalid:{port}"})[0] == 403
+            assert request("GET", "/missing")[0] == 404
+            assert request("GET", "/v1/events")[0] == 405
+
+            payload = json.dumps({
+                "schema_version": 1,
+                "adapter": "claude-code",
+                "installation_id": uuid4().hex,
+                "events": [{
+                    "id": uuid4().hex, "day": utc_day().isoformat(), "surface": "terminal",
+                    "feature": "help", "outcome": "success", "duration_bucket": "lt_100ms", "version": "1.0.0",
+                }],
+            })
+            status, _, body = request("POST", "/v1/events", body=payload, headers={"Content-Type": "application/json"})
+            assert (status, body) == (204, b"")
+            status, _, page = request("GET")
+            assert status == 200
+            snapshot = json.loads(embedded_text(page.decode("utf-8")))
+            assert [(row["adapter"], row["feature"], row["invocations"]) for row in snapshot["features"]] == [
+                ("claude-code", "help", 1),
+            ]
+        finally:
+            if worker.poll() is None:
+                worker.terminate()
+                try:
+                    worker.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    worker.kill()
 
 
 def test_embedded_json_cannot_terminate_its_html_element():
