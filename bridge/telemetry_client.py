@@ -129,6 +129,14 @@ def _ensure_health(connection: sqlite3.Connection) -> None:
     connection.execute("INSERT OR IGNORE INTO sender_health (singleton, batch_limit) VALUES (1, ?)", (MAX_BATCH,))
 
 
+def _expire_pending(connection: sqlite3.Connection, cutoff: str, latest: str) -> None:
+    # A corrected clock can leave queued dates the collector will reject.
+    expired = connection.execute("DELETE FROM pending WHERE day < ? OR day > ?", (cutoff, latest)).rowcount
+    if expired:
+        connection.execute("UPDATE sender_health SET expired = expired + ?", (expired,))
+    connection.execute("DELETE FROM activation WHERE day < ? OR day > ?", (cutoff, latest))
+
+
 def _record(connection: sqlite3.Connection, event: dict, cutoff: str) -> None:
     latest = (date.fromisoformat(event["day"]) + timedelta(days=1)).isoformat()
     with connection:
@@ -145,11 +153,7 @@ def _record(connection: sqlite3.Connection, event: dict, cutoff: str) -> None:
         connection.execute("CREATE TABLE IF NOT EXISTS pending (id TEXT UNIQUE, day TEXT NOT NULL, body TEXT NOT NULL)")
         connection.execute("INSERT OR IGNORE INTO sender (singleton, installation_id) VALUES (1, ?)", (uuid4().hex,))
         _ensure_health(connection)
-        # A corrected clock can leave queued dates the collector will reject.
-        expired = connection.execute("DELETE FROM pending WHERE day < ? OR day > ?", (cutoff, latest)).rowcount
-        if expired:
-            connection.execute("UPDATE sender_health SET expired = expired + ?", (expired,))
-        connection.execute("DELETE FROM activation WHERE day < ? OR day > ?", (cutoff, latest))
+        _expire_pending(connection, cutoff, latest)
         if event["feature"] == "activation":
             recorded = connection.execute("INSERT OR IGNORE INTO activation (day) VALUES (?)", (event["day"],))
             if not recorded.rowcount:
@@ -209,6 +213,10 @@ def _claim(connection: sqlite3.Connection, adapter: str, now: float, token: str 
         """, (now, now, _credential_fingerprint(token))).fetchone()
         if state is None:
             return None
+        # A process may resume a queued flush days after the event was recorded.
+        today = datetime.fromtimestamp(now, _UTC).date()
+        _expire_pending(connection, (today - timedelta(days=BACKFILL_DAYS)).isoformat(),
+                        (today + timedelta(days=1)).isoformat())
         events = _pending_events(connection, max(1, min(state[1], MAX_BATCH)), now)
         if not events:
             return None
@@ -387,7 +395,11 @@ def _queue_status(path: Path, token: str | None) -> dict:
         sender = connection.execute("SELECT retry_at FROM sender WHERE singleton = 1").fetchone()
         queued = connection.execute("SELECT count(*) FROM pending").fetchone()[0]
         has_health = connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sender_health'").fetchone()
-        health = connection.execute("SELECT * FROM sender_health WHERE singleton = 1").fetchone() if has_health else None
+        health = connection.execute("""
+            SELECT last_success_at, last_failure_at, last_failure, last_http_status,
+                   dropped, expired, rejected, rejected_credential
+            FROM sender_health WHERE singleton = 1
+        """).fetchone() if has_health else None
     status = {"queue_state": "present", "queued": queued, "dropped": 0, "expired": 0, "rejected": 0,
               "retry_at": _time_label(sender["retry_at"]) if sender else None}
     if health is not None:

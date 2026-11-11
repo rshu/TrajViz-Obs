@@ -25,11 +25,15 @@ test.skipIf(!python)('the reporter requires launch opt-in and spawns with only t
   const bridge = await mkdtemp(path.join(tmpdir(), 'trajviz-opencode-telemetry-'))
   const capture = path.join(bridge, 'events.jsonl')
   const endpoint = 'http://127.0.0.1:1/v1/events'
+  const caFile = path.join(bridge, 'collector-ca.pem')
+  const caDir = path.join(bridge, 'trust')
   const environment = {
     TRAJVIZ_OBS_TELEMETRY: '0',
     TRAJVIZ_OBS_TELEMETRY_URL: endpoint,
     TRAJVIZ_OBS_TELEMETRY_TOKEN: TOKEN,
     TRAJVIZ_OBS_TELEMETRY_STATE_DIR: bridge,
+    SSL_CERT_FILE: caFile,
+    SSL_CERT_DIR: caDir,
     OPENAI_API_KEY: 'test-marker',
   }
   const entries = Object.entries(environment)
@@ -52,7 +56,16 @@ test.skipIf(!python)('the reporter requires launch opt-in and spawns with only t
     await writeFile(path.join(bridge, 'telemetry_client.py'), [
       'import json, os, sys',
       `with open(${JSON.stringify(capture)}, "a") as output:`,
-      '    output.write(json.dumps({"argv": sys.argv[1:], "isolated": sys.flags.isolated, "enabled": os.environ.get("TRAJVIZ_OBS_TELEMETRY"), "endpoint": os.environ.get("TRAJVIZ_OBS_TELEMETRY_URL"), "credential": os.environ.get("TRAJVIZ_OBS_TELEMETRY_TOKEN"), "key": os.environ.get("OPENAI_API_KEY")}) + "\\n")',
+      '    event = {',
+      '        "argv": sys.argv[1:], "isolated": sys.flags.isolated,',
+      '        "enabled": os.environ.get("TRAJVIZ_OBS_TELEMETRY"),',
+      '        "endpoint": os.environ.get("TRAJVIZ_OBS_TELEMETRY_URL"),',
+      '        "credential": os.environ.get("TRAJVIZ_OBS_TELEMETRY_TOKEN"),',
+      '        "caFile": os.environ.get("SSL_CERT_FILE"),',
+      '        "caDir": os.environ.get("SSL_CERT_DIR"),',
+      '        "key": os.environ.get("OPENAI_API_KEY"),',
+      '    }',
+      '    output.write(json.dumps(event) + "\\n")',
     ].join('\n'))
     const report = createUsageReporter(runtime)!
     report({ feature: 'activation', surface: 'unknown', outcome: 'success', durationMs: 0 })
@@ -71,7 +84,7 @@ test.skipIf(!python)('the reporter requires launch opt-in and spawns with only t
       }
       await Bun.sleep(20)
     }
-    const common = { isolated: 1, enabled: '1', endpoint, credential: TOKEN, key: null }
+    const common = { isolated: 1, enabled: '1', endpoint, credential: TOKEN, caFile, caDir, key: null }
     const version = expect.stringMatching(/^\d+\.\d+\.\d+/)
     expect(captured).toHaveLength(2)
     expect(captured).toEqual(expect.arrayContaining([

@@ -32,6 +32,7 @@ function usageEndpoint(): string | undefined {
 function usageEnvironment(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const name of ['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA', 'XDG_STATE_HOME', 'SystemRoot',
+    'SSL_CERT_FILE', 'SSL_CERT_DIR',
     'TRAJVIZ_OBS_TELEMETRY', 'TRAJVIZ_OBS_TELEMETRY_URL', 'TRAJVIZ_OBS_TELEMETRY_TOKEN', 'TRAJVIZ_OBS_TELEMETRY_STATE_DIR']) {
     if (process.env[name] !== undefined) env[name] = process.env[name]
   }
