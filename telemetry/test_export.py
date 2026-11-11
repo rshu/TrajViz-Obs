@@ -8,6 +8,7 @@ import subprocess
 import sys
 from http.client import HTTPConnection
 from pathlib import Path
+from socket import create_connection
 from time import monotonic, sleep
 from uuid import uuid4
 
@@ -76,7 +77,9 @@ def test_cli_serves_live_report_and_ingests_events_on_the_same_port(tmp_path, mo
                 finally:
                     connection.close()
 
-            status, headers, page = request("GET")
+            # Browsers can open a connection before sending the report request.
+            with create_connection(("127.0.0.1", port), timeout=5):
+                status, headers, page = request("GET")
             assert status == 200
             assert headers.get_content_type() == "text/html"
             assert headers["Cache-Control"] == "no-store"

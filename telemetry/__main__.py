@@ -9,7 +9,8 @@ import sqlite3
 import sys
 from datetime import date
 from pathlib import Path
-from wsgiref.simple_server import WSGIRequestHandler, make_server
+from socketserver import ThreadingMixIn
+from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 from wsgiref.types import WSGIApplication
 
 from .collector import (
@@ -31,13 +32,26 @@ from .report import report
 _LOCAL_HOST = re.compile(r"(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?", re.IGNORECASE)
 
 
+class _LocalServer(ThreadingMixIn, WSGIServer):
+    daemon_threads = True
+
+
 class _QuietHandler(WSGIRequestHandler):
+    timeout = 10
+
     def log_message(self, format, *args):
         """The development server does not write request metadata to its logs."""
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except TimeoutError:
+            pass
 
 
 def _with_local_report(ingest: WSGIApplication, database: Path, retention_days: int) -> WSGIApplication:
     def app(environ, start_response):
+        environ["wsgi.multithread"] = True
         if environ["PATH_INFO"] != "/":
             return ingest(environ, start_response)
 
@@ -169,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
                                 require_auth=args.require_auth, requests_per_minute=args.requests_per_minute,
                                 global_requests_per_minute=args.global_requests_per_minute)
             app = _with_local_report(ingest, database, args.retention_days)
-            with make_server("127.0.0.1", args.port, app, handler_class=_QuietHandler) as server:
+            with make_server("127.0.0.1", args.port, app, server_class=_LocalServer, handler_class=_QuietHandler) as server:
                 address = f"http://127.0.0.1:{server.server_port}"
                 print(f"{address}{EVENTS_PATH}", f"{address}/", sep="\n", file=sys.stderr, flush=True)
                 try:
