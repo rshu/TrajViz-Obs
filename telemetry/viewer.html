@@ -76,15 +76,17 @@
     .chart circle { fill: var(--series); }
     .bar-chart { margin: 0; }
     .bar-chart figcaption { color: var(--muted); font-size: .83rem; font-weight: 650; }
-    .bar-chart ul { display: grid; gap: .65rem; margin: .65rem 0 0; padding: 0; list-style: none; }
-    .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: .24rem .65rem; font-size: .83rem; }
-    .bar-label { display: flex; flex-wrap: wrap; align-items: baseline; gap: .16rem .6rem; min-width: 0; }
+    .bar-plot { overflow-x: auto; overscroll-behavior-x: contain; margin-top: .35rem; }
+    .bar-plot:focus-visible { outline-offset: -3px; }
+    .bar-chart ul { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(6rem, 1fr); margin: 0; padding: 2rem 0 .5rem; list-style: none; }
+    .bar-row { display: grid; grid-template-rows: 10rem auto; align-content: start; row-gap: .5rem; min-width: 0; text-align: center; font-size: .83rem; }
+    .bar-label { grid-row: 2; display: flex; flex-direction: column; align-items: center; gap: .2rem; min-width: 0; padding-inline: .3rem; }
     .bar-label .adapter { font-size: .76rem; color: var(--muted); }
     .bar-name { overflow-wrap: anywhere; font-weight: 650; }
     #features .bar-name { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-    .bar-value { font-weight: 700; }
-    .bar-track { grid-column: 1 / -1; display: block; height: .48rem; border-radius: 5px; background: var(--tint); }
-    .bar-fill { display: block; height: 100%; border-radius: inherit; background: var(--series); }
+    .bar-track { grid-row: 1; display: flex; align-items: flex-end; justify-content: center; height: 100%; border-bottom: 1px solid var(--line); background: linear-gradient(to top, var(--line) 1px, transparent 1px) 0 0 / 100% 25%; }
+    .bar-fill { position: relative; width: min(62%, 3.25rem); border-radius: 5px 5px 0 0; background: var(--series); }
+    .bar-value { position: absolute; bottom: calc(100% + .25rem); left: 50%; transform: translateX(-50%); width: max-content; max-width: 5.35rem; overflow-wrap: anywhere; text-align: center; font-size: .76rem; line-height: 1.15; font-weight: 700; }
     .table-wrap { overflow: auto; }
     .feature-table { max-height: 30rem; }
     table { border-collapse: separate; border-spacing: 0; width: 100%; text-align: left; font-size: .83rem; }
@@ -218,9 +220,9 @@
       filterFeatures: ['Filter features', '筛选功能'],
       featureHint: ['Success and latency use completed command outcomes. Browser observations count as actions.', '成功率和耗时基于已完成的命令。浏览器中观测到的事件也计为操作。'],
       tableView: ['Table', '表格'],
-      barView: ['Bar chart', '条形图'],
+      barView: ['Bar chart', '柱状图'],
       viewMode: ['{title} view', '{title}显示方式'],
-      barRegion: ['{title} bar chart', '{title}条形图'],
+      barRegion: ['{title} bar chart', '{title}柱状图'],
       barLimit: ['Showing the top {shown} of {total} rows by tracked actions.', '按记录的操作数显示前 {shown} 行，共 {total} 行。'],
       feature: ['Feature', '功能'],
       actions: ['Actions', '操作数'],
@@ -501,21 +503,32 @@
       const shown = rows.slice(0, BAR_ROWS);
       const max = Math.max(1, ...shown.map(row => row.invocations));
       const figure = node('figure', undefined, 'bar-chart');
+      const plot = node('div', undefined, 'bar-plot');
+      const caption = localized(ENGAGEMENT.invocations);
+      plot.tabIndex = 0;
+      plot.setAttribute('role', 'group');
+      plot.setAttribute('aria-label', caption);
       const list = node('ul');
       list.setAttribute('role', 'list');
       for (const row of shown) {
         const item = node('li', undefined, 'bar-row');
         const label = node('span', undefined, 'bar-label');
-        label.append(node('span', rowName(row), 'bar-name'), adapterLabel(row.adapter));
+        const name = rowName(row);
+        const boundary = target.id === 'features' ? name.indexOf('.') + 1 : 0;
+        const category = node('span', undefined, 'bar-name');
+        if (boundary) category.append(name.slice(0, boundary), node('wbr'), name.slice(boundary));
+        else category.textContent = name;
+        label.append(category, adapterLabel(row.adapter));
         const track = node('span', undefined, 'bar-track');
-        track.setAttribute('aria-hidden', 'true');
         const fill = node('span', undefined, `bar-fill ${row.adapter}`);
-        fill.style.width = `${row.invocations / max * 100}%`;
+        fill.style.height = `${row.invocations / max * 100}%`;
+        fill.append(node('span', valueLabel(row.invocations), 'bar-value num'));
         track.append(fill);
-        item.append(label, node('span', valueLabel(row.invocations), 'bar-value num'), track);
+        item.append(label, track);
         list.append(item);
       }
-      figure.append(node('figcaption', localized(ENGAGEMENT.invocations)), list);
+      plot.append(list);
+      figure.append(node('figcaption', caption), plot);
       if (shown.length < rows.length) {
         figure.append(node('p', t('barLimit', { shown: valueLabel(shown.length), total: valueLabel(rows.length) }), 'subtle'));
       }
@@ -525,6 +538,7 @@
     function updateViewRegion(target, id) {
       const chart = viewModes[id] === 'bars';
       target.setAttribute('aria-label', t(chart ? 'barRegion' : 'table', { title: t(id) }));
+      target.tabIndex = chart ? -1 : 0;
       return chart;
     }
 
