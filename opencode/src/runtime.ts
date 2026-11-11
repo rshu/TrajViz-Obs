@@ -121,5 +121,15 @@ export class Runtime {
     return [env.python, '-I', path.join(this.bridge, 'trajviz_obs_cli.py'), ...(process.platform === 'win32' ? [] : ['--host-parent',String(process.pid)]), ...args]
   }
   async run<T>(args: readonly string[], signal?: AbortSignal, timeout = 120_000): Promise<T> { return this.execute<T>(await this.argv(args, signal), signal, timeout) }
+  /** Telemetry can reuse an initialized runtime, but never installs one. */
+  telemetryPython(): string | undefined {
+    if (this.environment) return this.environment.python
+    const configured = this.options.python && Bun.which(this.options.python, { cwd: this.cwd })
+    if (configured) return configured
+    for (const name of ['python3.14', 'python3.13', 'python3.12', 'python3.11', 'python3', 'python']) {
+      const interpreter = Bun.which(name, { cwd: homedir() })
+      if (interpreter) return interpreter
+    }
+  }
   close(): void { this.closed = true; for (const child of this.children) stopChild(child) }
 }

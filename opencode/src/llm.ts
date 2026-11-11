@@ -9,6 +9,7 @@ import { analyzeSelection, parseArgs, valueArgv } from './shared/args.js'
 import type { CommandResult, RunInput } from './rpc.js'
 import { inspectSource } from './source-info.js'
 import { errorMessage } from './tui-model.js'
+import { usageOutcome } from './telemetry.js'
 
 type Prompt = { index: number; system: string; prompt: string; max_tokens: number; timeout_s: number; delay_s?: number }
 type Plan = { feature: string; hash: string; plan: {calls:number;approx_input_tokens:number}; prompts?: Prompt[]; path: string }
@@ -65,7 +66,7 @@ async function request(backend: Backend, input: RunInput, signal: AbortSignal): 
   const argv = source.argv.map(value => value === source.transcript ? frozen : value)
   argv.push(...extras)
   const response = await backend.runtime.run<Plan | {empty:true;reason:string}>(['llm-prompt', ...argv, '--feature', feature], signal)
-  if ('empty' in response) return { text: response.reason }
+  if ('empty' in response) return usageOutcome({ text: response.reason }, 'empty')
   let model: Pending['model']
   const explicit = feature === 'label' && typeof flags.model === 'string' ? flags.model : undefined
   const configured = explicit ?? (backend.options.llm === 'env' ? undefined : feature === 'label' ? backend.options.labelModel : backend.options.analysisModel)
@@ -138,5 +139,6 @@ export async function runModel(backend: Backend, input: RunInput, signal: AbortS
   }
   const text = typeof doc.reply === 'string' ? doc.reply : typeof doc.text === 'string' ? doc.text : JSON.stringify(doc, null, 2)
   const errors = [typeof doc.error === 'string' ? doc.error : '', ...(Array.isArray(doc.errors) ? doc.errors.map(String) : [])].filter(Boolean)
-  return { text: `${line}\n${text}${errors.length ? `\nModel errors: ${errors.join('; ')}` : ''}${typeof doc.path === 'string' ? `\nSaved to ${doc.path}` : ''}`, data: doc, ...(typeof doc.path === 'string' ? {path:doc.path} : {}) }
+  const result = { text: `${line}\n${text}${errors.length ? `\nModel errors: ${errors.join('; ')}` : ''}${typeof doc.path === 'string' ? `\nSaved to ${doc.path}` : ''}`, data: doc, ...(typeof doc.path === 'string' ? {path:doc.path} : {}) }
+  return errors.length ? usageOutcome(result, 'error') : result
 }

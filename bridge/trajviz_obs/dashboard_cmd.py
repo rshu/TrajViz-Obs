@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING
 
 from agent_trajviz import LoadError
 
+from telemetry_protocol import ADAPTERS
+
 from .cli import register
 from .compat import (
     dashboard_server_options,
@@ -40,6 +42,7 @@ from .compat import (
     write_dashboard_report,
 )
 from .dashboard_ui import configure_insight, decorate_dashboard, presentation
+from .dashboard_usage import DashboardUsage
 from .errors import BridgeError
 from .outputs import protect_inputs
 from .sessions import _positive_int, capture_session_id
@@ -341,9 +344,19 @@ def _wait_for_shutdown(*, exit_on_stdin: bool) -> None:
             signal.signal(sig, handler)
 
 
+def _attach_usage(app: gr.Blocks, usage: DashboardUsage | None, kind: str) -> None:
+    if usage is None:
+        return
+    try:
+        usage.attach(app, kind)
+    except Exception as exc:  # noqa: BLE001 - optional telemetry must not prevent the dashboard from starting
+        print(f"Could not attach usage telemetry ({type(exc).__name__}).", file=sys.stderr)
+
+
 def serve_insight(transcript_path: str, port: int | None, *, exit_on_stdin: bool = False,
                   window: int | None = None, labels_path: str | None = None, session_id: str | None = None,
-                  display_path: str | None = None, dark: bool = False, inline_plotly: bool = False) -> None:
+                  display_path: str | None = None, dark: bool = False, inline_plotly: bool = False,
+                  usage: DashboardUsage | None = None) -> None:
     """Serve the preloaded Insight dashboard until terminated; ``{"url"}`` is the first stdout line.
 
     When the preload cannot be wired (a TrajViz release changed the upload row) the dashboard still starts and
@@ -355,6 +368,7 @@ def serve_insight(transcript_path: str, port: int | None, *, exit_on_stdin: bool
                                   session_id=session_id, display_path=display_path,
                                   dark=dark, inline_plotly=inline_plotly)
     try:
+        _attach_usage(app, usage, "dashboard")
         with contextlib.redirect_stdout(sys.stderr):  # Gradio's prints: the URL stays the first stdout line
             _, url, _ = app.launch(**dashboard_server_options(port), prevent_thread_lock=True, quiet=True,
                                    allowed_paths=[app._obs_display_path, *([labels_path] if labels_path is not None else [])],
@@ -371,12 +385,14 @@ def serve_insight(transcript_path: str, port: int | None, *, exit_on_stdin: bool
                 app._obs_display_owner.cleanup()
 
 
-def serve_converge(data_root: str, port: int | None, *, exit_on_stdin: bool = False) -> None:
+def serve_converge(data_root: str, port: int | None, *, exit_on_stdin: bool = False,
+                   usage: DashboardUsage | None = None) -> None:
     """Serve the Converge dashboard over *data_root* until terminated; ``{"url"}`` is the first stdout line."""
     _check_port(port)
     dashboard = _dashboard()
     app = decorate_dashboard(dashboard.converge_app(data_root=data_root), "converge")
     try:
+        _attach_usage(app, usage, "converge")
         with contextlib.redirect_stdout(sys.stderr):  # Gradio's prints: the URL stays the first stdout line
             _, url, _ = app.launch(**dashboard_server_options(port),
                                    prevent_thread_lock=True, quiet=True,
@@ -399,6 +415,11 @@ def _port(text: str) -> int:
     return value
 
 
+def _usage_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--usage-adapter", choices=ADAPTERS, help=argparse.SUPPRESS)
+    parser.add_argument("--usage-version", help=argparse.SUPPRESS)
+
+
 def add_parser(sub: argparse._SubParsersAction) -> None:
     port_help = "The port, 1 to 65535 (default: Gradio's first free one from 7860)."
     stdin_help = "Stop when stdin closes (standalone pipe use; default: serve until terminated)."
@@ -414,15 +435,18 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--inline-plotly", action="store_true",
                    help="Make the browser's Export HTML download work offline (implied by --html).")
     p.add_argument("--exit-on-stdin", action="store_true", help=stdin_help)
+    _usage_options(p)
 
     p = sub.add_parser("converge", help="The Converge comparison dashboard, until terminated.")
     p.add_argument("--data-root", required=True, help="The folder batch manifests may name files in.")
     p.add_argument("--port", type=_port, default=None, help=port_help)
     p.add_argument("--exit-on-stdin", action="store_true", help=stdin_help)
+    _usage_options(p)
 
 
 @register("dashboard")
 def _serve_dashboard(args: argparse.Namespace) -> dict | None:
+    usage = DashboardUsage.from_environment(args.usage_adapter, args.usage_version) if args.html is None else None
     # The same directory selector accepted by /obs and /obs view must preload
     # its real parent file, so Gradio keeps its sibling subagent discovery.
     path = resolve_input_path(args.transcript)
@@ -448,7 +472,7 @@ def _serve_dashboard(args: argparse.Namespace) -> dict | None:
         return _write_html(run, path, args.html.expanduser().absolute(), labels=labels, dark=args.dark)
     serve_insight(str(path), args.port, exit_on_stdin=args.exit_on_stdin,
                   window=args.window, labels_path=str(labels) if labels is not None else None,
-                  session_id=args.session_id, dark=args.dark, inline_plotly=args.inline_plotly)
+                  session_id=args.session_id, dark=args.dark, inline_plotly=args.inline_plotly, usage=usage)
     return None
 
 
@@ -479,9 +503,10 @@ def _write_html(run, source: Path, destination: Path, *, labels: Path | None, da
 
 @register("converge")
 def _serve_converge(args: argparse.Namespace) -> None:
+    usage = DashboardUsage.from_environment(args.usage_adapter, args.usage_version)
     _dashboard()
     root = Path(args.data_root).resolve()
     if not root.is_dir():
         raise BridgeError("not_found", f"No such folder: {root}", path=str(root))
     load_plugins()
-    serve_converge(str(root), args.port, exit_on_stdin=args.exit_on_stdin)
+    serve_converge(str(root), args.port, exit_on_stdin=args.exit_on_stdin, usage=usage)

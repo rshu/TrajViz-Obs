@@ -8,6 +8,7 @@ import { Runtime, atomicFile, exists } from './runtime.js'
 import { flagValues, parseArgs, passArgs, quoteOption, valueArgv } from './shared/args.js'
 import { pageArguments, parseExtras, validateArguments } from './command-args.js'
 import { runModel } from './llm.js'
+import { usageDeliveryStatus, usageOutcome } from './telemetry.js'
 
 const LONG_TIMEOUT = 600_000
 const EMPTY = 'Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.'
@@ -39,6 +40,7 @@ export const HELP_TEXT = [
   '    --delay SEC spaces label calls. --max-tokens and --temperature require llm=env.',
   'Setup',
   '  setup [--extras all|none|charts,app] [--source S]    doctor    sessions [1–500]',
+  '  telemetry · local usage telemetry delivery status',
   '  watch [on|off]    statusline [on|off]    cancel · cancel the active obs command',
   '  attribution [--reference-root DIR] [--agent A] [--instance I]',
   '  collect opencode <id|prefix> [PATH|-] · native session and subagents',
@@ -53,6 +55,7 @@ const string = (value: unknown) => typeof value === 'string' ? value : String(va
 const json = (value: unknown) => JSON.stringify(value, null, 2)
 const empty = (doc: object): doc is EmptySnapshot => 'empty' in doc && doc.empty === true
 const flag = (value: string | true | undefined): string | undefined => typeof value === 'string' ? value : undefined
+const rejected = (text: string): CommandResult => usageOutcome({ text }, 'rejected')
 
 function valueOptions(flags: Record<string, string | true>, names: readonly string[], usage: string): string[] | string {
   const args: string[] = []
@@ -88,7 +91,7 @@ const COLLECT_HELP = [
 async function collectNative(backend: Backend, currentID: string, args: string[], signal: AbortSignal): Promise<CommandResult> {
   if (args.length === 0 || (args.length === 1 && ['--help', '-h', 'help'].includes(args[0]!))) return { text: COLLECT_HELP }
   if (args.length > 2 || !args[0]!.trim() || args[0]!.startsWith('-')
-      || (args.length === 2 && !args[1]!.trim())) return { text: COLLECT_HELP }
+      || (args.length === 2 && !args[1]!.trim())) return rejected(COLLECT_HELP)
   const source = await backend.session(currentID, args[0], signal)
   const text = await readFile(source.transcript, 'utf8')
   const native = JSON.parse(text)
@@ -116,20 +119,24 @@ async function collectNative(backend: Backend, currentID: string, args: string[]
 export async function runCommand(backend: Backend, input: RunInput, signal: AbortSignal): Promise<CommandResult> {
   const parsed = parseArgs(input.args), { sub, positional, flags } = parsed
   const invalid = validateArguments(input.args, parsed)
-  if (invalid) return { text: invalid }
+  if (invalid) return rejected(invalid)
   signal.throwIfAborted()
   const selector = flag(flags.session)
   const captureSessionID = flag(flags['session-id'])
   const output = flag(flags.o ?? flags.out)
   const session = () => backend.session(input.sessionID, selector, signal, captureSessionID)
   const run = <T>(argv: string[], timeout = LONG_TIMEOUT) => backend.runtime.run<T>(argv, signal, timeout)
-  const result = (doc: Written | EmptySnapshot, label = 'Written'): CommandResult => empty(doc)
-    ? { text: EMPTY } : { text: `${doc.text ?? `${label}: ${doc.path}${doc.bytes === undefined ? '' : ` (${doc.bytes.toLocaleString()} bytes)`}`}${doc.note ? `\n${doc.note}` : ''}`, path: doc.path, data: doc }
+  const result = (doc: Written | EmptySnapshot, label = 'Written', sessionID?: string): CommandResult => {
+    const session = sessionID === undefined ? {} : { sessionID }
+    if (empty(doc)) return usageOutcome({ text: EMPTY, ...session }, 'empty')
+    return { text: `${doc.text ?? `${label}: ${doc.path}${doc.bytes === undefined ? '' : ` (${doc.bytes.toLocaleString()} bytes)`}`}${doc.note ? `\n${doc.note}` : ''}`, path: doc.path, data: doc, ...session }
+  }
 
   if (sub === 'help') return { text: HELP_TEXT }
+  if (sub === 'telemetry') return { text: await usageDeliveryStatus(backend.runtime, signal) }
   if (sub === 'report') return { text: 'The /obs report command was removed. Use /obs dashboard to inspect the session or /obs dashboard --html PATH to save an offline copy.' }
   if (sub === 'analyze' || sub === 'fixes' || sub === 'label') return runModel(backend, input, signal)
-  if (sub === 'watch' || sub === 'statusline' || sub === 'cancel' || (sub === 'pane' && positional[0] === 'close')) return { text: `Use /obs ${sub}${positional.length ? ` ${positional.join(' ')}` : ''} in the OpenCode terminal UI.` }
+  if (sub === 'watch' || sub === 'statusline' || sub === 'cancel' || (sub === 'pane' && positional[0] === 'close')) return rejected(`Use /obs ${sub}${positional.length ? ` ${positional.join(' ')}` : ''} in the OpenCode terminal UI.`)
   if (sub === 'overview' || sub === 'pane') {
     const snapshot = await backend.snapshot(input.sessionID, signal, selector, captureSessionID)
     const target = await backend.resolve(input.sessionID, selector, captureSessionID)
@@ -137,10 +144,10 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
   }
   if (sub === 'sessions') {
     const count = positional[0] === undefined ? 20 : Number(positional[0])
-    if (positional.length > 1 || (positional[0] !== undefined && !/^\d+$/.test(positional[0])) || !Number.isSafeInteger(count) || count < 1 || count > 500) return { text: 'Usage: /obs sessions [N] (N from 1 to 500).' }
+    if (positional.length > 1 || (positional[0] !== undefined && !/^\d+$/.test(positional[0])) || !Number.isSafeInteger(count) || count < 1 || count > 500) return rejected('Usage: /obs sessions [N] (N from 1 to 500).')
     if (selector) {
       const target = await backend.resolve(input.sessionID, selector)
-      if (!target.path) return { text: 'Use --session <capture path> to list sessions inside an imported capture.' }
+      if (!target.path) return rejected('Use --session <capture path> to list sessions inside an imported capture.')
       const doc = await run<{ text: string; sessions: unknown[] }>(['capture-sessions', '--transcript', target.path, '--limit', String(count)], 120_000)
       return { text: doc.text, data: doc }
     }
@@ -149,7 +156,7 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
   }
   if (sub === 'view' || TABS[sub]) {
     const page = pageArguments(flags)
-    if (typeof page === 'string') return { text: page }
+    if (typeof page === 'string') return rejected(page)
     const source = await session(), id = sub === 'view' ? positional[0] : TABS[sub]
     const args = ['view', ...source.argv]
     if (id) args.push(id)
@@ -157,20 +164,20 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
     args.push(...page)
     if (flags.json !== undefined) args.push('--json')
     const doc = await run<EmptySnapshot | Catalog | View>(args, 120_000)
-    if (empty(doc)) return { text: EMPTY, sessionID: source.sessionID }
+    if (empty(doc)) return usageOutcome({ text: EMPTY, sessionID: source.sessionID }, 'empty')
     if ('views' in doc) return { text: [`${doc.views.length} TrajViz views; /obs view <id> inspects one:`, ...doc.views.map(v => `${v.id} · ${v.title}${Object.keys(v.options).length ? ` (${Object.keys(v.options).join(', ')})` : ''}`)].join('\n'), data: doc, sessionID: source.sessionID }
     return { text: [`${doc.view.title} · ${doc.rows_total} rows`, ...(doc.notice ? [doc.notice] : []), doc.inline.data === undefined ? doc.inline.table ?? doc.inline.series ?? '' : json(doc.inline.data), `Full view: ${doc.path}`].join('\n'), path: doc.path, data: doc, sessionID: source.sessionID, tab: sub === 'view' || sub === 'health' ? undefined : sub }
   }
   if (sub === 'json' || sub === 'bundle') {
     const views = sub === 'json' ? flagValues(input.args, 'view') : []
-    if (views.some(v => v === true || !v.trim())) return { text: '--view needs a view id (/obs view lists them).' }
+    if (views.some(v => v === true || !v.trim())) return rejected('--view needs a view id (/obs view lists them).')
     const source = await session()
     const args = sub === 'json' ? ['json', ...source.argv] : ['bundle', '--transcript', source.transcript, '--artifacts', source.artifacts, ...(source.captureSessionID === undefined ? [] : valueArgv('session-id', source.captureSessionID))]
     if (output) args.push('--out', output)
     for (const id of views) args.push('--view', String(id))
     if (flags['with-trajectory'] !== undefined) args.push('--with-trajectory')
     if (flags['views-only'] !== undefined) args.push('--views-only')
-    return { ...result(await run<Written | EmptySnapshot>(args), sub === 'json' ? 'View data written' : 'Session bundle written'), sessionID: source.sessionID }
+    return result(await run<Written | EmptySnapshot>(args), sub === 'json' ? 'View data written' : 'Session bundle written', source.sessionID)
   }
   if (sub === 'schemas') return result(await run<Written>(['schemas', ...((output ?? positional[0]) ? ['--out', (output ?? positional[0])!] : [])]), 'View schemas written')
   if (sub === 'dashboard' || sub === 'converge') {
@@ -180,7 +187,7 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
     }
     const port = flags.port === undefined ? undefined : Number(flags.port)
     const root = flags['data-root']
-    if (positional.length || (flags.port !== undefined && (typeof flags.port !== 'string' || !/^\d+$/.test(flags.port) || !Number.isSafeInteger(port) || port! < 1 || port! > 65535)) || root === true || (typeof root === 'string' && !root.trim())) return { text: `Usage: /obs ${sub} ${sub === 'converge' ? '[--data-root DIR] ' : ''}[--port 1–65535] | ${sub} stop` }
+    if (positional.length || (flags.port !== undefined && (typeof flags.port !== 'string' || !/^\d+$/.test(flags.port) || !Number.isSafeInteger(port) || port! < 1 || port! > 65535)) || root === true || (typeof root === 'string' && !root.trim())) return rejected(`Usage: /obs ${sub} ${sub === 'converge' ? '[--data-root DIR] ' : ''}[--port 1–65535] | ${sub} stop`)
     let args: string[], target: string | undefined
     if (sub === 'dashboard') {
       const source = await session(); target = source.sessionID
@@ -195,7 +202,7 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
       if (html !== undefined) {
         args.push(...valueArgv('html', html))
         const doc = await run<Written>(args)
-        return { ...result(doc, 'Standalone HTML dashboard written'), sessionID: target }
+        return result(doc, 'Standalone HTML dashboard written', target)
       }
     } else {
       const dataRoot = flag(root) ?? backend.root
@@ -208,17 +215,17 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
     return { text: `${sub === 'dashboard' ? 'Session' : 'Converge'} dashboard: ${server.url}${server.preloaded === false ? '\nSession preload was unavailable; upload /obs bundle in the dashboard.' : ''}\n${stop} closes it. For a remote server, forward this localhost port to your machine.`, url: server.url, sessionID: target }
   }
   if (sub === 'compare' || sub === 'scorecard') {
-    if (!positional.length || (sub === 'compare' && positional.length !== 1)) return { text: `Usage: /obs ${sub} <session|path>${sub === 'scorecard' ? ' [<session|path>...]' : ''}` }
+    if (!positional.length || (sub === 'compare' && positional.length !== 1)) return rejected(`Usage: /obs ${sub} <session|path>${sub === 'scorecard' ? ' [<session|path>...]' : ''}`)
     const extras = valueOptions(flags, sub === 'compare' ? ['anchor-patch'] : ['labels'], `/obs ${sub}: option needs a value.`)
-    if (typeof extras === 'string') return { text: extras }
+    if (typeof extras === 'string') return rejected(extras)
     const source = await session(), others: string[] = []
     for (const other of positional) others.push((await backend.session(input.sessionID, other, signal)).transcript)
     const args = [sub, ...source.argv, sub === 'compare' ? '--other' : '--others', ...others, ...extras]
     for (const name of sub === 'compare' ? ['fuzzy-commands', 'reverse'] : ['fuzzy-commands', 'no-self']) if (flags[name] !== undefined) args.push(`--${name}`)
-    return { ...result(await run<Written | EmptySnapshot>(args)), sessionID: source.sessionID }
+    return result(await run<Written | EmptySnapshot>(args), undefined, source.sessionID)
   }
   if (sub === 'labels') {
-    if (!positional.length || positional.length > 2) return { text: 'Usage: /obs labels <sidecar> [<other sidecar>]' }
+    if (!positional.length || positional.length > 2) return rejected('Usage: /obs labels <sidecar> [<other sidecar>]')
     const args = ['labels', '--sidecar', positional[0]!, '--artifacts', path.join(backend.runtime.cache, 'label-views')]
     if (positional[1]) args.push('--other', positional[1])
     return result(await run<Written>(args))
@@ -226,21 +233,23 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
   if (sub === 'collect' || sub === 'converge-cli') {
     const pass = passArgs(input.args)
     if (sub === 'collect' && (pass[0] === 'opencode' || pass.length === 0 || (pass.length === 1 && ['--help', '-h', 'help'].includes(pass[0]!)))) return collectNative(backend, input.sessionID, pass[0] === 'opencode' ? pass.slice(1) : [], signal)
-    if (!pass.length) return { text: `Usage: /obs ${sub} [--] <arguments>; --help lists the supported options.` }
+    if (!pass.length) return rejected(`Usage: /obs ${sub} [--] <arguments>; --help lists the supported options.`)
     const args = sub === 'collect' ? ['collect'] : ['converge-cli', '--artifacts', path.join(backend.runtime.cache, 'converge')]
     const doc = await run<Doc>([...args, '--', ...pass])
     if (typeof doc.path === 'string') return { text: `Converge report written: ${doc.path}`, path: doc.path, data: doc }
-    return { text: [doc.text, doc.stdout, doc.stderr, doc.exit ? `${sub} exited with ${doc.exit}.` : ''].filter(Boolean).map(string).join('\n') || 'Command completed without output.', data: doc }
+    const reply = { text: [doc.text, doc.stdout, doc.stderr, doc.exit ? `${sub} exited with ${doc.exit}.` : ''].filter(Boolean).map(string).join('\n') || 'Command completed without output.', data: doc }
+    return doc.exit ? usageOutcome(reply, 'error') : reply
   }
   if (sub === 'attribution' || sub === 'brief') {
     const extras = valueOptions(flags, sub === 'attribution' ? ['reference-root', 'agent', 'instance'] : [], 'Usage: /obs attribution [--reference-root DIR] [--agent A] [--instance I]')
-    if (typeof extras === 'string') return { text: extras }
+    if (typeof extras === 'string') return rejected(extras)
     const source = await session(), doc = await run<Doc>([sub, ...source.argv, ...extras])
-    return { text: empty(doc) ? EMPTY : sub === 'attribution' ? attributionText(doc) : typeof doc.brief === 'string' ? doc.brief : string(doc.text ?? json(doc)), data: doc, sessionID: source.sessionID }
+    if (empty(doc)) return usageOutcome({ text: EMPTY, data: doc, sessionID: source.sessionID }, 'empty')
+    return { text: sub === 'attribution' ? attributionText(doc) : typeof doc.brief === 'string' ? doc.brief : string(doc.text ?? json(doc)), data: doc, sessionID: source.sessionID }
   }
   if (sub === 'setup') {
     const extras = parseExtras(flags.extras), source = flags.source
-    if (!extras || source === true || (typeof source === 'string' && !source.trim())) return { text: 'Usage: /obs setup [--extras all|none|charts,app] [--source <requirement|path>]' }
+    if (!extras || source === true || (typeof source === 'string' && !source.trim())) return rejected('Usage: /obs setup [--extras all|none|charts,app] [--source <requirement|path>]')
     const runtime = source === undefined ? backend.runtime : new Runtime({ ...backend.options, trajvizSource: source }, backend.ctx.location.directory)
     try {
       const env = await runtime.ready(extras, signal)

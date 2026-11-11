@@ -41,6 +41,8 @@ type World = {
   /** The extras `state.json` lists. */
   extras?: string[]
   env?: Record<string, string>
+  settingsEnv?: Record<string, string>
+  manifestVersion?: string
   /** What a bridge child streams, by subcommand; absent: the URL line. A gate promise keeps the child alive until it resolves. */
   child?: Record<string, { chunks: ProcessSpawnChunk[]; code: number; gate?: Promise<void> }>
   /** Non-bridge commands by name; anything else cannot start. */
@@ -82,7 +84,11 @@ function host(on: On, world: World = {}): Host {
   on('session.usage', () => ({ value: USAGE }))
   mock.env(on, { HOME, ...(world.env ?? {}) })
   mock.clock(on, { now: NOW })
-  on('fs.read', (_, e) => e.path in files ? { value: files[e.path] as string } : { deny: `ENOENT: ${e.path}` })
+  on('settings.read', () => ({ value: world.settingsEnv ? { env: world.settingsEnv } : {} }))
+  on('fs.read', (_, e) => {
+    if (world.manifestVersion && e.path.endsWith('/.claude-plugin/plugin.json')) return { value: JSON.stringify({ version: world.manifestVersion }) }
+    return e.path in files ? { value: files[e.path] as string } : { deny: `ENOENT: ${e.path}` }
+  })
   on('fs.write', (_, e) => {
     files[e.path] = e.text
     return { value: undefined }
@@ -288,6 +294,44 @@ test('dashboard HTML export uses the selected source and writes a file without s
     ['dashboard', '--transcript', DERIVED, '--window', '1000000', '--dark', '--html', target],
   ])
   expect(spawned).toEqual([])
+  await $.session.end(END)
+})
+
+test('launch consent enables telemetry only for live dashboard and Converge children', { options: { openBrowser: false } }, async ($, on) => {
+  const target = '/tmp/a dashboard.html'
+  const { ran, spawned } = host(on, {
+    env: { TRAJVIZ_OBS_TELEMETRY: '1', TRAJVIZ_OBS_TELEMETRY_URL: 'https://collector.example/v1/events', TRAJVIZ_OBS_TELEMETRY_TOKEN: 'A'.repeat(43) },
+    manifestVersion: '1.2.3',
+    bridge: { dashboard: { exitCode: 0, stdout: JSON.stringify({ path: target }) } },
+  })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, 'dashboard')
+  await obs($, 'converge --data-root /runs')
+  expect(children(spawned)).toEqual([
+    ['dashboard', '--transcript', DERIVED, '--window', '1000000', '--usage-adapter', 'claude-code', '--usage-version', '1.2.3'],
+    ['converge', '--data-root', '/runs', '--usage-adapter', 'claude-code', '--usage-version', '1.2.3'],
+  ])
+  expect((await obs($, `dashboard --html "${target}"`)).text).toContain(target)
+  expect(ran.filter(argv => argv[3] === 'dashboard').map(argv => argv.slice(3))).toEqual([
+    ['dashboard', '--transcript', DERIVED, '--window', '1000000', '--html', target],
+  ])
+  await $.session.end(END)
+})
+
+test('project settings cannot supply telemetry credentials to either dashboard child', { options: { openBrowser: false } }, async ($, on) => {
+  const endpoint = 'https://project.example/v1/events'
+  const { spawned } = host(on, {
+    env: { TRAJVIZ_OBS_TELEMETRY: '1', TRAJVIZ_OBS_TELEMETRY_URL: endpoint, TRAJVIZ_OBS_TELEMETRY_TOKEN: 'A'.repeat(43) },
+    settingsEnv: { TRAJVIZ_OBS_TELEMETRY_TOKEN: 'A'.repeat(43) },
+    manifestVersion: '1.2.3',
+  })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, 'dashboard')
+  await obs($, 'converge --data-root /runs')
+  expect(children(spawned)).toEqual([
+    ['dashboard', '--transcript', DERIVED, '--window', '1000000'],
+    ['converge', '--data-root', '/runs'],
+  ])
   await $.session.end(END)
 })
 

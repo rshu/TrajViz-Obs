@@ -844,3 +844,25 @@ def test_dashboard_server_exposes_only_display_file_and_cleans_temporary_export(
     dashboard_cmd.serve_insight(str(folder), None)
     assert json.loads(capsys.readouterr().out)["url"] == "http://127.0.0.1:1234/"
     assert not Path(allowed[0]).exists()
+
+
+@pytest.mark.parametrize("kind", ["dashboard", "converge"])
+def test_dashboard_still_launches_when_usage_attachment_fails(kind, fixture_session, tmp_path, monkeypatch, capsys):
+    from trajviz_obs import dashboard_cmd
+    from trajviz_obs.dashboard_usage import DashboardUsage
+
+    def broken_attach(_usage, _app, received_kind):
+        assert received_kind == kind
+        raise RuntimeError("instrumentation unavailable")
+
+    monkeypatch.setattr(DashboardUsage, "attach", broken_attach)
+    monkeypatch.setattr(gradio.Blocks, "launch", lambda _app, **_: (None, "http://127.0.0.1:1234/", None))
+    monkeypatch.setattr(dashboard_cmd, "_wait_for_shutdown", lambda **_: None)
+    usage = DashboardUsage("http://127.0.0.1:8765/v1/events", tmp_path, "claude-code", "0.3.8")
+    if kind == "dashboard":
+        dashboard_cmd.serve_insight(str(fixture_session), None, usage=usage)
+    else:
+        dashboard_cmd.serve_converge(str(tmp_path), None, usage=usage)
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["url"] == "http://127.0.0.1:1234/"
+    assert "Could not attach usage telemetry (RuntimeError)." in captured.err

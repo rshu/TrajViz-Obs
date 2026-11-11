@@ -135,6 +135,12 @@ The dashboard's AI analysis panel has its own **Settings**, independently of `ll
 
 Exports and cached analysis contain session data and stay on the host unless shared. Plugin dashboards bind to `127.0.0.1` and stop on request or plugin unload. For an authenticated remote dashboard, use the standalone TrajViz CLI with `TRAJVIZ_AUTH` and upload an exported trajectory. [Standalone dashboard options](https://github.com/rshu/TrajViz/tree/v0.5.0#dashboard-and-cli)
 
+### Usage telemetry
+
+Usage telemetry is off by default. To opt in, set `TRAJVIZ_OBS_TELEMETRY=1` and `TRAJVIZ_OBS_TELEMETRY_URL` in Claude Code’s launch environment or the OpenCode server’s launch environment. Use your collector’s HTTPS `/v1/events` endpoint and set its issued token as `TRAJVIZ_OBS_TELEMETRY_TOKEN`. Local loopback testing supports HTTP. Restart the host and run `/obs telemetry` to check delivery.
+
+The sender reports allowlisted feature names, outcomes, coarse timing, and a random installation ID. Prompts, transcripts, paths, and command arguments stay on the host. Collector and HTML reporting development is tracked on `codex/telemetry-service`.
+
 ## Troubleshooting and limits
 
 Run `/obs doctor` to check setup or `/obs setup` to install dependencies. If `/obs` is missing, check the Claude Code debug log for disabled function hooks or an API mismatch. If the dashboard is empty, export `/obs bundle` and load its ZIP manually. Over SSH, forward the displayed port; set `openBrowser=false` to disable browser opening.

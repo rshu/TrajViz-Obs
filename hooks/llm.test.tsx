@@ -44,6 +44,7 @@ type World = {
   answer?: string
   onCompletion?: () => void
   apply?: (argv: readonly string[], files: Record<string, string>) => Promise<RunAnswer>
+  onTelemetry?: (argv: readonly string[]) => void
 }
 
 type Host = {
@@ -80,9 +81,13 @@ function host(on: On, world: World = {}): Host {
   on('session.cwd', () => ({ value: CWD }))
   on('session.usage', () => ({ value: USAGE }))
   on('session.model', () => ({ value: world.model ?? 'claude-opus-4-1-20250805' }))
-  mock.env(on, { HOME })
+  mock.env(on, world.onTelemetry ? { HOME, TRAJVIZ_OBS_TELEMETRY: '1', TRAJVIZ_OBS_TELEMETRY_URL: 'http://127.0.0.1:8765/v1/events' } : { HOME })
+  if (world.onTelemetry) on('settings.read', () => ({ value: {} }))
   const clock = mock.clock(on, { now: NOW })
-  on('fs.read', (_, e) => (e.path in files ? { value: files[e.path] as string } : { deny: `ENOENT: ${e.path}` }))
+  on('fs.read', (_, e) => {
+    if (world.onTelemetry && e.path.endsWith('/.claude-plugin/plugin.json')) return { value: '{"version":"1.2.3"}' }
+    return e.path in files ? { value: files[e.path] as string } : { deny: `ENOENT: ${e.path}` }
+  })
   on('fs.write', (_, e) => {
     files[e.path] = e.text
     return { value: undefined }
@@ -113,6 +118,10 @@ function host(on: On, world: World = {}): Host {
     return { value: { isAnswered: false as const, reason: r.reason, usage: NO_USAGE } }
   })
   on('process.run', async (_, e) => {
+    if (world.onTelemetry && e.argv[2]?.endsWith('/bridge/telemetry_client.py')) {
+      world.onTelemetry(e.argv)
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     timeline.push(`bridge:${e.argv[3]}`)
     ran.push([...e.argv])
     const a = e.argv[3] === 'llm-apply' && world.apply ? await world.apply(e.argv, files) : answers(e.argv)
@@ -310,10 +319,13 @@ test('a headless session runs 6 calls without asking', async ($, on) => {
   expect(out.text).toContain(fixes.text)
 })
 
-test('a failed request is forwarded to llm-apply as a reply error', async ($, on) => {
+test('a failed request is forwarded to llm-apply and counted as a telemetry error', async ($, on) => {
+  let reported!: (argv: readonly string[]) => void
+  const report = new Promise<readonly string[]>(resolve => { reported = resolve })
   const { files, completions } = host(on, {
     bridge: { 'llm-prompt': json(planOf('fixes', 4)), 'llm-apply': json({ issues: [], errors: ['api-error 529'], text: 'Fixes…' }) },
     replies: ['{"where":"a"}', { reason: 'api-error', status: 529 }, { reason: 'empty-reply' }, { reason: 'api-error', status: null }],
+    onTelemetry: argv => { if (argv[8] === 'fixes') reported(argv) },
   })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const out = await obs($, 'fixes --limit 4')
@@ -329,6 +341,7 @@ test('a failed request is forwarded to llm-apply as a reply error', async ($, on
   })
   // A failed call costs nothing: one answered call's usage.
   expect(out.text).toContain(ONE_CALL_USAGE)
+  expect((await report).slice(7, 11)).toEqual(['--feature', 'fixes', '--outcome', 'error'])
 })
 
 test("analysisModel 'session' uses the session's model", { options: { analysisModel: 'session' } }, async ($, on) => {

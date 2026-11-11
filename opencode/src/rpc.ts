@@ -2,6 +2,7 @@ import { Rpc } from '@opencode/schema/rpc'
 import { z } from 'zod'
 import type { EmptySnapshot, Snapshot } from './types.js'
 import { validateSource, type NativeSource } from './collect.js'
+import { USAGE_FEATURES } from './usage-features.js'
 
 export type CommandResult = {
   text: string
@@ -13,8 +14,16 @@ export type CommandResult = {
   tab?: string
   confirmation?: { id: string; title: string; message: string }
 }
-export type RunInput = { sessionID: string; args: string; runID: string; useSynced?: boolean; confirmationID?: string; model?: { providerID: string; id: string; variant?: string } }
+export type RunInput = { sessionID: string; args: string; runID: string; useSynced?: boolean; paneSnapshot?: true; confirmationID?: string; model?: { providerID: string; id: string; variant?: string } }
 export type JobPoll = { state: 'pending'; progress?: string } | { state: 'finished'; result: CommandResult } | { state: 'expired' }
+
+const interaction = z.strictObject({
+  feature: z.enum(USAGE_FEATURES),
+  surface: z.enum(['terminal', 'desktop']),
+  outcome: z.enum(['success', 'error', 'cancelled', 'empty', 'rejected']),
+  durationMs: z.number().int().min(0).max(3_600_000),
+})
+export type UsageInteraction = z.infer<typeof interaction>
 
 const sessionID = z.string().min(1).max(256)
 const snapshot = z.custom<Snapshot | EmptySnapshot>(v => typeof v === 'object' && v !== null)
@@ -23,7 +32,7 @@ const result = z.object({
   url: z.string().optional(), path: z.string().optional(), sessionID: sessionID.optional(), tab: z.string().optional(),
   confirmation: z.object({ id: z.string(), title: z.string(), message: z.string() }).optional(),
 })
-const runInput = z.object({ sessionID, args: z.string().max(32768), runID: z.string().min(1).max(256), useSynced: z.boolean().optional(), confirmationID: z.string().optional(), model: z.object({ providerID: z.string(), id: z.string(), variant: z.string().optional() }).optional() })
+const runInput = z.object({ sessionID, args: z.string().max(32768), runID: z.string().min(1).max(256), useSynced: z.boolean().optional(), paneSnapshot: z.literal(true).optional(), confirmationID: z.string().optional(), model: z.object({ providerID: z.string(), id: z.string(), variant: z.string().optional() }).optional() })
 
 export const Obs = Rpc.define({
   id: 'trajviz-obs',
@@ -41,6 +50,8 @@ export const Obs = Rpc.define({
     },
     snapshot: { input: z.object({ sessionID, selector: z.string().optional(), captureSessionID: z.string().min(1).max(4096).optional(), useSynced: z.boolean().optional() }), output: snapshot },
     cancel: { input: z.object({ runID: z.string() }), output: z.object({ cancelled: z.boolean() }) },
+    usageStatus: { input: z.strictObject({}), output: z.object({ enabled: z.boolean() }) },
+    usageInteraction: { input: interaction, output: z.object({}) },
   },
   events: { changed: { schema: z.object({ sessionID }) }, progress: { schema: z.object({ runID: z.string(), text: z.string() }) }, capture: { schema: z.object({ requestID: z.string().uuid(), sessionID }) } },
 })

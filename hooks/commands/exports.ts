@@ -5,7 +5,8 @@ import { fmtBytes, fmtInt } from '../lib/format'
 import { artifactsDir } from '../lib/paths'
 import { ensureReady, sessionArgv } from '../lib/snapshot'
 import type { CommandContext } from './index'
-import { EMPTY_TEXT, errorRow, captureSessionSpec, sessionSpec } from './overview'
+import { EMPTY_TEXT, observedError, captureSessionSpec, sessionSpec } from './overview'
+import { markOutcome } from '../lib/telemetry'
 
 /** The exports load every step and may draw figures: the plan's 600 s. */
 const EXPORT_TIMEOUT_MS = 600_000
@@ -46,8 +47,8 @@ export function outFlag(ctx: CommandContext): string | undefined {
  */
 async function exportJson($: EngineInterface, ctx: CommandContext, spec: string | undefined): Promise<string> {
   const views = flagValues(ctx.args, 'view')
-  if (views.some(v => v === true || !v.trim())) return VIEW_USAGE
-  if (ctx.parsed.flags['with-trajectory'] && ctx.parsed.flags['views-only']) return 'Choose either --with-trajectory or --views-only.'
+  if (views.some(v => v === true || !v.trim())) return markOutcome(ctx.telemetry, 'rejected', VIEW_USAGE)
+  if (ctx.parsed.flags['with-trajectory'] && ctx.parsed.flags['views-only']) return markOutcome(ctx.telemetry, 'rejected', 'Choose either --with-trajectory or --views-only.')
   await ensureReady($, ctx.options)
   const { argv } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
   const call = ['json', ...argv]
@@ -57,7 +58,7 @@ async function exportJson($: EngineInterface, ctx: CommandContext, spec: string 
   if (ctx.parsed.flags['with-trajectory'] !== undefined) call.push('--with-trajectory')
   if (ctx.parsed.flags['views-only'] !== undefined) call.push('--views-only')
   const doc = await runBridge<JsonDoc>($, call, { timeoutMs: EXPORT_TIMEOUT_MS })
-  if ('empty' in doc) return EMPTY_TEXT
+  if ('empty' in doc) return markOutcome(ctx.telemetry, 'empty', EMPTY_TEXT)
   return `${count(doc.files.length, 'file')} (${fmtBytes(doc.bytes)}) written to ${doc.path}.`
 }
 
@@ -87,7 +88,7 @@ async function schemas($: EngineInterface, ctx: CommandContext): Promise<string>
 /** `/obs json | bundle | schemas`: one bridge export each, its row naming what was written. */
 export async function exportCmd($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
   const invalidOutput = outputError(ctx)
-  if (invalidOutput) return { text: invalidOutput }
+  if (invalidOutput) return { text: markOutcome(ctx.telemetry, 'rejected', invalidOutput) }
   const spec = sessionSpec(ctx)
   try {
     switch (ctx.parsed.sub) {
@@ -99,6 +100,6 @@ export async function exportCmd($: EngineInterface, ctx: CommandContext): Promis
         return { text: await schemas($, ctx) }
     }
   } catch (e) {
-    return { text: errorRow(e, spec) }
+    return { text: observedError(ctx.telemetry, e, spec) }
   }
 }

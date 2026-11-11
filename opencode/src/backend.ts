@@ -12,6 +12,7 @@ import type { EmptySnapshot, Snapshot } from './types.js'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { inspectSource } from './source-info.js'
 import { argvValue, valueArgv } from './shared/args.js'
+import { dashboardUsageArgs } from './telemetry.js'
 
 export type SourceRef = { sessionID: string; transcript: string; artifacts: string; argv: string[]; native?: NativeSource; captureSessionID?: string }
 type Server = { child: ChildProcessWithoutNullStreams; url: string; signature: string; preloaded?: boolean }
@@ -215,7 +216,8 @@ export class Backend {
     // children unchanged. An explicit reopen must reload those companions.
     const revision = inspected ? inspected.compound ? randomUUID() : hash(inspected.bytes!) : ''
     const labelRevision = labelsAt >= 0 ? hash(await readFile(argv[labelsAt + 1]!, 'utf8')) : ''
-    const signature = JSON.stringify([argv, revision, labelRevision])
+    const usageArgs = dashboardUsageArgs()
+    const signature = JSON.stringify([argv, revision, labelRevision, usageArgs])
     const live = this.servers.get(key)
     if (live?.signature === signature && live.child.exitCode === null && live.child.signalCode === null) return live
     const pending = this.starting.get(key)
@@ -224,7 +226,7 @@ export class Backend {
     const startupSignal = AbortSignal.any([controller.signal, ...(signal ? [signal] : [])])
     const next = (async () => {
       await this.stopKey(key)
-      const launch = await this.runtime.argv([...argv, '--exit-on-stdin'], startupSignal, ['app'])
+      const launch = await this.runtime.argv([...argv, '--exit-on-stdin', ...usageArgs], startupSignal, ['app'])
       startupSignal.throwIfAborted()
       const child = this.runtime.spawn(launch)
       return new Promise<{ url: string; preloaded?: boolean }>((resolve, reject) => {

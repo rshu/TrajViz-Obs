@@ -4,6 +4,7 @@ import { safeRenderText } from './lib/format'
 import { resetServers, stopAll } from './lib/servers'
 import { rememberTranscript } from './lib/session'
 import { isEmpty, parseSnapshotId } from './lib/snapshot'
+import { finishTelemetry, reportTelemetry, setTelemetrySurface } from './lib/telemetry'
 import { OBS_TOOL, serveTool } from './lib/tool'
 import { onTurnComplete, resetStatusLine } from './lib/watch'
 import { readDashboards, readFlags, readLatest, readPaneTab, readSession, readSnapshotMember, resetRefreshLock, seedFlags } from './lib/state'
@@ -43,6 +44,8 @@ export const register: Register = (on, options) => {
     // A restarted function environment (a config change or source reload)
     // has lost its previous children, so the dashboard state follows.
     await resetServers($)
+    setTelemetrySurface(e.surface, e.isInteractive)
+    void reportTelemetry($, options, 'activation', 'success', 0)
     return next(e)
   })
 
@@ -79,7 +82,16 @@ export const register: Register = (on, options) => {
     const selected = (await readSession($)).selected
     const capturedUsage = snap !== null && !isEmpty(snap) ? snap.engine_usage ?? null : null
     return safeRenderText(renderPane($, e, snap, tab, flags, dashboards, { options, usage: selected ? null : await paneUsage($, tab, capturedUsage) }))
-  }).catch(($, e, next) => safeRenderText(renderPaneFailure($, e, next.error)))
+  }).catch(($, e, next) => safeRenderText(renderPaneFailure($, e, next.error, options)))
+
+  // Slash commands report their own close. The host raises this separately
+  // for its native close mark and keyboard shortcut.
+  on('ui.close', { id: 'obs', origin: { kind: 'person' } }, async ($, e, next) => {
+    const startedAt = Date.now()
+    const closed = await next(e)
+    void reportTelemetry($, options, 'pane.close', closed.deny === undefined ? 'success' : 'error', Date.now() - startedAt)
+    return closed
+  })
 
   // Live refresh: after a main-loop turn (`e.agentId` absent), one more
   // snapshot for the open pane or the status line, detached from the
@@ -92,7 +104,9 @@ export const register: Register = (on, options) => {
 
   // The dashboards are the session's: its end ends their children.
   on('session.end', async ($, e, next) => {
+    const telemetry = e.reason === 'clear' || e.reason === 'resume' ? undefined : finishTelemetry($)
     await stopAll($)
+    await telemetry
     return next(e)
   })
 
