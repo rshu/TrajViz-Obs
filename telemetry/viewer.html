@@ -147,7 +147,8 @@
         <p class="subtle" data-copy="adapterHint">Installation IDs are counted separately for each adapter.</p>
         <label class="field"><span data-copy="adapter">Adapter</span> <select id="adapter-filter"><option value="all" data-copy="allAdapters">All adapters</option><option value="claude-code">Claude Code</option><option value="opencode">OpenCode</option></select></label>
       </div>
-      <section id="overview" class="kpis" aria-label="Usage overview" data-copy-aria="usageOverview"></section>
+      <section id="overview" class="kpis" aria-label="Usage overview" data-copy-aria="usageOverview" aria-describedby="activity-definition"></section>
+      <p id="activity-definition" class="subtle" data-copy="activityDefinition">Active installations have at least one event dated in the report period, including activation. Engaged installations have at least one tracked action beyond activation.</p>
       <div class="pair block">
         <section id="active-chart" class="panel pad" aria-label="Daily active installations" data-copy-aria="dailyActive"></section>
         <section id="actions-chart" class="panel pad" aria-label="Daily tracked actions" data-copy-aria="dailyActions"></section>
@@ -202,6 +203,11 @@
       adapter: ['Adapter', '适配器'],
       allAdapters: ['All adapters', '所有适配器'],
       usageOverview: ['Usage overview', '使用概览'],
+      activeInstallations: ['Active installations', '活跃安装实例'],
+      activityDefinition: [
+        'Active installations have at least one event dated in the report period, including activation. Engaged installations have at least one tracked action beyond activation.',
+        '活跃安装实例在报告期内至少有一条事件记录，激活也计入。有操作的安装实例在激活之外至少记录过一次操作。',
+      ],
       dailyActive: ['Daily active installations', '每日活跃安装实例'],
       dailyActions: ['Daily tracked actions', '每日记录的操作'],
       dailyActivity: ['Daily activity', '每日活动'],
@@ -225,7 +231,6 @@
       buckets: ['Buckets', '耗时区间'],
       successRate: ['{rate} success', '成功率 {rate}'],
       errorRate: ['{rate} error · {count} completed', '错误率 {rate} · 已完成 {count} 次'],
-      observedInstallations: ['Observed installations', '已观测安装实例'],
       installationActivity: ['Installation activity', '安装实例活动'],
       engagement: ['Engagement', '参与度'],
       metric: ['Metric', '指标'],
@@ -279,8 +284,8 @@
       new_installations: ['First seen in period', '本期首次出现'],
       active_today: ['Active on last day', '报告最后一天活跃'],
       active_last_30_days: ['Active in last 30 days', '近 30 天活跃'],
-      active_in_period: ['Active in period', '本期活跃'],
-      engaged_in_period: ['Engaged in period', '本期有操作'],
+      active_in_period: ['Active installations in period', '本期活跃安装实例'],
+      engaged_in_period: ['Engaged installations in period', '本期有操作的安装实例'],
       activation_only_in_period: ['Activation only in period', '本期仅激活'],
       returning_in_period: ['Returning in period', '本期回访'],
       returning_engaged_in_period: ['Returning and engaged', '回访且有操作'],
@@ -292,7 +297,7 @@
       average_invocations_per_engaged_installation: ['Average actions per engaged installation', '每个有操作实例的平均操作数'],
       average_days_per_engaged_installation: ['Average engaged days', '平均操作天数'],
     };
-    const DAILY = { active_installations: ['Active', '活跃'], engaged_installations: ['Engaged', '有操作'], new_installations: ['First seen', '首次出现'], returning_installations: ['Returning', '回访'], invocations: COPY.actions };
+    const DAILY = { active_installations: COPY.activeInstallations, engaged_installations: ENGAGEMENT.engaged_installations, new_installations: ['First seen', '首次出现'], returning_installations: ['Returning', '回访'], invocations: COPY.actions };
     const FORMAT = 'trajviz-obs-usage-report';
     const VERSION = 1;
     const MAX_FILE_SIZE = 5 * 1024 * 1024;
@@ -597,9 +602,9 @@
       const adoption = visibleRows(report.adoption);
       const engagement = visibleRows(report.engagement);
       const tiles = [
-        [t('observedInstallations'), sum(adoption, 'observed_installations')],
+        [t('activeInstallations'), sum(adoption, 'active_in_period')],
         [localized(ADOPTION.new_installations), sum(adoption, 'new_installations')],
-        [localized(ADOPTION.engaged_in_period), sum(adoption, 'engaged_in_period')],
+        [localized(ENGAGEMENT.engaged_installations), sum(adoption, 'engaged_in_period')],
         [localized(ENGAGEMENT.invocations), sum(engagement, 'invocations')],
       ];
       element('overview').replaceChildren(...tiles.map(([label, value]) => {
