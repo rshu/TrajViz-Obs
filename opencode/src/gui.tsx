@@ -264,7 +264,9 @@ export function setup(ctx: GuiContext): () => void {
         })()
       })
       const stopNative = server.data.listen(({ details }) => {
-        if (/^session\.(?:step\.|execution\.|compaction\.|tool\.|usage\.|revert\.|deleted|moved)/.test(details.type)) {
+        if (details.type === 'server.connected') {
+          controller.resetInteractionConsent(client)
+        } else if (/^session\.(?:step\.|execution\.|compaction\.|tool\.|usage\.|revert\.|deleted|moved)/.test(details.type)) {
           const data = details.data as { sessionID?: unknown }
           if (typeof data.sessionID === 'string') changed(data.sessionID)
         }

@@ -52,6 +52,7 @@ export class GuiController {
   target(origin: GuiOrigin): GuiTarget { return this.view(origin).selected ?? { id: origin.id } }
   snapshot(origin: GuiOrigin) { return this.view(origin).snapshots[this.target(origin).id] }
   error(origin: GuiOrigin) { return this.view(origin).errors[this.target(origin).id] }
+  resetInteractionConsent(client: OpenCodeClient): void { this.report.reset(client) }
   interaction(origin: GuiOrigin, feature: UsageInteraction['feature'], outcome: UsageInteraction['outcome'], started: number): void {
     if (this.closed || this.lifetime?.aborted) return
     try { void this.report(origin.client(), origin.location(), feature, outcome, started) }

@@ -105,6 +105,26 @@ describe('Desktop command coordination', () => {
     } finally { ui.dispose() }
   })
 
+  test('Desktop rechecks server consent after reconnecting with the same client', async () => {
+    const h = connection(), other = connection('other-server'), { ui } = controller()
+    try {
+      ui.selectTab(h.origin, 1)
+      ui.selectTab(other.origin, 1)
+      await tick()
+      expect(h.rpc.usageInteraction).not.toHaveBeenCalled()
+
+      h.rpc.usageStatus.mockResolvedValue({ enabled: true })
+      ui.resetInteractionConsent(h.origin.client())
+      ui.selectTab(h.origin, 2)
+      ui.selectTab(other.origin, 2)
+      await tick()
+      expect(h.rpc.usageStatus).toHaveBeenCalledTimes(2)
+      expect(h.rpc.usageInteraction).toHaveBeenCalledTimes(1)
+      expect(other.rpc.usageStatus).toHaveBeenCalledTimes(1)
+      expect(other.rpc.usageInteraction).not.toHaveBeenCalled()
+    } finally { ui.dispose() }
+  })
+
   test('arguments, quoted capture identity and selected model reach the same authenticated server', async () => {
     const h = connection(), { ui } = controller()
     const args = "analyze what's missing --session '/server/shared capture.json' --session-id 'session A'"
