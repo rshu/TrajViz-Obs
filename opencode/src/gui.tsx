@@ -7,6 +7,7 @@ import { GuiController, type GuiOrigin } from './gui-controller.js'
 import { Obs } from './rpc.js'
 import { parseArgs, tokenize, quoteArgument } from './shared/args.js'
 import { validateArguments } from './command-args.js'
+import { usageFeature } from './usage-features.js'
 import { errorMessage as errorText, safeText, TABS, compact, duration, failures, metrics, sections, statusText } from './tui-model.js'
 import { agentFailureTone, healthRowTone, healthStatusLabel, metricTone, resultFragments } from './presentation.js'
 
@@ -59,7 +60,10 @@ export function setup(ctx: GuiContext): () => void {
   const openPane = (session?: SessionRef) => {
     const target = session ?? active()
     if (!target) { notice('Open a session before opening the live pane.', true); return }
-    ctx.layout.open(key, target)
+    const started = performance.now()
+    let outcome: 'success' | 'error' = 'error'
+    try { ctx.layout.open(key, target); outcome = 'success' }
+    finally { controller.interaction(origin(target), 'pane', outcome, started) }
   }
   const openURL = (value: string) => {
     try {
@@ -77,14 +81,23 @@ export function setup(ctx: GuiContext): () => void {
     try {
       let args = raw.trim().replace(/^\/obs(?:\s+|$)/, '')
       const invalid = validateArguments(args)
-      if (invalid) throw new Error(invalid)
+      if (invalid) {
+        const feature = usageFeature(args), started = performance.now()
+        if (feature) void (session ? Promise.resolve(origin(session)) : currentOrigin())
+          .then(source => controller.interaction(source, feature, 'rejected', started)).catch(() => {})
+        throw new Error(invalid)
+      }
       const source = session ? origin(session) : await currentOrigin(), parsed = parseArgs(args)
       if (parsed.sub === 'cancel') { await controller.cancel(source); return }
       if (parsed.sub === 'watch' || parsed.sub === 'statusline') {
         const option = parsed.positional[0]
         if (parsed.positional.length > 1 || option && !['on', 'off'].includes(option) || Object.keys(parsed.flags).length || parsed.passthrough.length) throw new Error(`Usage: /obs ${parsed.sub} [on|off]`)
         const enabled = option ? option === 'on' : !settings()[parsed.sub]
-        ctx.stores.settings.set({ ...ctx.stores.settings.value, [parsed.sub]: enabled }); notice(`${parsed.sub} ${enabled ? 'on' : 'off'}`)
+        const started = performance.now()
+        let outcome: 'success' | 'error' = 'error'
+        try { ctx.stores.settings.set({ ...ctx.stores.settings.value, [parsed.sub]: enabled }); outcome = 'success' }
+        finally { controller.interaction(source, parsed.sub, outcome, started) }
+        notice(`${parsed.sub} ${enabled ? 'on' : 'off'}`)
         if (enabled && source.id !== 'home' && !controller.refreshing(source)) void controller.refresh(source)
         return
       }
@@ -92,9 +105,12 @@ export function setup(ctx: GuiContext): () => void {
       if (parsed.sub === 'pane') {
         if (parsed.positional[0] === 'close') { const target = session ?? active(); if (target) ctx.layout.close(key, target); return }
         const target = session ?? active()
-        if (!target) throw new Error('Open a session before opening the live pane.')
+        if (!target) {
+          controller.interaction(source, 'pane', 'rejected', performance.now())
+          throw new Error('Open a session before opening the live pane.')
+        }
         openPane(target)
-        if (parsed.flags.session) { const run = controller.start(source, args.replace(/^pane\b/, 'overview'), selectedModel()); await run.done }
+        if (parsed.flags.session) { const run = controller.start(source, args.replace(/^pane\b/, 'overview'), selectedModel(), true); await run.done }
         else await controller.refresh(source)
         return
       }
@@ -164,7 +180,14 @@ export function setup(ctx: GuiContext): () => void {
       onCleanup(() => observer.disconnect())
     })
     const selectTab = (index: number) => { controller.selectTab(source(), index); scroll?.scrollTo({ top: 0 }) }
-    const expand = () => { const session = props.session; ctx.dialogs.open(dialog => <ctx.ui.Dialog title="TrajViz Obs" size="x-large"><div class="obs-expanded"><PaneView session={session} expanded close={() => dialog.close()} /></div></ctx.ui.Dialog>) }
+    const expand = () => {
+      const session = props.session, started = performance.now()
+      let outcome: 'success' | 'error' = 'error'
+      try {
+        ctx.dialogs.open(dialog => <ctx.ui.Dialog title="TrajViz Obs" size="x-large"><div class="obs-expanded"><PaneView session={session} expanded close={() => dialog.close()} /></div></ctx.ui.Dialog>)
+        outcome = 'success'
+      } finally { controller.interaction(origin(session), 'pane.expand', outcome, started) }
+    }
     createEffect(() => {
       const current = source()
       if (!snapshot() && !error() && !refreshing()) void controller.refresh(current)
@@ -186,11 +209,11 @@ export function setup(ctx: GuiContext): () => void {
     }
     return <div class="obs-ui obs-pane" onKeyDown={selectKey}>
       <header class="obs-header"><h2 class="obs-heading">TrajViz Obs</h2><div class="obs-muted obs-small">{targetLabel()} · {safeText(title())}</div>
-        <div class="obs-row obs-actions"><ctx.ui.Button disabled={refreshing()} onClick={() => { void controller.refresh(source()) }}>{refreshing() ? 'Refreshing…' : 'Refresh'}</ctx.ui.Button><button class="obs-button" aria-pressed={settings().watch} onClick={() => { void command('watch', props.session) }}>Watch {settings().watch ? 'on' : 'off'}</button><ctx.ui.Button onClick={() => { void command('dashboard', props.session, true) }}>Dashboard</ctx.ui.Button><Show when={!props.expanded}><ctx.ui.Button onClick={expand}>Expand</ctx.ui.Button></Show><ctx.ui.Button onClick={close}>Close</ctx.ui.Button></div>
+        <div class="obs-row obs-actions"><ctx.ui.Button disabled={refreshing()} onClick={() => { void controller.refreshPane(source()) }}>{refreshing() ? 'Refreshing…' : 'Refresh'}</ctx.ui.Button><button class="obs-button" aria-pressed={settings().watch} onClick={() => { void command('watch', props.session) }}>Watch {settings().watch ? 'on' : 'off'}</button><ctx.ui.Button onClick={() => { void command('dashboard', props.session, true) }}>Dashboard</ctx.ui.Button><Show when={!props.expanded}><ctx.ui.Button onClick={expand}>Expand</ctx.ui.Button></Show><ctx.ui.Button onClick={close}>Close</ctx.ui.Button></div>
         <nav class="obs-tabs" role="tablist" aria-label="Diagnostic views"><For each={TABS}>{(tab, index) => <button class="obs-button obs-tab" role="tab" aria-selected={view().tab === index()} tabIndex={view().tab === index() ? 0 : -1} aria-controls={`obs-${props.expanded ? 'expanded-' : ''}${props.session.id}-content`} onClick={() => selectTab(index())}>{tab}</button>}</For></nav>
       </header>
       <div class="obs-scroll" ref={scroll} tabIndex={0} role="tabpanel" id={`obs-${props.expanded ? 'expanded-' : ''}${props.session.id}-content`} aria-label={TABS[view().tab]}>
-        <Show when={error()}><div class="obs-error" role="alert">{error()} <ctx.ui.Button onClick={() => { void controller.refresh(source()) }}>Retry</ctx.ui.Button></div></Show>
+        <Show when={error()}><div class="obs-error" role="alert">{error()} <ctx.ui.Button onClick={() => { void controller.refreshPane(source()) }}>Retry</ctx.ui.Button></div></Show>
         <Show when={job()}><div class="obs-pending" role="status">{job()?.text}<div><ctx.ui.Button onClick={() => { void controller.cancel(source()) }}>Cancel</ctx.ui.Button></div></div></Show>
         <Show when={view().tab === 0 && snapshot() && !snapshot()!.empty}><div class="obs-grid"><For each={measured()}>{metric => <div class="obs-card"><div class="obs-small obs-label">{metric.label}</div><div class={`obs-value obs-tone-${metricTone(known()!, metric.label)}`}>{metric.value}</div><Show when={metric.detail}><div class="obs-small obs-muted">{metric.detail}</div></Show></div>}</For></div></Show>
         <Show when={view().tab === 0 && known()}><section class="obs-section"><h3 class="obs-tone-info">Health</h3><div class="obs-chips"><For each={known()?.health ?? []}>{row => <span class={`obs-chip obs-tone-${healthRowTone(known()!, row)}`} title={safeText(row.detail)}>{safeText(row.metric).replaceAll('_', ' ')}: {safeText(row.label)} · <span class="obs-chip-status">{healthStatusLabel(row.status)}</span></span>}</For></div></section></Show>
@@ -206,7 +229,10 @@ export function setup(ctx: GuiContext): () => void {
   ctx.add(Style, css)
   ctx.add(Command, { id: 'obs', title: 'TrajViz Obs', description: 'Inspect session health, tools, agents, and context', group: 'TrajViz Obs', slash: { name: 'obs', arguments: true }, run: args => command(args) })
   const panelTab = { id: PANEL, title: 'TrajViz Obs', closable: 'compact' as const, tabbable: true }
-  ctx.add(Panel, { id: PANEL, region: 'side', wide: true, mobile: { title: 'TrajViz Obs', order: 50, kind: 'menu', icon: 'window-analytics' }, list: input => input.open.includes(PANEL) ? [panelTab] : [], render: (props: PanelProps) => <ErrorBoundary fallback={(_, reset) => <div class="obs-ui obs-scroll" role="alert"><p>Unable to draw the pane.</p><ctx.ui.Button onClick={reset}>Retry</ctx.ui.Button><ctx.ui.Button onClick={() => ctx.layout.close(key, props.session)}>Close</ctx.ui.Button></div>}><PaneView session={props.session} /></ErrorBoundary> })
+  ctx.add(Panel, { id: PANEL, region: 'side', wide: true, mobile: { title: 'TrajViz Obs', order: 50, kind: 'menu', icon: 'window-analytics' }, list: input => input.open.includes(PANEL) ? [panelTab] : [],
+    close: ({ session }) => controller.interaction(origin(session), 'pane.close', 'success', performance.now()),
+    restore: ({ session }) => openPane(session),
+    render: (props: PanelProps) => <ErrorBoundary fallback={(_, reset) => <div class="obs-ui obs-scroll" role="alert"><p>Unable to draw the pane.</p><ctx.ui.Button onClick={reset}>Retry</ctx.ui.Button><ctx.ui.Button onClick={() => ctx.layout.close(key, props.session)}>Close</ctx.ui.Button></div>}><PaneView session={props.session} /></ErrorBoundary> })
   ctx.add(MenuItem, { menu: 'session.panel', id: 'open', title: 'TrajViz Obs', icon: 'window-analytics', run: () => openPane() })
   ctx.add(ComposerPill, { id: 'status', show: input => settings().statusline ? { label: read(() => statusText(controller.snapshot(origin(input.session)))), title: 'TrajViz Obs', icon: 'window-analytics', run: () => openPane(input.session) } : undefined })
 

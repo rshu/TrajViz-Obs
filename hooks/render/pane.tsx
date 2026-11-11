@@ -13,6 +13,7 @@ import { runSelectedCommand, runSnapshotCommand } from '../lib/actions'
 import { clip, failureSummary, fmtCompact, fmtInt, fmtPct, qualitySummary, unavailableView } from '../lib/format'
 import { isEmpty } from '../lib/snapshot'
 import { toggleWatch, writePaneTab } from '../lib/state'
+import { reportTelemetry, type OutcomeTracker } from '../lib/telemetry'
 import {
   ContextBlock,
   DataQualityNote,
@@ -128,7 +129,7 @@ export async function paneUsage($: EngineInterface, tab: number, fallback: PaneU
 }
 
 /** A failed drawing still offers recovery without repeating the state reads that failed. */
-export function renderPaneFailure($: EngineInterface, e: PaneEvent, error: HookFailure): RenderElement {
+export function renderPaneFailure($: EngineInterface, e: PaneEvent, error: HookFailure, options: PluginOptions): RenderElement {
   const { Box, Button, Text } = $.ui.resolve(e)
   $.ui.log(`obs pane: ${error.kind}${error.message ? `: ${error.message.slice(0, 2000)}` : ''}`, { to: 'debug' })
   return (
@@ -137,7 +138,7 @@ export function renderPaneFailure($: EngineInterface, e: PaneEvent, error: HookF
       <Text dimColor>Retry the drawing, or run /obs dashboard for the full view.</Text>
       <Box flexDirection="row" columnGap={2}>
         <Button key="retry" label="Retry" hotkey="r" variant="primary" plain onPress={() => $.ui.invalidate('ui.render')} />
-        <Button key="close" label="Close" hotkey="x" plain onPress={() => $.ui.close({ id: PANE_ID })} />
+        <Button key="close" label="Close" hotkey="x" plain onPress={() => closeFromPane($, options)} />
       </Box>
     </Box>
   )
@@ -333,6 +334,53 @@ function tabBody(tab: number, b: Body): RenderElement {
 
 // --- the pane ---------------------------------------------------------------
 
+async function closeFromPane($: EngineInterface, options: PluginOptions): Promise<void> {
+  const started = Date.now()
+  let outcome: 'success' | 'error' = 'error'
+  try {
+    await $.ui.close({ id: PANE_ID })
+    outcome = 'success'
+  } finally {
+    void reportTelemetry($, options, 'pane.close', outcome, Date.now() - started)
+  }
+}
+
+async function selectTab($: EngineInterface, tab: number, options: PluginOptions): Promise<void> {
+  const started = Date.now()
+  let outcome: 'success' | 'error' = 'error'
+  try {
+    await writePaneTab($, tab)
+    outcome = 'success'
+  } finally {
+    void reportTelemetry($, options, 'pane.tab', outcome, Date.now() - started)
+  }
+}
+
+async function refreshFromPane($: EngineInterface, options: PluginOptions): Promise<void> {
+  const started = Date.now()
+  const telemetry: OutcomeTracker = { outcome: 'success' }
+  try {
+    const row = await refreshPane($, options, undefined, undefined, telemetry)
+    if (row !== null) $.ui.toast(`obs: ${row}`)
+  } catch (error) {
+    telemetry.outcome = 'error'
+    throw error
+  } finally {
+    void reportTelemetry($, options, 'pane.refresh', telemetry.outcome, Date.now() - started)
+  }
+}
+
+async function toggleWatchFromPane($: EngineInterface, options: PluginOptions): Promise<void> {
+  const started = Date.now()
+  let outcome: 'success' | 'error' = 'error'
+  try {
+    $.ui.toast(`obs: watch ${(await toggleWatch($)) ? 'on' : 'off'}`)
+    outcome = 'success'
+  } finally {
+    void reportTelemetry($, options, 'watch', outcome, Date.now() - started)
+  }
+}
+
 /**
  * The pane: the tab bar, the action row, the open tab's body from `snap`
  * (a line when there is none yet, or it is the empty state) and the footer.
@@ -350,13 +398,6 @@ export function renderPane(
   const els = $.ui.resolve(e)
   const { Box, Button, Text } = els
   const columns = Math.max(1, Math.floor(e.props.bodyColumns))
-  const refresh = async (): Promise<void> => {
-    const row = await refreshPane($, extras.options)
-    if (row !== null) $.ui.toast(`obs: ${row}`)
-  }
-  const watch = async (): Promise<void> => {
-    $.ui.toast(`obs: watch ${(await toggleWatch($)) ? 'on' : 'off'}`)
-  }
   const body =
     snap === null ? (
       <Text dimColor>{NO_SNAPSHOT_TEXT}</Text>
@@ -375,13 +416,13 @@ export function renderPane(
         {TABS.map((label, i) => {
           const n = i + 1
           const style = n === tab ? { variant: 'primary' as const } : { dimColor: true }
-          return <Button key={`tab:${n}`} label={label} hotkey={String(n)} plain {...style} onPress={() => writePaneTab($, n)} />
+          return <Button key={`tab:${n}`} label={label} hotkey={String(n)} plain {...style} onPress={() => selectTab($, n, extras.options)} />
         })}
       </Box>
       <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={0}>
         <Button key="dashboard" label="Dashboard" hotkey="d" variant="primary" plain onPress={() => snap !== null ? runSnapshotCommand($, snap, 'dashboard', extras) : runSelectedCommand($, 'dashboard', extras)} />
-        <Button key="refresh" label="Refresh" hotkey="r" plain onPress={refresh} />
-        <Button key="watch" label={`Watch ${flags.watch ? 'on' : 'off'}`} hotkey="w" plain onPress={watch} />
+        <Button key="refresh" label="Refresh" hotkey="r" plain onPress={() => refreshFromPane($, extras.options)} />
+        <Button key="watch" label={`Watch ${flags.watch ? 'on' : 'off'}`} hotkey="w" plain onPress={() => toggleWatchFromPane($, extras.options)} />
       </Box>
       {dashboards.insight ? <Text dimColor wrap="wrap">{`Dashboard: ${dashboards.insight.url}`}</Text> : null}
       {dashboards.converge ? <Text dimColor wrap="wrap">{`Compare: ${dashboards.converge.url}`}</Text> : null}

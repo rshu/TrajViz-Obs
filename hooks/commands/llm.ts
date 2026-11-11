@@ -5,9 +5,10 @@ import { ASK_ABOVE, SESSION_DELAY_TEXT, confirmCalls, planLine, resolveModel, ru
 import { artifactsDir } from '../lib/paths'
 import { ensureReady, sessionArgv } from '../lib/snapshot'
 import { readFlags } from '../lib/state'
+import { markOutcome, type OutcomeTracker } from '../lib/telemetry'
 import { outFlag, outputError } from './exports'
 import type { CommandContext } from './index'
-import { EMPTY_TEXT, captureSessionSpec, errorRow, sessionSpec, SESSION_USAGE } from './overview'
+import { EMPTY_TEXT, captureSessionSpec, observedError, sessionSpec, SESSION_USAGE } from './overview'
 
 /** Planning loads the session and builds the prompts; applying may write a sidecar and its views. */
 const PROMPT_TIMEOUT_MS = 120_000
@@ -128,8 +129,9 @@ const labelArgv = (req: Request, model?: string): string[] => [
   ...(model ? ['--model', model] : []),
 ]
 
-/** TrajViz's result as the row's lines. */
-function resultText(feature: Feature, doc: AnalyzeDoc | FixesDoc | LabelDoc): string {
+/** A partial result can still carry model failures. Keep its text and record the outcome. */
+function resultText(feature: Feature, doc: AnalyzeDoc | FixesDoc | LabelDoc, telemetry?: OutcomeTracker): string {
+  if (telemetry && (('error' in doc && doc.error) || ('errors' in doc && doc.errors?.length))) telemetry.outcome = 'error'
   if (feature === 'analyze') return (doc as AnalyzeDoc).reply
   if (feature === 'fixes') return (doc as FixesDoc).text
   const l = doc as LabelDoc
@@ -145,17 +147,19 @@ function resultText(feature: Feature, doc: AnalyzeDoc | FixesDoc | LabelDoc): st
  * person confirmed, so it is spawned with none. No usage line: TrajViz's
  * client reports none.
  */
-async function direct($: EngineInterface, req: Request, plan: PromptPlan, session: string[], interactive: boolean): Promise<string> {
+async function direct($: EngineInterface, req: Request, plan: PromptPlan, session: string[], interactive: boolean, telemetry?: OutcomeTracker): Promise<string> {
   const line = planLine(plan, `${req.model ?? (req.feature === 'label' ? 'LABEL_MODEL' : 'ANALYZE_MODEL')} (env)`)
   $.ui.log(line)
-  if (interactive && plan.plan.calls > ASK_ABOVE && !(await confirmCalls($, plan.plan.calls))) return `${line}\n${CANCELLED_TEXT}`
+  if (interactive && plan.plan.calls > ASK_ABOVE && !(await confirmCalls($, plan.plan.calls))) {
+    return markOutcome(telemetry, 'cancelled', `${line}\n${CANCELLED_TEXT}`)
+  }
   const argv = [...session, ...req.argv, ...labelArgv(req, req.model)]
   const doc =
     req.feature === 'label'
       ? await spawnBridge<ResultDoc>($, ['label', ...argv])
       : await runBridge<ResultDoc>($, [req.feature === 'analyze' ? 'ask' : 'fixes', ...argv], { timeoutMs: DIRECT_TIMEOUT_MS })
-  if ('empty' in doc) return EMPTY_TEXT
-  return `${line}\n${resultText(req.feature, doc)}`
+  if ('empty' in doc) return markOutcome(telemetry, 'empty', EMPTY_TEXT)
+  return `${line}\n${resultText(req.feature, doc, telemetry)}`
 }
 
 /**
@@ -170,15 +174,15 @@ async function viaSession($: EngineInterface, ctx: CommandContext, req: Request,
   $.ui.log(line)
   const cap = req.feature === 'label' && !interactive ? labelMaxSteps(ctx.options) : Number.POSITIVE_INFINITY
   const run = await runPlan($, plan, model, { confirm: interactive, cap })
-  if (run === null) return `${line}\n${CANCELLED_TEXT}`
+  if (run === null) return markOutcome(ctx.telemetry, 'cancelled', `${line}\n${CANCELLED_TEXT}`)
   const artifactsAt = session.indexOf('--artifacts')
   const repliesPath = `${artifactsAt >= 0 ? session[artifactsAt + 1]! : await artifactsDir($, sessionId)}/replies-${req.feature}-${await $.clock.now()}-${++repliesSequence}.json`
   await $.fs.write(repliesPath, JSON.stringify({ hash: plan.hash, replies: run.replies }))
   const apply = ['llm-apply', ...session, '--feature', req.feature, '--replies', repliesPath, ...req.argv]
   if (req.feature === 'label') apply.push(...labelArgv(req, model))
   const doc = await runBridge<ResultDoc>($, apply, { timeoutMs: APPLY_TIMEOUT_MS })
-  if ('empty' in doc) return EMPTY_TEXT
-  return `${line}\n${resultText(req.feature, doc)}\n\n${usageLine(run.usage)}`
+  if ('empty' in doc) return markOutcome(ctx.telemetry, 'empty', EMPTY_TEXT)
+  return `${line}\n${resultText(req.feature, doc, ctx.telemetry)}\n\n${usageLine(run.usage)}`
 }
 
 /**
@@ -190,16 +194,16 @@ async function viaSession($: EngineInterface, ctx: CommandContext, req: Request,
 export async function llm($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
   const interactive = (await readFlags($)).isInteractive
   const req = parseRequest(ctx, interactive)
-  if (typeof req === 'string') return { text: req }
+  if (typeof req === 'string') return { text: markOutcome(ctx.telemetry, 'rejected', req) }
   try {
     await ensureReady($, ctx.options)
     const { transcript, argv } = await sessionArgv($, req.spec, undefined, req.captureSessionId)
     const plan = await runBridge<PromptPlan | Empty>($, ['llm-prompt', ...argv, '--feature', req.feature, ...req.argv,
       ...(req.out ? ['--out', req.out] : [])], { timeoutMs: PROMPT_TIMEOUT_MS })
-    if ('empty' in plan) return { text: EMPTY_TEXT }
-    if (ctx.options['llm'] === 'env') return { text: await direct($, req, plan, argv, interactive) }
+    if ('empty' in plan) return { text: markOutcome(ctx.telemetry, 'empty', EMPTY_TEXT) }
+    if (ctx.options['llm'] === 'env') return { text: await direct($, req, plan, argv, interactive, ctx.telemetry) }
     return { text: await viaSession($, ctx, req, plan, argv, transcript.sessionId, interactive) }
   } catch (e) {
-    return { text: errorRow(e, req.spec) }
+    return { text: observedError(ctx.telemetry, e, req.spec) }
   }
 }

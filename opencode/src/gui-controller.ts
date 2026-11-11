@@ -1,8 +1,10 @@
 import type { OpenCodeClient, LocationRef } from '@opencode/client'
 import { captureSession } from './collect.js'
-import { Obs, type CommandResult, type RunInput } from './rpc.js'
+import { createInteractionReporter } from './interaction.js'
+import { Obs, type CommandResult, type RunInput, type UsageInteraction } from './rpc.js'
 import { analyzeSelection, parseArgs, passArgs, quoteOption } from './shared/args.js'
 import { validateArguments } from './command-args.js'
+import { usageFeature } from './usage-features.js'
 import { commandText, errorMessage as message, safeText, TABS } from './tui-model.js'
 import type { Snapshot, EmptySnapshot } from './types.js'
 
@@ -21,7 +23,7 @@ export type GuiHooks = {
   confirm(confirmation: NonNullable<CommandResult['confirmation']>, signal: AbortSignal): Promise<boolean>
   notice(text: string, error?: boolean): void
 }
-const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
+const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'telemetry', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
 const display = (text: string) => { const clean = safeText(text); return clean.length > 64_000 ? clean.slice(0, 64_000) + '\n\nDisplay clipped. Export the full result with /obs json.' : clean }
 const pause = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
   signal.throwIfAborted()
@@ -39,6 +41,7 @@ export class GuiController {
   private readonly generations = new Map<string, number>()
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly dirty = new Set<string>()
+  private readonly report = createInteractionReporter('desktop')
   private closed = false
   constructor(readonly hooks: GuiHooks, readonly lifetime?: AbortSignal) {}
   view(origin: GuiOrigin): GuiView {
@@ -49,7 +52,19 @@ export class GuiController {
   target(origin: GuiOrigin): GuiTarget { return this.view(origin).selected ?? { id: origin.id } }
   snapshot(origin: GuiOrigin) { return this.view(origin).snapshots[this.target(origin).id] }
   error(origin: GuiOrigin) { return this.view(origin).errors[this.target(origin).id] }
-  selectTab(origin: GuiOrigin, tab: number) { this.view(origin).tab = Math.max(0, Math.min(TABS.length - 1, tab)); this.hooks.changed() }
+  interaction(origin: GuiOrigin, feature: UsageInteraction['feature'], outcome: UsageInteraction['outcome'], started: number): void {
+    if (this.closed || this.lifetime?.aborted) return
+    try { void this.report(origin.client(), origin.location(), feature, outcome, started) }
+    catch { /* The UI can be reloading or between connections. */ }
+  }
+  selectTab(origin: GuiOrigin, tab: number) {
+    const view = this.view(origin), next = Math.max(0, Math.min(TABS.length - 1, tab))
+    if (view.tab === next) return
+    const started = performance.now()
+    view.tab = next
+    this.hooks.changed()
+    this.interaction(origin, 'pane.tab', 'success', started)
+  }
   restoreResult(origin: GuiOrigin, id: string): boolean {
     const job = this.jobs.get(id)
     if (this.closed || !job || job.pending || !job.target || job.origin.key !== origin.key) return false
@@ -117,22 +132,29 @@ export class GuiController {
       throw error
     }
   }
-  start(origin: GuiOrigin, raw: string, model?: RunInput['model']): { id: string; done: Promise<void> } {
+  start(origin: GuiOrigin, raw: string, model?: RunInput['model'], paneSnapshot?: true): { id: string; done: Promise<void> } {
     if (this.closed) throw new Error('TrajViz Obs is reloading.')
-    const args = raw.trim(), invalid = validateArguments(args)
-    if (invalid) throw new Error(invalid)
+    const started = performance.now(), args = raw.trim(), invalid = validateArguments(args)
     const view = this.view(origin)
-    if (view.running) throw new Error('An obs command is running. Cancel it before starting another.')
+    const refusal = invalid ?? (view.running ? 'An obs command is running. Cancel it before starting another.' : undefined)
+    if (refusal) {
+      const feature = paneSnapshot ? undefined : usageFeature(args)
+      if (feature) this.interaction(origin, feature, 'rejected', started)
+      throw new Error(refusal)
+    }
     const id = crypto.randomUUID(), controller = this.controller(), client = origin.client()
     const job: GuiJob = { id, args, origin, text: `Running /obs ${args || 'overview'}…`, pending: true }
     this.jobs.set(id, job); this.active.set(id, { controller, client }); view.running = id; view.latest = id
     if (!args) delete view.selected
     this.hooks.changed()
-    return { id, done: this.execute(job, controller, client, model) }
+    return { id, done: this.execute(job, controller, client, model, paneSnapshot) }
   }
-  private async execute(job: GuiJob, controller: AbortController, client: OpenCodeClient, model?: RunInput['model']): Promise<void> {
+  private async execute(job: GuiJob, controller: AbortController, client: OpenCodeClient, model?: RunInput['model'], paneSnapshot?: true): Promise<void> {
     const { origin, args } = job, view = this.view(origin), signal = this.signal(controller), rpc = client.rpc(Obs)
+    const started = performance.now(), feature = paneSnapshot ? undefined : usageFeature(args)
     let target: GuiTarget = { id: origin.id }, key: string | undefined, generation: number | undefined
+    let dispatched = false
+    let preflightOutcome: 'error' | 'rejected' = 'error'
     try {
       const location = await this.location(origin, client, signal), options = { location, signal }, parsed = parseArgs(args)
       const active = this.active.get(job.id)
@@ -140,7 +162,10 @@ export class GuiController {
       if (!SESSIONLESS.has(parsed.sub)) {
         const analyze = parsed.sub === 'analyze' ? analyzeSelection(args) : undefined
         const selector = analyze ? analyze.session : parsed.flags.session, captureID = analyze ? analyze.captureSessionId : parsed.flags['session-id']
-        if (origin.id === 'home' && typeof selector !== 'string') throw new Error('Open a session first, or select a saved session with --session.')
+        if (origin.id === 'home' && typeof selector !== 'string') {
+          preflightOutcome = 'rejected'
+          throw new Error('Open a session first, or select a saved session with --session.')
+        }
         if (typeof selector === 'string') {
           const resolved = await rpc.resolve({ sessionID: origin.id, selector, ...(typeof captureID === 'string' ? { captureSessionID: captureID } : {}) }, options)
           target = { id: resolved.sessionID, ...(resolved.path ? { selector: resolved.path, ...(typeof captureID === 'string' ? { captureSessionID: captureID } : {}) } : {}) }
@@ -159,7 +184,8 @@ export class GuiController {
           if (!resolved.path) await this.sync(client, resolved.sessionID, signal)
         }
       }
-      const input = { sessionID: origin.id, args, runID: job.id, model, useSynced: true }
+      const input = { sessionID: origin.id, args, runID: job.id, model, useSynced: true, ...(paneSnapshot ? { paneSnapshot } : {}) }
+      dispatched = true
       let result = await this.remote(job, client, input, options)
       if (result.confirmation) {
         job.text = display(result.text); this.hooks.changed()
@@ -179,6 +205,9 @@ export class GuiController {
       if (result.tab) { const tab = TABS.findIndex(name => name.toLowerCase() === result.tab?.toLowerCase()); if (tab >= 0) view.tab = tab }
       if (parsed.sub === 'label' && result.path) void this.refresh(origin)
     } catch (error) {
+      if (!dispatched && feature && origin.client() === client) {
+        this.interaction(origin, feature, signal.aborted ? 'cancelled' : preflightOutcome, started)
+      }
       if (!this.closed) job.text = signal.aborted ? 'Obs command cancelled.' : message(error)
     } finally {
       this.active.delete(job.id); job.pending = false
@@ -190,19 +219,28 @@ export class GuiController {
       }
     }
   }
-  async refresh(origin: GuiOrigin): Promise<void> {
-    if (this.closed || origin.id === 'home') return
+  async refreshPane(origin: GuiOrigin): Promise<void> {
+    const client = origin.client(), started = performance.now()
+    const outcome = await this.refresh(origin)
+    if (origin.client() === client) this.interaction(origin, 'pane.refresh', outcome, started)
+  }
+  async refresh(origin: GuiOrigin): Promise<UsageInteraction['outcome']> {
+    if (this.closed || origin.id === 'home') return 'cancelled'
     const target = { ...this.target(origin) }, key = this.key(origin, target)
-    if (this.refreshes.has(key)) { this.dirty.add(key); return }
+    if (this.refreshes.has(key)) { this.dirty.add(key); return 'cancelled' }
     const generation = this.claim(key), controller = this.controller(), signal = this.signal(controller), client = origin.client(), view = this.view(origin)
     this.refreshes.set(key, controller); this.hooks.changed()
     try {
       const location = await this.location(origin, client, signal)
       if (!target.selector) await this.sync(client, target.id, signal)
       const snapshot = await client.rpc(Obs).snapshot({ sessionID: target.selector ? origin.id : target.id, useSynced: true, ...(target.selector ? { selector: target.selector, ...(target.captureSessionID ? { captureSessionID: target.captureSessionID } : {}) } : {}) }, { location, signal })
-      if (!this.closed && !signal.aborted && origin.client() === client && this.generations.get(key) === generation) { view.snapshots[target.id] = snapshot; delete view.errors[target.id] }
+      if (this.closed || signal.aborted || origin.client() !== client || this.generations.get(key) !== generation) return 'cancelled'
+      view.snapshots[target.id] = snapshot
+      delete view.errors[target.id]
+      return snapshot.empty ? 'empty' : 'success'
     } catch (error) {
       if (!this.closed && !signal.aborted && this.generations.get(key) === generation) view.errors[target.id] = message(error)
+      return this.closed || signal.aborted ? 'cancelled' : 'error'
     } finally {
       this.refreshes.delete(key)
       if (!this.closed) { this.hooks.changed(); if (this.dirty.delete(key)) this.schedule(origin) }

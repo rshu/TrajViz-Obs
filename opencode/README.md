@@ -119,6 +119,8 @@ Desktop and the TUI read full history from their connected server. Headless tool
 
 Live captures are limited to 32 MiB and 64 sessions in one family. For larger inputs, export the session and use `--session /path/to/export.json`.
 
+To opt in to usage telemetry, set the collector variables in the OpenCode server’s launch environment and restart the server. Desktop and terminal clients use the environment of the server they connect to. Run `/obs telemetry` to check delivery. [Telemetry setup](../README.md#usage-telemetry)
+
 ## Development
 
 From the checkout's `opencode` directory (packaging also requires Node.js/npm):

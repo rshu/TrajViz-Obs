@@ -12,7 +12,8 @@ import { publicationGeneration } from './publication'
 import { fmtBytes, fmtInt } from './format'
 import { captureSnapshot, ensureReady, isEmpty, sessionArgv } from './snapshot'
 import { readLatest, readSession } from './state'
-import { EMPTY_TEXT, errorRow } from '../commands/overview'
+import { markOutcome, reportTelemetry, type OutcomeTracker } from './telemetry'
+import { EMPTY_TEXT, observedError } from '../commands/overview'
 import { MAX_LIMIT, catalogText, viewText, type CatalogEntry, type ViewPayload } from '../commands/inline'
 
 /** The tool as `$.tool.register` takes it, at session start. */
@@ -95,7 +96,11 @@ function viewAnswer(p: ViewPayload, limit: number): ObsResult {
   return answer(new TextEncoder().encode(text).length <= INLINE_MAX_BYTES ? text : pathText(p))
 }
 
-type Selection = { spec?: string; captureSessionId?: string; generation: number }
+type Selection = { spec?: string; captureSessionId?: string; generation: number; telemetry: OutcomeTracker }
+
+function emptyAnswer(selection: Selection): ObsResult {
+  return markOutcome(selection.telemetry, 'empty', answer(EMPTY_TEXT))
+}
 
 function checkSelection(selection: Selection): void {
   if (selection.generation !== publicationGeneration()) throw new BridgeError('session_changed', 'The selected session changed during analysis; run /obs again.')
@@ -117,8 +122,7 @@ async function snapshotRows($: EngineInterface, options: PluginOptions, what: 'i
     ;({ snap } = await captureSnapshot($, options, selection.spec, selection.generation, selection.captureSessionId))
   }
   checkSelection(selection)
-  if (snap === null) return answer(EMPTY_TEXT)
-  if (isEmpty(snap)) return answer(EMPTY_TEXT)
+  if (snap === null || isEmpty(snap)) return emptyAnswer(selection)
   const rows: unknown[] = snap[what]
   return answer(JSON.stringify({ [what]: rows.slice(0, limit), total: what === 'issues' ? (snap.counts.issues ?? rows.length) : rows.length,
     ...(snap.availability?.[what] ? { availability: snap.availability[what] } : {}), ...(snap.data_quality ? { data_quality: snap.data_quality } : {}),
@@ -131,7 +135,7 @@ async function briefOf($: EngineInterface, options: PluginOptions, selection: Se
   const { argv } = await sessionArgv($, selection.spec, selection.generation, selection.captureSessionId)
   const doc = await runBridge<{ brief: string } | { empty: true; reason: string }>($, ['brief', ...argv], { timeoutMs: BRIEF_TIMEOUT_MS })
   checkSelection(selection)
-  return 'brief' in doc ? answer(doc.brief) : answer(EMPTY_TEXT)
+  return 'brief' in doc ? answer(doc.brief) : emptyAnswer(selection)
 }
 
 /** The bridge's `view --json` of `id` (the catalog when none). */
@@ -143,7 +147,7 @@ async function viewOf($: EngineInterface, options: PluginOptions, id: string | u
   call.push(...viewOptions, '--limit', String(limit), '--json')
   const doc = await runBridge<{ empty: true; reason: string } | { views: CatalogEntry[] } | ViewPayload>($, call, { timeoutMs: VIEW_TIMEOUT_MS })
   checkSelection(selection)
-  if ('empty' in doc) return answer(EMPTY_TEXT)
+  if ('empty' in doc) return emptyAnswer(selection)
   if ('views' in doc) return answer(catalogText(doc.views))
   return viewAnswer(doc, limit)
 }
@@ -154,24 +158,37 @@ async function viewOf($: EngineInterface, options: PluginOptions, id: string | u
  * cannot take, or the error row of what a bridge run threw. Never throws.
  */
 export async function serveTool($: EngineInterface, options: PluginOptions, input: ObsInput): Promise<ObsResult> {
+  const started = Date.now()
+  const telemetry: OutcomeTracker = { outcome: 'success' }
+  try {
+    return await answerTool($, options, input, telemetry)
+  } catch (error) {
+    telemetry.outcome = 'error'
+    throw error
+  } finally {
+    void reportTelemetry($, options, 'tool', telemetry.outcome, Date.now() - started)
+  }
+}
+
+async function answerTool($: EngineInterface, options: PluginOptions, input: ObsInput, telemetry: OutcomeTracker): Promise<ObsResult> {
   const what = input['what']
-  if (typeof what !== 'string' || !(WHATS as readonly string[]).includes(what)) return answer(WHAT_TEXT)
+  if (typeof what !== 'string' || !(WHATS as readonly string[]).includes(what)) return markOutcome(telemetry, 'rejected', answer(WHAT_TEXT))
   const limit = limitOf(input['limit'])
-  if (limit === null) return answer(TOOL_LIMIT_TEXT)
+  if (limit === null) return markOutcome(telemetry, 'rejected', answer(TOOL_LIMIT_TEXT))
   const viewId = input['view']
-  if (viewId !== undefined && typeof viewId !== 'string') return answer(VIEW_ID_TEXT)
+  if (viewId !== undefined && typeof viewId !== 'string') return markOutcome(telemetry, 'rejected', answer(VIEW_ID_TEXT))
   const viewOptions = optionArgv(input['options'])
-  if (viewOptions === null) return answer(OPTIONS_TEXT)
+  if (viewOptions === null) return markOutcome(telemetry, 'rejected', answer(OPTIONS_TEXT))
   let spec: string | undefined
   try {
     const generation = publicationGeneration()
     const selected = (await readSession($)).selected
     spec = selected?.path
-    const selection = { spec, captureSessionId: selected?.captureSessionId, generation }
+    const selection = { spec, captureSessionId: selected?.captureSessionId, generation, telemetry }
     if (what === 'brief') return await briefOf($, options, selection)
     if (what === 'view') return await viewOf($, options, viewId || undefined, viewOptions, limit, selection)
     return await snapshotRows($, options, what as 'issues' | 'health', limit, selection)
   } catch (e) {
-    return answer(errorRow(e, spec))
+    return answer(observedError(telemetry, e, spec))
   }
 }

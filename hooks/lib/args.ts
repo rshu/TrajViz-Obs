@@ -91,7 +91,7 @@ export const SUBCOMMANDS: readonly string[] = [
   'dashboard', 'converge',
   'compare', 'scorecard', 'converge-cli', 'labels',
   'analyze', 'fixes', 'label',
-  'attribution', 'collect', 'sessions', 'watch', 'statusline', 'setup', 'doctor', 'help',
+  'attribution', 'collect', 'sessions', 'watch', 'statusline', 'setup', 'doctor', 'telemetry', 'help',
 ]
 
 const DEFAULT_SUB = 'overview'

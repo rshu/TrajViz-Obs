@@ -3,9 +3,11 @@ import { ErrorBoundary, For, Match, Show, Switch, createEffect, createSignal, on
 import { useTerminalDimensions } from '@opentui/solid'
 import type { ScrollBoxRenderable } from '@opentui/core'
 import { captureSession } from './collect.js'
-import { Obs, type CommandResult } from './rpc.js'
+import { createInteractionReporter } from './interaction.js'
+import { Obs, type CommandResult, type UsageInteraction } from './rpc.js'
 import { analyzeSelection, parseArgs, passArgs, quoteOption } from './shared/args.js'
 import { validateArguments } from './command-args.js'
+import { usageFeature } from './usage-features.js'
 import { TABS, commandText, compact as compactNumber, duration, errorMessage as errorText, failures, metrics, safeText, sections, statusText, type Section } from './tui-model.js'
 import { agentFailureTone, healthRowTone, healthStatusLabel, metricTone, resultFragments, type Tone } from './presentation.js'
 import { TerminalCharts, TerminalText, terminalPalette } from './tui-charts.js'
@@ -24,7 +26,7 @@ type UIState = {
 }
 type Panel = { name: string; sessionID: string; width: number; focused: boolean; focus(): void; close(): void; toggleFullscreen(): void }
 const PANEL = 'trajviz-obs'
-const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
+const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'telemetry', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
 const displayResult = (text: string): string => {
   const clean = safeText(text)
   return clean.length > 64_000 ? `${clean.slice(0, 64_000)}\n\nDisplay clipped. Use /obs json for full session data.` : clean
@@ -60,6 +62,18 @@ export function setup(context: Plugin.Context): () => void {
   }
   const notice = (message: string, error = false) => context.ui.toast.show({ title: 'TrajViz Obs', message: safeText(message), variant: error ? 'error' : 'info' })
   const rpc = () => context.client.rpc(Obs)
+  let reportInteraction = createInteractionReporter('terminal')
+  function interaction(base: string, feature: UsageInteraction['feature'], outcome: UsageInteraction['outcome'], started: number): void {
+    if (disposed) return
+    try { void reportInteraction(context.client, location(base), feature, outcome, started) }
+    catch { /* The UI can be reloading or between connections. */ }
+  }
+  function paneAction(base: string, feature: 'pane.tab' | 'pane.expand' | 'pane.close', action: () => void): void {
+    const started = performance.now()
+    let outcome: UsageInteraction['outcome'] = 'error'
+    try { action(); outcome = 'success' }
+    finally { interaction(base, feature, outcome, started) }
+  }
   // Memory survives reload, but the old generation's asynchronous work does not.
   for (const [base, runID] of Object.entries(state.running)) {
     void rpc().cancel({ runID }, { location: location(base) }).catch(() => {})
@@ -74,9 +88,9 @@ export function setup(context: Plugin.Context): () => void {
     await rpc().sync({ source }, { location: location(id), signal })
   }
 
-  async function refresh(id: string): Promise<void> {
-    if (disposed || id === 'home') return
-    if (refreshing.has(id)) { dirty.add(id); return }
+  async function refresh(id: string): Promise<UsageInteraction['outcome']> {
+    if (disposed || id === 'home') return 'cancelled'
+    if (refreshing.has(id)) { dirty.add(id); return 'cancelled' }
     const generation = claim(id)
     refreshing.add(id)
     const controller = new AbortController()
@@ -86,9 +100,12 @@ export function setup(context: Plugin.Context): () => void {
       if (!file) await sync(id, controller.signal)
       const origin = file?.origin ?? id
       const snapshot = await rpc().snapshot({ sessionID: origin, useSynced: true, ...(file ? { selector: file.selector, ...(file.captureSessionID ? { captureSessionID: file.captureSessionID } : {}) } : {}) }, { location: location(origin), signal: controller.signal })
-      if (!disposed && generations.get(id) === generation) update(draft => { draft.snapshots[id] = snapshot; delete draft.errors[id] })
+      if (disposed || generations.get(id) !== generation) return 'cancelled'
+      update(draft => { draft.snapshots[id] = snapshot; delete draft.errors[id] })
+      return snapshot.empty ? 'empty' : 'success'
     } catch (error) {
       if (!disposed && !controller.signal.aborted && generations.get(id) === generation) update(draft => { draft.errors[id] = errorText(error) })
+      return disposed || controller.signal.aborted ? 'cancelled' : 'error'
     } finally {
       aborts.delete(controller)
       refreshing.delete(id)
@@ -144,6 +161,7 @@ export function setup(context: Plugin.Context): () => void {
   subscribe()
   const stopEvents = context.data.listen(({ details }) => {
     if (details.type === 'server.connected') {
+      reportInteraction = createInteractionReporter('terminal')
       subscribe()
       const base = active()
       if (base && (settings.statusline || context.ui.panel.current()?.name === PANEL)) schedule(selected(base))
@@ -225,7 +243,13 @@ export function setup(context: Plugin.Context): () => void {
   }
 
   async function execute(args: string, base: string, presentation: 'dialog' | 'pane'): Promise<void> {
-    if (state.running[base]) { notice('An obs command is running. Use /obs cancel to stop it.'); return }
+    const started = performance.now(), feature = presentation === 'dialog' ? usageFeature(args) : undefined
+    if (state.running[base]) {
+      if (feature) interaction(base, feature, 'rejected', started)
+      notice('An obs command is running. Use /obs cancel to stop it.')
+      return
+    }
+    const client = context.client
     const runID = crypto.randomUUID()
     const controller = new AbortController()
     aborts.add(controller)
@@ -237,6 +261,8 @@ export function setup(context: Plugin.Context): () => void {
     if (presentation === 'dialog') showResult(runID)
     let target = base
     let generation: number | undefined
+    let dispatched = false
+    let preflightOutcome: 'error' | 'rejected' = 'error'
     try {
       const parsed = parseArgs(args)
       if (!SESSIONLESS.has(parsed.sub)) {
@@ -244,7 +270,10 @@ export function setup(context: Plugin.Context): () => void {
         const analyze = parsed.sub === 'analyze' ? analyzeSelection(args) : undefined
         const selector = analyze ? analyze.session : parsed.flags.session
         const captureSessionID = analyze ? analyze.captureSessionId : parsed.flags['session-id']
-        if (base === 'home' && typeof selector !== 'string') throw new Error('Open a session before using this command, or select a saved session with --session. /obs help and /obs doctor are available here.')
+        if (base === 'home' && typeof selector !== 'string') {
+          preflightOutcome = 'rejected'
+          throw new Error('Open a session before using this command, or select a saved session with --session. /obs help and /obs doctor are available here.')
+        }
         if (typeof selector === 'string') {
           const resolved = await rpc().resolve({ sessionID: base, selector, ...(typeof captureSessionID === 'string' ? { captureSessionID } : {}) }, { location: location(base), signal: controller.signal })
           target = resolved.sessionID
@@ -267,7 +296,9 @@ export function setup(context: Plugin.Context): () => void {
       }
       const selectedModel = context.ui.model.current()
       const model = selectedModel ? { providerID: selectedModel.providerID, id: selectedModel.modelID, ...(selectedModel.variant === undefined ? {} : { variant: selectedModel.variant }) } : undefined
-      let result: CommandResult = await rpc().run({ sessionID: base, args, runID, model, useSynced: true }, { location: location(base), signal: controller.signal })
+      dispatched = true
+      let result: CommandResult = await rpc().run({ sessionID: base, args, runID, model, useSynced: true,
+        ...(presentation === 'pane' ? { paneSnapshot: true } : {}) }, { location: location(base), signal: controller.signal })
       if (result.confirmation) {
         update(draft => { draft.jobs[runID]!.text = result.text })
         const confirmed = await context.ui.dialog.confirm({ title: safeText(result.confirmation.title), message: safeText(result.confirmation.message), label: { confirm: 'Run', cancel: 'Cancel' } })
@@ -291,6 +322,9 @@ export function setup(context: Plugin.Context): () => void {
       if (presentation === 'pane' && result.text && !result.snapshot) notice(result.text)
       if (result.url && context.options.openBrowser === true) void openURL(result.url)
     } catch (error) {
+      if (!dispatched && feature && context.client === client) {
+        interaction(base, feature, controller.signal.aborted ? 'cancelled' : preflightOutcome, started)
+      }
       if (!disposed) {
         const message = controller.signal.aborted ? 'Obs command cancelled.' : errorText(error)
         update(draft => {
@@ -319,7 +353,12 @@ export function setup(context: Plugin.Context): () => void {
       else if (target !== base) args += ` ${quoteOption('session', target)}`
     }
     const invalid = validateArguments(args)
-    if (invalid) { notice(invalid, true); return }
+    if (invalid) {
+      const feature = usageFeature(args)
+      if (feature) interaction(base, feature, 'rejected', performance.now())
+      notice(invalid, true)
+      return
+    }
     const parsed = parseArgs(args)
     if (parsed.sub === 'cancel') { await cancel(base); return }
     if (parsed.sub === 'watch' || parsed.sub === 'statusline') {
@@ -327,15 +366,26 @@ export function setup(context: Plugin.Context): () => void {
       if (option && option !== 'on' && option !== 'off') { notice(`Usage: /obs ${parsed.sub} [on|off]`, true); return }
       const key = parsed.sub
       const enabled = option ? option === 'on' : !settings[key]
-      await updateSettings(draft => { draft[key] = enabled })
+      const started = performance.now()
+      let outcome: UsageInteraction['outcome'] = 'error'
+      try { await updateSettings(draft => { draft[key] = enabled }); outcome = 'success' }
+      finally { interaction(base, key, outcome, started) }
       notice(`${key} ${enabled ? 'on' : 'off'}`)
       if (enabled && base !== 'home') await refresh(selected(base))
       return
     }
     if (parsed.sub === 'pane') {
-      if (parsed.positional[0] === 'close') { context.ui.panel.close(); notice('Pane closed.'); return }
-      if (base === 'home') { notice('Open a session before opening the obs pane.', true); return }
-      if (!context.ui.panel.open(PANEL)) { notice('This surface cannot open a session panel.', true); return }
+      if (parsed.positional[0] === 'close') {
+        if (context.ui.panel.current()?.name === PANEL) paneAction(base, 'pane.close', () => context.ui.panel.close())
+        notice('Pane closed.'); return
+      }
+      const started = performance.now()
+      if (base === 'home' || !context.ui.panel.open(PANEL)) {
+        interaction(base, 'pane', 'rejected', started)
+        notice(base === 'home' ? 'Open a session before opening the obs pane.' : 'This surface cannot open a session panel.', true)
+        return
+      }
+      interaction(base, 'pane', 'success', started)
       if (parsed.flags.session) await execute(args.replace(/^pane\b/, 'overview'), base, 'pane')
       else await refresh(selected(base))
       return
@@ -385,7 +435,17 @@ export function setup(context: Plugin.Context): () => void {
     const compact = () => terminal().height < 34
     const short = () => terminal().height < 24
     const provenance = () => `${id()===props.panel.sessionID?'Current session':'Saved session'}${state.files[id()]?.captureSessionID?` · ${state.files[id()]!.captureSessionID}`:''}${known()?.title?` · ${known()!.title}`:''}`
-    const selectTab = (tab: number) => { update(draft => { draft.tab = tab }); scroll?.scrollTo(0) }
+    const selectTab = (tab: number) => {
+      if (tab !== state.tab) paneAction(props.panel.sessionID, 'pane.tab', () => update(draft => { draft.tab = tab }))
+      scroll?.scrollTo(0)
+    }
+    const manualRefresh = async () => {
+      const base = props.panel.sessionID, client = context.client, started = performance.now()
+      const outcome = await refresh(id())
+      if (context.client === client) interaction(base, 'pane.refresh', outcome, started)
+    }
+    const fullscreen = () => paneAction(props.panel.sessionID, 'pane.expand', () => props.panel.toggleFullscreen())
+    const close = () => paneAction(props.panel.sessionID, 'pane.close', () => props.panel.close())
     onMount(() => props.panel.focus())
     createEffect(() => { const target = id(); if (!state.snapshots[target] && !state.errors[target]) void refresh(target) })
     context.keymap.layer(() => ({
@@ -398,11 +458,11 @@ export function setup(context: Plugin.Context): () => void {
         { bind: 'pageup', title: 'Previous pane page', run: () => scroll?.scrollBy(-Math.max(1, (scroll?.height ?? terminal().height) - 1)) },
         { bind: 'home', title: 'Start of pane', run: () => scroll?.scrollTo(0) },
         { bind: 'end', title: 'End of pane', run: () => scroll?.scrollTo(scroll.scrollHeight) },
-        { bind: 'r', title: 'Refresh', run: () => refresh(id()) },
+        { bind: 'r', title: 'Refresh', run: manualRefresh },
         { bind: 'w', title: 'Toggle watch', run: () => command('watch') },
         { bind: 'd', title: 'Dashboard', run: () => command('dashboard', true) },
-        { bind: 'f', title: 'Toggle fullscreen', run: () => props.panel.toggleFullscreen() },
-        { bind: 'x', title: 'Close pane', run: () => props.panel.close() },
+        { bind: 'f', title: 'Toggle fullscreen', run: fullscreen },
+        { bind: 'x', title: 'Close pane', run: close },
       ],
     }))
     return <box flexDirection="column" flexGrow={1} minHeight={0} padding={1} gap={1} onMouseDown={() => props.panel.focus()}>
@@ -410,11 +470,11 @@ export function setup(context: Plugin.Context): () => void {
         <For each={TABS}>{(name, index) => <text fg={palette().tone(state.tab===index()?'info':'neutral')} onMouseDown={() => selectTab(index())}>{`${state.tab === index() ? '▸' : ''}${index() + 1} ${name}`}</text>}</For>
       </box>
       <box id="obs-pane-actions" flexDirection="row" flexWrap="wrap" flexShrink={0} columnGap={2} rowGap={0}>
-        <Action label="r Refresh" run={() => { void refresh(id()) }} />
+        <Action label="r Refresh" run={() => { void manualRefresh() }} />
         <Action label={short()?'w Watch':`w Watch ${settings.watch ? 'on' : 'off'}`} run={() => { void command('watch') }} />
         <Action label={short()?'d Web':'d Dashboard'} run={() => { void command('dashboard', true) }} />
-        <Action label={short()?'f Full':'f Fullscreen'} run={() => props.panel.toggleFullscreen()} />
-        <Action label="x Close" run={() => props.panel.close()} />
+        <Action label={short()?'f Full':'f Fullscreen'} run={fullscreen} />
+        <Action label="x Close" run={close} />
       </box>
       <Text muted>{short()?id()===props.panel.sessionID?'Current session':'Saved session':provenance()}</Text>
       <scrollbox id="obs-pane-body" ref={scroll} flexGrow={1} minHeight={0} scrollX={false} contentOptions={{ gap: 1 }}>
@@ -437,7 +497,7 @@ export function setup(context: Plugin.Context): () => void {
   }
 
   const stopPanel = context.ui.slot({ append: 'session.panel', render: panel => <Show when={panel.name === PANEL}>
-    <ErrorBoundary fallback={() => <box padding={1} flexDirection="column" gap={1}><Text>Unable to draw the obs pane.</Text><Action label="Retry" run={() => { context.ui.panel.close(); void command('pane') }} /><Action label="Close" run={() => panel.close()} /></box>}>
+    <ErrorBoundary fallback={() => <box padding={1} flexDirection="column" gap={1}><Text>Unable to draw the obs pane.</Text><Action label="Retry" run={() => { context.ui.panel.close(); void command('pane') }} /><Action label="Close" run={() => paneAction(panel.sessionID, 'pane.close', () => panel.close())} /></box>}>
       <Pane panel={panel} />
     </ErrorBoundary>
   </Show> })

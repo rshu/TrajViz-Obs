@@ -1,0 +1,288 @@
+import { expect, mock, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
+import { SNAPSHOT } from './testdata/snapshot'
+
+const CACHE = '/cache/trajviz-obs'
+const PYTHON = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
+const CUSTOM_PYTHON = '/opt/custom-python/bin/python'
+const ENDPOINT = 'http://127.0.0.1:8765/v1/events'
+const TOKEN = 'A'.repeat(43)
+const PRIVATE_VALUE = 'PRIVATE-SESSION-PATH-OR-CONTENT'
+const TOOL = 'mcp__trajviz-obs__obs'
+const STATE = JSON.stringify({ revision: 6, python: PYTHON, trajviz: '0.5.0', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.5.0', createdAt: 1 })
+const DONE = { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+
+function host(on: On, settings: { consent?: string; endpoint?: string; token?: string; settingsEnv?: Record<string, string>; status?: unknown; withoutRuntime?: boolean }, sender?: Promise<void>) {
+  const calls: { argv: string[]; env?: Record<string, string> }[] = []
+  const envReads: string[] = []
+  const fileReads: string[] = []
+  let snapshots = 0
+  let settingsRead = false
+  let notify = () => {}
+  on('env.get', (_, e) => {
+    envReads.push(e.name)
+    notify()
+    return { value: { TRAJVIZ_OBS_TELEMETRY: settings.consent, TRAJVIZ_OBS_TELEMETRY_URL: settings.endpoint,
+      TRAJVIZ_OBS_TELEMETRY_TOKEN: settings.token, XDG_CACHE_HOME: '/cache' }[e.name] }
+  })
+  on('command.register', () => ({ value: { command: 'obs' } }))
+  on('settings.read', () => {
+    settingsRead = true
+    notify()
+    return { value: settings.settingsEnv ? { env: settings.settingsEnv } : {} }
+  })
+  on('tool.register', () => ({ value: { tool: TOOL } }))
+  on('tool.call', { tool: 'AskUserQuestion' }, () => ({ deny: 'dismissed' }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('classic.SessionStart', () => ({}))
+  on('session.id', () => ({ value: 'test-session' }))
+  on('session.cwd', () => ({ value: '/workspace' }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 100_000, percent: 0 }, rateLimits: [] } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  on('ui.close', () => ({ value: undefined }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 1_000, mtimeMs: 10, isLink: false } }))
+  on('fs.exists', (_, e) => ({ value: e.path === PYTHON }))
+  on('fs.read', (_, e) => {
+    fileReads.push(e.path)
+    if (e.path.endsWith('/.claude-plugin/plugin.json')) return { value: '{"version":"1.2.3"}' }
+    if (e.path === `${CACHE}/state.json` && !settings.withoutRuntime) return { value: STATE }
+    return { deny: 'not found' }
+  })
+  on('process.run', async (_, e) => {
+    if (e.argv[0] === CUSTOM_PYTHON && e.argv[1] === '--version') {
+      return { value: { ...DONE.value, stdout: 'Python 3.11.9' } }
+    }
+    if (e.argv[3] === 'snapshot') {
+      snapshots++
+      return { value: { ...DONE.value, stdout: JSON.stringify(SNAPSHOT) } }
+    }
+    if (!e.argv[2]?.endsWith('/bridge/telemetry_client.py')) return { deny: 'unexpected process' }
+    calls.push({ argv: [...e.argv], env: e.init?.env })
+    notify()
+    if (e.argv[3] === '--status') return { value: { ...DONE.value, stdout: JSON.stringify(settings.status) } }
+    await sender
+    return DONE
+  })
+  async function call(n: number) {
+    while (calls.length < n) await new Promise<void>(resolve => { notify = resolve })
+    return calls[n - 1]!
+  }
+  async function envRead(name: string) {
+    while (!envReads.includes(name)) await new Promise<void>(resolve => { notify = resolve })
+  }
+  async function readSettings() {
+    while (!settingsRead) await new Promise<void>(resolve => { notify = resolve })
+  }
+  return { calls, envReads, fileReads, call, envRead, readSettings, snapshots: () => snapshots }
+}
+
+const command = (args: string) => ({
+  command: 'obs', args, origin: { kind: 'composer' as const }, presentation: { columns: 80, isFullscreen: false },
+})
+const end = { reason: 'prompt_input_exit' as const, sessionId: 'test-session', resume: { id: 'test-session' } }
+
+const pane = {
+  plugin: 'trajviz-obs', surface: 'terminal', component: 'Pane', requestId: 'obs',
+  props: { title: 'obs', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 50 }, view: {} },
+} as const
+
+test('launch consent requires the exact opt-in and an endpoint before any runtime work', async ($, on) => {
+  const settings = { consent: 'true', endpoint: ENDPOINT }
+  const world = host(on, settings)
+  await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+  const help = await $.command.run(command('help'))
+  expect(help.text).toContain('Start here:')
+  expect(world.envReads).toContain('TRAJVIZ_OBS_TELEMETRY')
+  expect(world.envReads).not.toContain('TRAJVIZ_OBS_TELEMETRY_URL')
+
+  settings.consent = '1'
+  settings.endpoint = ''
+  await $.command.run(command('help'))
+  await world.envRead('TRAJVIZ_OBS_TELEMETRY_URL')
+  expect(world.fileReads).toEqual([])
+  expect(world.calls).toEqual([])
+})
+
+test('Claude records fixed feature names and outcomes without waiting for the sender', async ($, on) => {
+  let release: () => void = () => {}
+  const sender = new Promise<void>(resolve => { release = resolve })
+  const world = host(on, { consent: '1', endpoint: ENDPOINT, token: TOKEN }, sender)
+  try {
+    await $.session.start({ cwd: '/workspace', surface: 'desktop', isInteractive: true })
+    const start = await world.call(1)
+    expect(start.argv[0]).toBe(PYTHON)
+    expect(start.argv.slice(3)).toEqual([
+      '--adapter', 'claude-code', '--surface', 'desktop', '--feature', 'activation',
+      '--outcome', 'success', '--duration-ms', '0', '--version', '1.2.3',
+    ])
+    expect(start.env).toEqual({ TRAJVIZ_OBS_TELEMETRY: '1', TRAJVIZ_OBS_TELEMETRY_URL: ENDPOINT, TRAJVIZ_OBS_TELEMETRY_TOKEN: TOKEN })
+    expect(JSON.stringify(start.argv)).not.toContain(TOKEN)
+
+    const help = await $.command.run(command('help'))
+    expect(help.text).toContain('Start here:')
+    expect((await world.call(2)).argv.slice(7, 11)).toEqual(['--feature', 'help', '--outcome', 'success'])
+
+    const rejected = await $.command.run(command(`dashboard --html ${PRIVATE_VALUE} --port 7000`))
+    expect(rejected.text).toContain('cannot be combined')
+    expect((await world.call(3)).argv.slice(7, 11)).toEqual(['--feature', 'dashboard.html', '--outcome', 'rejected'])
+
+    const declined = await $.command.run(command('dashboard'))
+    expect(declined.text).toContain('extra is not installed')
+    expect((await world.call(4)).argv.slice(7, 11)).toEqual(['--feature', 'dashboard', '--outcome', 'cancelled'])
+
+    const unknown = await $.command.run(command(PRIVATE_VALUE))
+    expect(unknown.text).toContain('Unknown subcommand')
+    const result = await $.tool.call({ tool: TOOL, what: PRIVATE_VALUE } as never)
+    expect(result).toEqual({ result: 'what must be one of brief, issues, health, view.' })
+    expect((await world.call(5)).argv.slice(7, 11)).toEqual(['--feature', 'tool', '--outcome', 'rejected'])
+    expect(world.calls).toHaveLength(5)
+    expect(JSON.stringify(world.calls)).not.toContain(PRIVATE_VALUE)
+  } finally {
+    release()
+  }
+})
+
+test('Claude records cold-start usage and reads status with the configured interpreter', { options: { python: CUSTOM_PYTHON } }, async ($, on) => {
+  const world = host(on, { consent: '1', endpoint: ENDPOINT, withoutRuntime: true, status: { configuration: 'ready' } })
+  await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+  expect((await world.call(1)).argv[0]).toBe(CUSTOM_PYTHON)
+  expect((await $.command.run(command('help'))).text).toContain('Start here:')
+  expect((await world.call(2)).argv[0]).toBe(CUSTOM_PYTHON)
+  expect((await $.command.run(command('telemetry'))).text).toContain('Usage telemetry · On')
+  expect(world.calls[2]?.argv).toEqual([CUSTOM_PYTHON, '-I', world.calls[0]?.argv[2], '--status', '--adapter', 'claude-code'])
+})
+
+test('Claude settings cannot supply the telemetry endpoint', async ($, on) => {
+  const world = host(on, { consent: '1', endpoint: ENDPOINT, settingsEnv: { TRAJVIZ_OBS_TELEMETRY_URL: ENDPOINT } })
+  await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+  const help = await $.command.run(command('help'))
+  expect(help.text).toContain('Start here:')
+  await world.readSettings()
+  expect(world.fileReads).toEqual([])
+  expect(world.calls).toEqual([])
+})
+
+test('Claude settings cannot inject a credential or expose it in local status', async ($, on) => {
+  const world = host(on, { consent: '1', endpoint: ENDPOINT, token: TOKEN, settingsEnv: { trajviz_obs_telemetry_token: TOKEN } })
+  await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+  const status = await $.command.run(command('telemetry'))
+  expect(status.text).toContain('Usage telemetry · Off')
+  expect(status.text).not.toContain(TOKEN)
+  expect(world.envReads).not.toContain('TRAJVIZ_OBS_TELEMETRY_TOKEN')
+  expect(world.calls).toEqual([])
+})
+
+test('local telemetry status uses a read-only helper and displays only allowed fields', async ($, on) => {
+  const world = host(on, { consent: '1', endpoint: ENDPOINT, token: TOKEN, status: {
+    configuration: 'ready', credential_configured: true, queue_state: 'present', queued: 3, queue_capacity: 512,
+    last_success_at: '2026-11-11T08:15:02Z', last_failure: 'throttled', last_http_status: 429,
+    last_failure_at: PRIVATE_VALUE, retry_at: '2026-11-11T08:16:00+00:00', dropped: 1, expired: 0, rejected: 2,
+    unknown: PRIVATE_VALUE,
+  } })
+  await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+  await world.call(1)
+  const result = await $.command.run(command('telemetry'))
+  expect(result.text).toContain('Usage telemetry · On')
+  expect(result.text).toContain('Collector credential · Configured')
+  expect(result.text).toContain('Queued events · 3 / 512')
+  expect(result.text).toContain('Last successful upload · 2026-11-11T08:15:02Z')
+  expect(result.text).toContain('Collector throttled delivery (HTTP 429)')
+  expect(result.text).toContain('Retry eligible from · 2026-11-11T08:16:00Z')
+  expect(result.text).toContain('Dropped from full queue · 1')
+  expect(result.text).toContain('Expired · 0')
+  expect(result.text).toContain('Rejected · 2')
+  for (const privateValue of [TOKEN, PRIVATE_VALUE, ENDPOINT]) expect(result.text).not.toContain(privateValue)
+  expect(world.calls).toHaveLength(2)
+  expect(world.calls[1]?.argv.slice(3)).toEqual(['--status', '--adapter', 'claude-code'])
+})
+
+test('graceful exit gives pending telemetry a chance to finish without delaying a command', async ($, on) => {
+  const clock = mock.clock(on)
+  let release = () => {}
+  const sender = new Promise<void>(resolve => { release = resolve })
+  const world = host(on, { consent: '1', endpoint: ENDPOINT }, sender)
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  try {
+    await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+    expect((await $.command.run(command('help'))).text).toContain('Start here:')
+    const ending = $.session.end(end)
+    let finished = false
+    void ending.then(() => { finished = true })
+    await world.call(2)
+    await clock.settle()
+    expect(finished).toBe(false)
+    release()
+    expect(await ending).toEqual({ sessionId: 'test-session' })
+  } finally {
+    release()
+  }
+})
+
+test('graceful exit is bounded when telemetry cannot finish', async ($, on) => {
+  const clock = mock.clock(on)
+  let release = () => {}
+  const sender = new Promise<void>(resolve => { release = resolve })
+  const world = host(on, { consent: '1', endpoint: ENDPOINT }, sender)
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  try {
+    await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+    await world.call(1)
+    const ending = $.session.end(end)
+    await clock.settle()
+    await clock.advance(750)
+    expect(await ending).toEqual({ sessionId: 'test-session' })
+  } finally {
+    release()
+  }
+})
+
+test('native pane controls record explicit actions using fixed features', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_700_000_000_000 })
+  const world = host(on, { consent: '1', endpoint: ENDPOINT })
+  on('ui.panes', () => ({ value: [{ id: 'obs', title: 'obs', isShown: true, isFocused: true, isPlaced: true }] }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+  await world.call(1)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: `/tmp/${PRIVATE_VALUE}.jsonl`, session_id: 'test-session' })
+  const ui = await $.ui.mount(pane)
+  try {
+    await ui.press({ key: 'tab:3' })
+    expect((await world.call(2)).argv.slice(5, 11)).toEqual(['--surface', 'terminal', '--feature', 'pane.tab', '--outcome', 'success'])
+    await ui.press({ key: 'refresh' })
+    expect((await world.call(3)).argv.slice(7, 11)).toEqual(['--feature', 'pane.refresh', '--outcome', 'success'])
+    expect(world.snapshots()).toBe(1)
+
+    await $.turn.complete({ answer: 'done', durationMs: 100, isAborted: false, turnId: 'test-turn', reason: 'answer' })
+    await clock.settle()
+    expect(world.snapshots()).toBe(2)
+    expect(world.calls).toHaveLength(3)
+
+    await ui.press({ key: 'watch' })
+    expect((await world.call(4)).argv.slice(7, 11)).toEqual(['--feature', 'watch', '--outcome', 'success'])
+    expect(JSON.stringify(world.calls)).not.toContain(PRIVATE_VALUE)
+  } finally {
+    await ui.unmount()
+  }
+})
+
+test('slash and fallback pane closes each report once', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_700_000_000_000 })
+  const world = host(on, { consent: '1', endpoint: ENDPOINT })
+  on('state.get', { plugin: 'trajviz-obs', key: 'latest' }, () => ({ deny: 'synthetic render failure' }))
+  await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+  await world.call(1)
+
+  expect((await $.command.run(command('pane close'))).text).toBe('obs pane closed.')
+  expect((await world.call(2)).argv.slice(7, 11)).toEqual(['--feature', 'pane.close', '--outcome', 'success'])
+
+  const ui = await $.ui.mount(pane)
+  try {
+    await ui.press({ key: 'close' })
+    expect((await world.call(3)).argv.slice(7, 11)).toEqual(['--feature', 'pane.close', '--outcome', 'success'])
+    await clock.settle()
+    expect(world.calls).toHaveLength(3)
+  } finally {
+    await ui.unmount()
+  }
+})

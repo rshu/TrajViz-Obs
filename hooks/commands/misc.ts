@@ -6,9 +6,10 @@ import { ensureEnv, ensureExtra, readEnvState, trajvizSource, type EnvState, typ
 import { BUSY_STALE_MS, BUSY_TEXT, FIRST_RUN_TOAST, ensureReady, sessionArgv } from '../lib/snapshot'
 import { claimRefresh, releaseRefresh } from '../lib/state'
 import { publicationGeneration } from '../lib/publication'
+import { markOutcome } from '../lib/telemetry'
 import { restoreStatusLine } from '../lib/watch'
 import type { CommandContext } from './index'
-import { EMPTY_TEXT, errorRow, captureSessionSpec, sessionSpec } from './overview'
+import { EMPTY_TEXT, observedError, captureSessionSpec, sessionSpec } from './overview'
 import { fmtWhen } from './sessions'
 
 /** `doctor` answers at once; attribution and collectors can load a complete run: the plan's 600 s. */
@@ -87,24 +88,24 @@ async function attribution($: EngineInterface, ctx: CommandContext, spec: string
   const values: string[] = []
   for (const name of ['reference-root', 'agent', 'instance']) {
     const v = ctx.parsed.flags[name]
-    if (v === true || (typeof v === 'string' && !v.trim())) return ATTRIBUTION_USAGE
+    if (v === true || (typeof v === 'string' && !v.trim())) return markOutcome(ctx.telemetry, 'rejected', ATTRIBUTION_USAGE)
     if (v !== undefined) values.push(`--${name}`, v)
   }
   await ensureReady($, ctx.options)
   const { argv } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
   const doc = await runBridge<Empty | AttributionDoc>($, ['attribution', ...argv, ...values], { timeoutMs: PASS_TIMEOUT_MS })
-  if ('empty' in doc) return EMPTY_TEXT
+  if ('empty' in doc) return markOutcome(ctx.telemetry, 'empty', EMPTY_TEXT)
   return attributionText(doc)
 }
 
 /** `collect …`: every argument through to `agent-trajviz-collect`; what it wrote, and its exit status when not 0. */
 async function collect($: EngineInterface, ctx: CommandContext): Promise<string> {
   const args = passArgs(ctx.args)
-  if (args.length === 0) return COLLECT_USAGE
+  if (args.length === 0) return markOutcome(ctx.telemetry, 'rejected', COLLECT_USAGE)
   await ensureReady($, ctx.options)
   const doc = await runBridge<CollectDoc>($, ['collect', '--', ...args], { timeoutMs: PASS_TIMEOUT_MS })
   const parts = [doc.stdout.trimEnd(), doc.stderr.trimEnd()].filter(Boolean)
-  if (doc.exit !== 0) parts.push(`agent-trajviz-collect exited with ${doc.exit}.`)
+  if (doc.exit !== 0) parts.push(markOutcome(ctx.telemetry, 'error', `agent-trajviz-collect exited with ${doc.exit}.`))
   return parts.length ? parts.join('\n') : 'agent-trajviz-collect printed nothing.'
 }
 
@@ -145,7 +146,7 @@ export function setupText(state: EnvState, source: string): string {
 async function setup($: EngineInterface, ctx: CommandContext): Promise<string> {
   const extras = parseExtras(ctx.parsed.flags['extras'])
   const sourceFlag = ctx.parsed.flags['source']
-  if (extras === undefined || sourceFlag === true || (typeof sourceFlag === 'string' && !sourceFlag.trim())) return SETUP_USAGE
+  if (extras === undefined || sourceFlag === true || (typeof sourceFlag === 'string' && !sourceFlag.trim())) return markOutcome(ctx.telemetry, 'rejected', SETUP_USAGE)
   const options: PluginOptions = sourceFlag === undefined ? ctx.options : { ...ctx.options, trajvizSource: sourceFlag }
   const source = trajvizSource(options)
   const claim = await claimRefresh($, BUSY_STALE_MS)
@@ -226,12 +227,12 @@ export function doctorText(doc: DoctorDoc, state: EnvState, options: PluginOptio
  */
 async function doctor($: EngineInterface, ctx: CommandContext): Promise<string> {
   const state = await readEnvState($)
-  if (state === null) return NO_ENV_TEXT
+  if (state === null) return markOutcome(ctx.telemetry, 'empty', NO_ENV_TEXT)
   try {
     const doc = await runBridge<DoctorDoc>($, ['doctor', '--cwd', await $.session.cwd()], { timeoutMs: DOCTOR_TIMEOUT_MS })
     return doctorText(doc, state, ctx.options)
   } catch (e) {
-    return ['obs doctor', ...envRows(state), row('error', errorRow(e))].join('\n')
+    return ['obs doctor', ...envRows(state), row('error', observedError(ctx.telemetry, e))].join('\n')
   }
 }
 
@@ -250,6 +251,6 @@ export async function misc($: EngineInterface, ctx: CommandContext): Promise<Com
         return { text: await doctor($, ctx) }
     }
   } catch (e) {
-    return { text: errorRow(e, spec) }
+    return { text: observedError(ctx.telemetry, e, spec) }
   }
 }

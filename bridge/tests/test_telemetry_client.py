@@ -1,0 +1,309 @@
+"""Test the plugin telemetry transport without contacting an external service."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import urllib.error
+from contextlib import closing
+from datetime import datetime
+from email.message import Message
+from email.utils import format_datetime
+from threading import Event
+from uuid import uuid4
+
+import pytest
+
+import telemetry_client as client
+from telemetry_protocol import DURATION_BUCKETS, duration_bucket, validate_payload
+from trajviz_obs.dashboard_usage import DashboardUsage
+
+ENDPOINT = "http://127.0.0.1:18752/v1/events"
+TOKEN = "a" * 42 + "E"
+ROTATED = "b" * 42 + "I"
+ACCEPTED = client._Delivery("accepted")
+ARGV = ["--adapter", "claude-code", "--surface", "terminal", "--feature", "overview",
+        "--outcome", "success", "--duration-ms", "350", "--version", "0.3.8"]
+
+
+@pytest.fixture
+def opted_in(monkeypatch, tmp_path):
+    state = tmp_path / "telemetry"
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY", "1")
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_URL", ENDPOINT)
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_STATE_DIR", str(state))
+    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", raising=False)
+    return state
+
+
+@pytest.mark.parametrize("url", [
+    "https://user:secret@example.test/v1/events", "https://example.test/v1/events?token=x",
+    "https://example.test/v1/events#fragment", "http://example.test/v1/events",
+    "https://example.test/other", "https://example.test:0/v1/events",
+    "https://example.test:90000/v1/events", "https://[bad/v1/events", "https://e\nxample.test/v1/events",
+])
+def test_unusable_endpoints_never_create_local_state(opted_in, monkeypatch, url):
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_URL", url)
+    assert client.main(ARGV) == 0
+    assert not opted_in.exists()
+
+
+def test_disabled_sender_never_creates_state(opted_in, monkeypatch):
+    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
+    assert client.main(ARGV) == 0
+    assert not opted_in.exists()
+
+
+def test_activation_and_commands_share_an_id_only_within_the_same_adapter_and_endpoint(opted_in, monkeypatch):
+    sent = []
+
+    def send(url, payload, *, token):
+        sent.append((url, validate_payload(payload)))
+        assert token is None
+        return ACCEPTED
+
+    monkeypatch.setattr(client, "_send", send)
+    activation = ["--feature", "activation", "--duration-ms", "0"]
+    assert client.main([*ARGV, *activation]) == client.main([*ARGV, *activation]) == client.main(ARGV) == 0
+    assert len(sent) == 2
+    assert [batch["events"][0]["feature"] for _, batch in sent] == ["activation", "overview"]
+    ids = [batch["installation_id"] for _, batch in sent]
+    assert ids[0] == ids[1]
+    assert sent[1][1]["events"][0]["duration_bucket"] == "100ms_1s"
+    assert client.main([*ARGV, "--adapter", "opencode", "--surface", "desktop"]) == 0
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_URL", "https://collector.example.test/v1/events")
+    assert client.main(ARGV) == 0
+    assert len({batch["installation_id"] for _, batch in sent}) == 3
+
+
+def test_sender_retries_with_the_same_event_ids_after_backoff(opted_in, monkeypatch):
+    batches = []
+
+    def send(_endpoint, payload, *, token):
+        batches.append(payload)
+        return ACCEPTED if len(batches) > 1 else client._Delivery("retry", "network")
+
+    monkeypatch.setattr(client, "_send", send)
+    assert client.main(ARGV) == client.main(ARGV) == 0
+    assert len(batches) == 1
+    with closing(sqlite3.connect(next(opted_in.glob("*.sqlite3")))) as database, database:
+        database.execute("UPDATE sender SET retry_at = 0")
+    assert client.main([*ARGV, "--feature", "dashboard.html"]) == 0
+    retry = batches[1]
+    assert len(retry["events"]) == 3
+    assert retry["events"][0]["id"] == batches[0]["events"][0]["id"]
+    assert retry["installation_id"] == batches[0]["installation_id"]
+    with closing(sqlite3.connect(next(opted_in.glob("*.sqlite3")))) as database:
+        assert database.execute("SELECT COUNT(*) FROM pending").fetchone() == (0,)
+
+
+def test_retry_after_is_honored_and_bounded_with_jitter(monkeypatch):
+    deadline = format_datetime(datetime.fromtimestamp(120, client._UTC), usegmt=True)
+    assert client._retry_after(deadline, 100) == 20
+    assert client._retry_after(deadline, 200) == 0
+    assert client._retry_after("60", 100) == 60
+    assert client._retry_after("99999999", 100) == client.MAX_RETRY_SECONDS
+    assert client._retry_after("invalid", 100) is None
+    monkeypatch.setattr(client.random, "uniform", lambda low, high: (low + high) / 2)
+    assert 30 < client._retry_delay(1, None) <= 36
+    assert 120 < client._retry_delay(1, 120) <= 144
+    assert client._retry_delay(8, 99999999) == client.MAX_RETRY_SECONDS
+
+
+@pytest.mark.parametrize(("code", "kind", "failure"), [
+    (204, "accepted", None), (400, "payload", "payload_rejected"), (413, "payload", "payload_rejected"),
+    (422, "payload", "payload_rejected"), (401, "blocked", "authentication"), (403, "blocked", "authentication"),
+    (404, "blocked", "endpoint"), (302, "blocked", "endpoint"), (415, "blocked", "endpoint"),
+    (429, "retry", "throttled"), (503, "retry", "collector_unavailable"),
+])
+def test_http_results_are_classified(code, kind, failure):
+    response = client._http_result(code, "120")
+    assert (response.kind, response.failure) == (kind, failure)
+    assert response.retry_after == (120 if kind == "retry" else None)
+
+
+def test_sender_uses_bearer_header_and_keeps_retry_hint(monkeypatch):
+    headers = Message()
+    headers["Retry-After"] = "44"
+    seen = []
+
+    class Opener:
+        def open(self, request, *, timeout):
+            seen.append(request)
+            assert timeout == client.NETWORK_TIMEOUT
+            raise urllib.error.HTTPError(request.full_url, 429, "not used", headers, None)
+
+    monkeypatch.setattr(client.urllib.request, "build_opener", lambda *_: Opener())
+    assert client._send(ENDPOINT, {}, token=TOKEN) == client._Delivery("retry", "throttled", 429, 44)
+    request, = seen
+    assert request.full_url == ENDPOINT
+    assert request.get_header("Authorization") == f"Bearer {TOKEN}"
+    assert TOKEN.encode() not in request.data
+
+
+def test_invalid_token_never_sends_or_creates_state(opted_in, monkeypatch, capsys):
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", "\r\ninvalid-secret")
+    monkeypatch.setattr(client, "_send", lambda *_args, **_kwargs: pytest.fail("unexpected delivery"))
+    assert client.main(ARGV) == 0
+    assert client.main(["--status", "--adapter", "claude-code"]) == 0
+    output = capsys.readouterr().out
+    status = json.loads(output)
+    assert status["configuration"] == "invalid_token"
+    assert status["credential_configured"] is True
+    assert status["queue_state"] == "absent" and status["queued"] == 0
+    assert "invalid-secret" not in output and ENDPOINT not in output
+    assert not opted_in.exists()
+
+
+def test_rotated_credential_retries_without_resetting_identity(opted_in, monkeypatch):
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", TOKEN)
+    sent = []
+
+    def send(_endpoint, payload, *, token):
+        sent.append((payload, token))
+        return ACCEPTED if token == ROTATED else client._http_result(401)
+
+    monkeypatch.setattr(client, "_send", send)
+    assert client.main(ARGV) == client.main(ARGV) == 0
+    assert len(sent) == 1
+    status = client.delivery_status(client.os.environ, "claude-code")
+    assert status["queued"] == 2 and status["last_failure"] == "authentication"
+    assert status["last_http_status"] == 401 and status["retry_at"] is not None
+    assert status["last_success_at"] is None
+
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", ROTATED)
+    status = client.delivery_status(client.os.environ, "claude-code")
+    assert status["retry_at"] is None
+    assert client.main(ARGV) == 0
+    assert len(sent) == 2 and sent[1][1] == ROTATED
+    assert sent[1][0]["installation_id"] == sent[0][0]["installation_id"]
+    assert sent[1][0]["events"][0]["id"] == sent[0][0]["events"][0]["id"]
+    status = client.delivery_status(client.os.environ, "claude-code")
+    assert status["queued"] == 0 and status["last_success_at"] is not None
+    assert not any(value in json.dumps(status) for value in (TOKEN, ROTATED, ENDPOINT, sent[0][0]["installation_id"]))
+    queue, = opted_in.glob("*.sqlite3")
+    assert TOKEN.encode() not in queue.read_bytes() and ROTATED.encode() not in queue.read_bytes()
+
+
+def test_permanent_payload_rejection_isolates_one_row_across_bounded_runs(opted_in, monkeypatch):
+    sent = []
+    delivered = []
+    for feature in ["help", *(["overview"] * 16)]:
+        assert client.queue_usage(ENDPOINT, opted_in, adapter="claude-code", surface="terminal", feature=feature,
+                                  outcome="success", duration_ms=350, version="0.3.8")
+
+    def send(_endpoint, payload, *, token):
+        events = payload["events"]
+        sent.append(len(events))
+        if any(event["feature"] == "help" for event in events):
+            return client._http_result(400)
+        delivered.extend(event["id"] for event in events)
+        return ACCEPTED
+
+    monkeypatch.setattr(client, "_send", send)
+    for _ in range(5):
+        before = len(sent)
+        client.flush_usage(ENDPOINT, opted_in, "claude-code")
+        assert len(sent) - before <= client.MAX_BATCHES_PER_RUN
+    assert sent[:5] == [17, 8, 4, 2, 1]
+    assert len(set(delivered)) == len(delivered) == 16
+    status = client.delivery_status(client.os.environ, "claude-code")
+    assert status["queued"] == 0 and status["rejected"] == 1
+    assert status["last_failure"] == "payload_rejected" and status["last_http_status"] == 400
+    assert status["last_success_at"] is not None
+
+
+def test_status_reads_legacy_queue_without_migrating_it(opted_in, monkeypatch):
+    monkeypatch.setattr(client, "_send", lambda *_args, **_kwargs: pytest.fail("unexpected delivery"))
+    assert client.delivery_status(client.os.environ, "claude-code")["queue_state"] == "absent"
+    assert not opted_in.exists()
+    assert client.queue_usage(ENDPOINT, opted_in, adapter="claude-code", surface="terminal", feature="help",
+                              outcome="success", duration_ms=350, version="0.3.8")
+    queue, = opted_in.glob("*.sqlite3")
+    with closing(sqlite3.connect(queue)) as database, database:
+        database.execute("DROP TABLE sender_health")
+        installation = database.execute("SELECT installation_id FROM sender").fetchone()[0]
+    before = queue.read_bytes()
+    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
+    status = client.delivery_status(client.os.environ, "claude-code")
+    assert status["configuration"] == "disabled"
+    assert status["queue_state"] == "present" and status["queued"] == 1
+    assert status["last_success_at"] is None and installation not in json.dumps(status)
+    assert queue.read_bytes() == before
+    assert client.queue_usage(ENDPOINT, opted_in, adapter="claude-code", surface="terminal", feature="help",
+                              outcome="success", duration_ms=350, version="0.3.8")
+    with closing(sqlite3.connect(queue)) as database:
+        assert database.execute("SELECT installation_id FROM sender").fetchone()[0] == installation
+        assert database.execute("SELECT count(*) FROM pending").fetchone()[0] == 2
+        assert database.execute("SELECT rejected FROM sender_health").fetchone()[0] == 0
+
+
+def test_queue_is_bounded_and_a_single_sender_claims_a_batch(opted_in, monkeypatch):
+    monkeypatch.setattr(client, "MAX_PENDING", 2)
+    now, cutoff = "2026-10-20", "2026-10-13"
+    event = {"day": now, "surface": "desktop", "feature": "view",
+             "outcome": "success", "duration_bucket": "lt_100ms", "version": "0.5.4"}
+    with (closing(client._open_queue(opted_in, "opencode", ENDPOINT)) as database,
+          closing(client._open_queue(opted_in, "opencode", ENDPOINT)) as second):
+        ids = [uuid4().hex for _ in range(4)]
+        for event_id, day in zip(ids, ("2026-10-12", now, now, now), strict=True):
+            client._record(database, {**event, "id": event_id, "day": day}, cutoff)
+        lease, batch = client._claim(database, "opencode", 100)
+        assert [row["id"] for row in batch["events"]] == ids[-2:]
+        assert client._claim(second, "opencode", 99.9) is None
+        assert client._claim(second, "opencode", 100) is None
+        next_lease, _ = client._claim(second, "opencode", 100 + client.LEASE_SECONDS)
+        client._finish(database, lease, batch, ACCEPTED, 120)
+        assert database.execute("SELECT COUNT(*) FROM pending").fetchone() == (2,)
+        client._finish(second, next_lease, batch, ACCEPTED, 120)
+        assert database.execute("SELECT COUNT(*) FROM pending").fetchone() == (0,)
+        assert database.execute("SELECT dropped, expired FROM sender_health").fetchone() == (1, 1)
+
+
+def test_corrected_clock_unblocks_valid_events(opted_in):
+    today, cutoff = "2026-11-11", "2026-11-04"
+    event = {"id": uuid4().hex, "day": today, "surface": "desktop", "feature": "help",
+             "outcome": "success", "duration_bucket": "lt_100ms", "version": "0.5.4"}
+    with closing(client._open_queue(opted_in, "opencode", ENDPOINT)) as database:
+        client._record(database, {**event, "id": uuid4().hex, "day": "2026-11-20"}, cutoff)
+        with database:
+            database.execute("UPDATE sender SET lease = 'old', lease_until = 900000, retry_at = 900000, failures = 7")
+        client._record(database, event, cutoff)
+        lease, payload = client._claim(database, "opencode", 100)
+        assert lease != "old"
+        assert payload["events"] == [event]
+        assert database.execute("SELECT failures FROM sender").fetchone() == (0,)
+
+
+def test_dashboard_persists_actions_while_delivery_is_stalled(opted_in, monkeypatch):
+    sending = Event()
+    release = Event()
+
+    def stalled_send(_endpoint, _payload, *, token):
+        sending.set()
+        release.wait(timeout=5)
+        return client._Delivery("retry", "network")
+
+    monkeypatch.setattr(client, "_send", stalled_send)
+    dashboard = DashboardUsage(ENDPOINT, opted_in, "claude-code", "0.3.8")
+    dashboard._enqueue("dashboard.render")
+    try:
+        assert sending.wait(timeout=5)
+        dashboard._enqueue("dashboard.tab")
+        queue, = opted_in.glob("client-*.sqlite3")
+        with closing(sqlite3.connect(queue)) as database:
+            assert database.execute("SELECT count(*) FROM pending").fetchone() == (2,)
+    finally:
+        release.set()
+
+
+def test_protocol_accepts_only_fixed_fields_and_duration_buckets():
+    assert [duration_bucket(ms) for ms in (0, 100, 1000, 5000, 30_000)] == list(DURATION_BUCKETS)
+    event = {"id": uuid4().hex, "day": "2026-11-11", "surface": "terminal", "feature": "view",
+             "outcome": "success", "duration_bucket": "lt_100ms", "version": "0.3.8"}
+    batch = {"schema_version": 1, "adapter": "claude-code", "installation_id": uuid4().hex, "events": [event]}
+    assert validate_payload(batch) is batch
+    for invalid in ({**event, "args": "private string"}, {**event, "feature": "private-string"},
+                    {**event, "day": "2026-02-31"}, {**event, "version": "private version"}):
+        with pytest.raises(ValueError):
+            validate_payload({**batch, "events": [invalid]})

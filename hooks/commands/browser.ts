@@ -7,8 +7,9 @@ import { publicationGeneration } from '../lib/publication'
 import { type Kind, hasServer, portOf, running, serverSourceMatches, startServer, stopServer } from '../lib/servers'
 import { resolveTranscript } from '../lib/session'
 import { ensureReady, sessionArgv } from '../lib/snapshot'
+import { dashboardUsageArgs, markOutcome } from '../lib/telemetry'
 import type { CommandContext } from './index'
-import { errorRow, captureSessionSpec, sessionSpec } from './overview'
+import { observedError, captureSessionSpec, sessionSpec } from './overview'
 
 const MAX_PORT = 65_535
 let unverifiedSidecar = 0
@@ -66,13 +67,14 @@ function openedTail(sub: 'dashboard' | 'converge', url: string, opened: OpenResu
 async function serve($: EngineInterface, ctx: CommandContext, sub: 'dashboard' | 'converge', argv: string[], what: (preloaded: boolean) => string, revision = '', generation?: number): Promise<string> {
   checkGeneration(generation)
   const { kind, name } = KINDS[sub]
-  const launch = await launcherArgv($, argv)
+  const usageArgs = await dashboardUsageArgs($)
+  const launch = await launcherArgv($, [...argv, ...usageArgs])
   checkGeneration(generation)
   const sourceRevision = generation === undefined ? revision : JSON.stringify([revision, generation])
   const live = running(kind, launch, sourceRevision)
   const started = await startServer($, kind, launch, sourceRevision, generation)
   checkGeneration(generation)
-  if ('error' in started) return `obs ${sub}: ${started.error}`
+  if ('error' in started) return markOutcome(ctx.telemetry, 'error', `obs ${sub}: ${started.error}`)
   const labelsAt = argv.indexOf('--labels')
   const labels = labelsAt >= 0 ? argv[labelsAt + 1] : undefined
   const labelNote = started.labels_preloaded === false && labels ? `; labels were not preloaded: upload ${labels} in the Labels tab` : ''
@@ -123,7 +125,7 @@ async function dashboard($: EngineInterface, ctx: CommandContext, port: number |
         : `without session ${transcript.sessionId} loaded (the preload could not be wired): drop the ZIP /obs bundle writes into it`
     return await serve($, ctx, 'dashboard', argv, what, revision, generation)
   } catch (e) {
-    return errorRow(e, spec)
+    return observedError(ctx.telemetry, e, spec)
   }
 }
 
@@ -137,7 +139,7 @@ async function converge($: EngineInterface, ctx: CommandContext, port: number | 
     if (port !== undefined) argv.push('--port', String(port))
     return await serve($, ctx, 'converge', argv, () => `over ${root}`)
   } catch (e) {
-    return errorRow(e)
+    return observedError(ctx.telemetry, e)
   }
 }
 
@@ -147,14 +149,14 @@ export async function browser($: EngineInterface, ctx: CommandContext): Promise<
   const { kind, name } = KINDS[sub]
   const [action, ...rest] = ctx.parsed.positional
   if (action === 'stop' && rest.length === 0) {
-    if (Object.keys(ctx.parsed.flags).some(name => name !== 'session' && name !== 'session-id')) return { text: usage(sub) }
+    if (Object.keys(ctx.parsed.flags).some(name => name !== 'session' && name !== 'session-id')) return { text: markOutcome(ctx.telemetry, 'rejected', usage(sub)) }
     if (!hasServer(kind)) return { text: `No ${name} is running.` }
     const spec = sessionSpec(ctx)
     if (sub === 'dashboard' && spec) {
       try {
         const target = await resolveTranscript($, spec)
         if (!serverSourceMatches(kind, target.path, captureSessionSpec(ctx))) return { text: 'No matching session dashboard is running.' }
-      } catch (error) { return { text: errorRow(error, spec) } }
+      } catch (error) { return { text: observedError(ctx.telemetry, error, spec) } }
     }
     await stopServer($, kind)
     return { text: `${name} stopped.` }
@@ -163,7 +165,7 @@ export async function browser($: EngineInterface, ctx: CommandContext): Promise<
   const root = ctx.parsed.flags['data-root']
   const html = ctx.parsed.flags.html
   if (action !== undefined || port === null || root === true || (typeof root === 'string' && !root.trim())
-      || html === true || (typeof html === 'string' && !html.trim())) return { text: usage(sub) }
-  if (html !== undefined && port !== undefined) return { text: '--html exports a file and cannot be combined with --port.' }
+      || html === true || (typeof html === 'string' && !html.trim())) return { text: markOutcome(ctx.telemetry, 'rejected', usage(sub)) }
+  if (html !== undefined && port !== undefined) return { text: markOutcome(ctx.telemetry, 'rejected', '--html exports a file and cannot be combined with --port.') }
   return { text: sub === 'dashboard' ? await dashboard($, ctx, port, html) : await converge($, ctx, port) }
 }

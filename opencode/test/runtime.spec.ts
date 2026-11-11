@@ -15,6 +15,14 @@ async function runtime(): Promise<Runtime> {
   return instance
 }
 
+test('telemetry resolves the configured interpreter before runtime setup', () => {
+  const cwd = path.dirname(process.execPath)
+  const absolute = new Runtime({ python: process.execPath }, cwd)
+  const relative = new Runtime({ python: `.${path.sep}${path.basename(process.execPath)}` }, cwd)
+  expect(absolute.telemetryPython()).toBe(process.execPath)
+  expect(relative.telemetryPython()).toBe(process.execPath)
+})
+
 test('runtime replaces a previous engine generation and reuses its current one', async () => {
   const instance = await runtime()
   const interpreter = (generation: string) => path.join(instance.cache, 'envs', 'a'.repeat(24), generation.repeat(32),
