@@ -103,6 +103,7 @@ def test_revocation_and_corrupt_registry_fail_closed_before_reading_upload(tmp_p
     database = tmp_path / "usage.sqlite"
     token = issue_credential(registry, "pilot")
     app = create_production_app(database, credentials=registry)
+    assert submit(app, token=token, PATH_INFO="/", REQUEST_METHOD="GET")[0] == 404
     payload = batch(uuid4().hex, event(TODAY))
     status, headers = submit(app, payload, **{"wsgi.input": NeverRead()})
     assert status == 401 and headers["WWW-Authenticate"].startswith("Bearer ")

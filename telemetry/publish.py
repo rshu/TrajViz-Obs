@@ -8,7 +8,7 @@ from pathlib import Path
 from time import sleep
 
 from .collector import utc_day
-from .export import export_report
+from .export import ReportTooLarge, export_report
 from .report import report
 
 
@@ -21,6 +21,6 @@ def publish_reports(database: Path, destination: Path, *, days: int, retention_d
         try:
             snapshot = report(database, today=utc_day(), days=days, retention_days=retention_days)
             export_report(snapshot, destination, database=database, as_html=True)
-        except (OSError, sqlite3.Error) as exc:
+        except (OSError, sqlite3.Error, ReportTooLarge) as exc:
             print(f"telemetry publish: {exc}", file=sys.stderr, flush=True)
         sleep(interval_seconds)

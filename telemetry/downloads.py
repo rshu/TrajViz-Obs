@@ -112,14 +112,20 @@ def npm_downloads(package: str, period: str) -> dict:
         raise ValueError("invalid npm reporting period")
     try:
         data = _read_json(f"https://api.npmjs.org/downloads/range/{period}/{quote(package, safe='')}")
+        start, end = _day(data["start"]), _day(data["end"])
         rows = data["downloads"]
-        if (not isinstance(rows, list) or not rows
-                or any(not isinstance(row["day"], str) or not _count(row["downloads"]) for row in rows)):
-            raise ValueError("invalid npm download response")
-        days = [{"day": row["day"], "downloads": row["downloads"]} for row in rows]
+        if start > end or not isinstance(rows, list) or len(rows) != (end - start).days + 1:
+            raise ValueError("invalid npm download range")
+        counts = {}
+        for row in rows:
+            day, count = _day(row["day"]), row["downloads"]
+            if not start <= day <= end or day in counts or not _count(count):
+                raise ValueError("invalid daily npm download count")
+            counts[day] = count
+        days = [{"day": day.isoformat(), "downloads": counts[day]} for day in sorted(counts)]
         return {"status": "available", "scope": "npm_registry_downloads", "period": period,
-                "start": data["start"], "end": data["end"],
-                "downloads": sum(day["downloads"] for day in days), "daily": days}
+                "start": start.isoformat(), "end": end.isoformat(),
+                "downloads": sum(counts.values()), "daily": days}
     except urllib.error.HTTPError as exc:
         return {"status": "unavailable", "reason": "package_unavailable" if exc.code == 404 else "source_error"}
     except (OSError, ValueError, TypeError, KeyError):

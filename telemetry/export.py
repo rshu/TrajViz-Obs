@@ -14,6 +14,10 @@ _DATA_BLOCK = f'<script id="embedded-report" type="application/json">{_PLACEHOLD
 _MAX_VIEWER_DATA = 5 * 1024 * 1024
 
 
+class ReportTooLarge(ValueError):
+    """An aggregate snapshot exceeds the HTML viewer's capacity."""
+
+
 def report_json(payload: dict, *, compact: bool = False) -> str:
     if compact:
         return json.dumps(payload, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
@@ -27,7 +31,7 @@ def render_html(payload: dict) -> str:
     # A literal '<' in script raw text can close the element before JSON.parse runs.
     data = report_json(payload, compact=True).replace("<", r"\u003c")
     if len(data) > _MAX_VIEWER_DATA:
-        raise ValueError("The report exceeds the 5 MiB viewer limit. Use --json or shorten the reporting window.")
+        raise ReportTooLarge("The report exceeds the 5 MiB viewer limit. Use --json or shorten the reporting window.")
     return template.replace(_DATA_BLOCK, _DATA_BLOCK.replace(_PLACEHOLDER, data), 1)
 
 

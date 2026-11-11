@@ -50,8 +50,8 @@ def test_cli_exports_the_same_snapshot_as_json_and_html(tmp_path):
 
 def test_cli_serves_live_report_and_ingests_events_on_the_same_port(tmp_path, monkeypatch):
     monkeypatch.delenv("TRAJVIZ_OBS_INGEST_CREDENTIALS", raising=False)
-    command = [sys.executable, "-m", "telemetry", "--database", str(tmp_path / "usage.sqlite3"),
-               "serve", "--port", "0"]
+    database = tmp_path / "usage.sqlite3"
+    command = [sys.executable, "-m", "telemetry", "--database", str(database), "serve", "--port", "0"]
     log = tmp_path / "server.log"
     with log.open("wb") as stderr, subprocess.Popen(command, cwd=ROOT, stderr=stderr) as worker:
         try:
@@ -109,6 +109,16 @@ def test_cli_serves_live_report_and_ingests_events_on_the_same_port(tmp_path, mo
             assert [(row["adapter"], row["feature"], row["invocations"]) for row in snapshot["features"]] == [
                 ("claude-code", "help", 1),
             ]
+
+            offline = database.with_suffix(".offline")
+            database.rename(offline)
+            status, headers, error = request("GET")
+            assert status == 503 and headers["Cache-Control"] == "no-store"
+            assert str(database).encode() not in error
+            offline.rename(database)
+            status, _, page = request("GET")
+            assert status == 200
+            assert json.loads(embedded_text(page.decode("utf-8"))) == snapshot
         finally:
             if worker.poll() is None:
                 worker.terminate()

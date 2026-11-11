@@ -20,13 +20,29 @@ def test_public_sources_report_downloads_separately(monkeypatch):
             ]}]
         assert url.endswith("/last-week/%40scope%2Fplugin")
         return {"start": "2026-11-09", "end": "2026-11-10", "downloads": [
-            {"day": "2026-11-09", "downloads": 0}, {"day": "2026-11-10", "downloads": 3},
+            {"day": "2026-11-10", "downloads": 3}, {"day": "2026-11-09", "downloads": 0},
         ]}
 
     monkeypatch.setattr(downloads, "_read_json", read)
     assert downloads.github_downloads("rshu/TrajViz-Obs")["downloads"] == 10
     npm = downloads.npm_downloads("@scope/plugin", "last-week")
     assert npm["downloads"] == 3 and npm["daily"][0]["downloads"] == 0
+
+
+@pytest.mark.parametrize("days", [
+    ["2026-11-09", "2026-11-09"],  # Duplicate
+    ["2026-11-09"],  # Incomplete
+    ["2026-11-09", "2026-11-11"],  # Outside the returned period
+    ["2026-11-09", "2026-11-31"],  # Impossible date
+])
+def test_inconsistent_npm_range_is_unavailable(monkeypatch, days):
+    monkeypatch.setattr(downloads, "_read_json", lambda _url: {
+        "start": "2026-11-09", "end": "2026-11-10",
+        "downloads": [{"day": day, "downloads": 3} for day in days],
+    })
+    assert downloads.npm_downloads("trajviz-obs-opencode", "last-week") == {
+        "status": "unavailable", "reason": "source_error",
+    }
 
 
 def test_unpublished_sources_do_not_report_zero(monkeypatch):

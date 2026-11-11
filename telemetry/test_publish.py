@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from . import publish
+from . import export, publish
 from .collector import DEFAULT_RETENTION_DAYS, _record, init_database, utc_day
 from .test_export import embedded_text
 
@@ -96,4 +96,27 @@ def test_publisher_keeps_previous_report_until_recovery(tmp_path, monkeypatch, c
         publish.publish_reports(database, html, days=1, retention_days=DEFAULT_RETENTION_DAYS, interval_seconds=1)
     assert attempts == 2
     assert str(error) in capsys.readouterr().err
+    assert json.loads(embedded_text(html.read_text(encoding="utf-8")))["schema_version"] == 1
+
+
+def test_publisher_recovers_after_html_snapshot_fits_again(tmp_path, monkeypatch, capsys):
+    database = tmp_path / "usage.sqlite3"
+    html = tmp_path / "usage.html"
+    init_database(database)
+    html.write_text("previous report", encoding="utf-8")
+    original_limit = export._MAX_VIEWER_DATA
+    monkeypatch.setattr(export, "_MAX_VIEWER_DATA", 1)
+
+    def advance_interval(seconds):
+        assert seconds == 1
+        if export._MAX_VIEWER_DATA == 1:
+            assert html.read_text(encoding="utf-8") == "previous report"
+            monkeypatch.setattr(export, "_MAX_VIEWER_DATA", original_limit)
+        else:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(publish, "sleep", advance_interval)
+    with pytest.raises(KeyboardInterrupt):
+        publish.publish_reports(database, html, days=1, retention_days=DEFAULT_RETENTION_DAYS, interval_seconds=1)
+    assert "viewer limit" in capsys.readouterr().err
     assert json.loads(embedded_text(html.read_text(encoding="utf-8")))["schema_version"] == 1
