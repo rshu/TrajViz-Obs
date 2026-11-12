@@ -16,7 +16,7 @@ export const HELP_TEXT = [
   '  bundle [-o PATH]   ZIP for a hosted dashboard               schemas [DIR]   the JSON Schema of every view',
   'Browser',
   '  dashboard [--port N] [--dark] [--inline-plotly] | dashboard stop   the local Insight dashboard',
-  '  dashboard --html PATH [--dark]                         save a standalone HTML dashboard',
+  '  dashboard --html PATH [--dark]   save standalone HTML   dashboard port [auto|default|N]   default port',
   '  converge [--data-root DIR] [--port N] | converge stop   the Converge comparison dashboard',
   'Compare',
   '  compare <session|path> [--anchor-patch P] [--fuzzy-commands] [--reverse]',
@@ -29,6 +29,7 @@ export const HELP_TEXT = [
   'Setup',
   '  setup [--extras ...] [--source ...]   doctor   sessions [N]   watch [on|off]   statusline [on|off]',
   '  enable_telemetry | disable_telemetry   change usage telemetry consent    telemetry   check delivery',
+  '  telemetry destination [URL [--use-launch-token] | default]   show or save the collector',
   '  attribution [--reference-root DIR] [--agent A] [--instance I]   collect <cursor|opencode|codearts> ...',
   '  help   this table',
 ].join('\n')

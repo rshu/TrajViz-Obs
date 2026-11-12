@@ -1,6 +1,7 @@
 import type { CommandRunResult, EngineInterface } from 'claude-code'
 import { BridgeError, launcherArgv, runBridge } from '../lib/bridge'
-import { valueArgv } from '../lib/args'
+import { dashboardPortValue, DASHBOARD_PORT_USAGE, valueArgv } from '../lib/args'
+import { dashboardPortSetting, preferredDashboardPort } from '../lib/dashboard-port'
 import { openTarget, type OpenResult } from '../lib/open'
 import { configDir, projectSlug } from '../lib/paths'
 import { publicationGeneration } from '../lib/publication'
@@ -34,10 +35,7 @@ function usage(sub: 'dashboard' | 'converge'): string {
 /** `--port N` as a number when given and valid; undefined when absent; null when bad. */
 function portFlag(ctx: CommandContext): number | undefined | null {
   const p = ctx.parsed.flags['port']
-  if (p === undefined) return undefined
-  if (typeof p !== 'string' || !/^\d+$/.test(p)) return null
-  const n = Number(p)
-  return n >= 1 && n <= MAX_PORT ? n : null
+  return p === undefined ? undefined : dashboardPortValue(p) ?? null
 }
 
 /** The rest of a dashboard's row after its URL: whether the browser has it, then how to stop it. */
@@ -148,6 +146,10 @@ export async function browser($: EngineInterface, ctx: CommandContext): Promise<
   const sub = ctx.parsed.sub === 'converge' ? 'converge' : 'dashboard'
   const { kind, name } = KINDS[sub]
   const [action, ...rest] = ctx.parsed.positional
+  if (sub === 'dashboard' && action === 'port') {
+    if (rest.length > 1 || Object.keys(ctx.parsed.flags).length) return { text: DASHBOARD_PORT_USAGE }
+    return { text: await dashboardPortSetting($, ctx.options, rest[0], ctx.personRequested === true) }
+  }
   if (action === 'stop' && rest.length === 0) {
     if (Object.keys(ctx.parsed.flags).some(name => name !== 'session' && name !== 'session-id')) return { text: markOutcome(ctx.telemetry, 'rejected', usage(sub)) }
     if (!hasServer(kind)) return { text: `No ${name} is running.` }
@@ -167,5 +169,7 @@ export async function browser($: EngineInterface, ctx: CommandContext): Promise<
   if (action !== undefined || port === null || root === true || (typeof root === 'string' && !root.trim())
       || html === true || (typeof html === 'string' && !html.trim())) return { text: markOutcome(ctx.telemetry, 'rejected', usage(sub)) }
   if (html !== undefined && port !== undefined) return { text: markOutcome(ctx.telemetry, 'rejected', '--html exports a file and cannot be combined with --port.') }
-  return { text: sub === 'dashboard' ? await dashboard($, ctx, port, html) : await converge($, ctx, port) }
+  if (sub === 'converge') return { text: await converge($, ctx, port) }
+  const dashboardPort = html === undefined && port === undefined ? await preferredDashboardPort($, ctx.options) : port
+  return { text: await dashboard($, ctx, dashboardPort, html) }
 }

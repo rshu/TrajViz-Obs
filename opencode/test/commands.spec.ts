@@ -1,10 +1,14 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import type { Backend, SourceRef } from '../src/backend.js'
 import { runCommand } from '../src/commands.js'
 import { pageArguments, parseExtras, validateArguments } from '../src/command-args.js'
+import type { Options } from '../src/runtime.js'
 import { argvValue, parseArgs, quoteOption, valueArgv } from '../src/shared/args.js'
 
-function fixture(responses: Record<string, unknown> = {}) {
+function fixture(responses: Record<string, unknown> = {}, options: Options = {}) {
   const calls: { argv: string[]; timeout?: number }[] = []
   const served: { kind: string; argv: string[] }[] = []
   const stopped: unknown[][] = []
@@ -13,7 +17,7 @@ function fixture(responses: Record<string, unknown> = {}) {
     transcript: `/tmp/controlled project/${selector ?? 'ses_current'}.json`, artifacts: '/tmp/controlled obs/artifacts',
     argv: ['--transcript', `/tmp/controlled project/${selector ?? 'ses_current'}.json`, '--artifacts', '/tmp/controlled obs/artifacts', '--window', '200000'] })
   const backend = {
-    root: '/tmp/controlled obs/sessions', options: {}, ctx: { location: { directory: '/tmp/controlled project' } },
+    root: '/tmp/controlled obs/sessions', options, ctx: { location: { directory: '/tmp/controlled project' } },
     runtime: { cache: '/tmp/controlled obs', async run<T>(argv: string[], _signal: AbortSignal, timeout?: number): Promise<T> {
       calls.push({ argv, timeout })
       return (responses[argv[0]!] ?? { path: '/tmp/output.json', bytes: 10, text: 'Bridge result' }) as T
@@ -35,7 +39,8 @@ function fixture(responses: Record<string, unknown> = {}) {
 
 describe('OpenCode obs command contract', () => {
   test('rejects ignored flags, values, extra positionals and malformed paging before work', async () => {
-    for (const args of ['overview extra', 'view health --unused', 'json --view', 'bundle -o', 'pane close extra', 'watch on extra', 'statusline off --session s', 'cancel now', 'view health --json=false', 'view health --limit 501', 'view health --offset -1', 'sessions 0', 'dashboard --port 0', 'dashboard stop --port 7860', 'converge --data-root', 'label --model']) {
+    for (const args of ['overview extra', 'view health --unused', 'json --view', 'bundle -o', 'pane close extra', 'watch on extra', 'statusline off --session s', 'cancel now', 'view health --json=false', 'view health --limit 501', 'view health --offset -1', 'sessions 0', 'dashboard --port 0', 'dashboard stop --port 7860', 'converge --data-root', 'label --model',
+      'dashboard port 0', 'dashboard port 65536', 'dashboard port auto --port 9000', 'dashboard port default --session ses_other', 'dashboard port auto extra', 'telemetry destination --use-launch-token', 'telemetry destination default --use-launch-token', 'telemetry destination https://collector.example/v1/events --use-launch-token=false', 'telemetry other']) {
       const { execute, calls, served, selections } = fixture()
       const result = await execute(args)
       expect(result.text).not.toBe('Bridge result')
@@ -46,6 +51,8 @@ describe('OpenCode obs command contract', () => {
     expect(validateArguments('disable_telemetry')).toBeUndefined()
     expect(validateArguments('enable_telemetry extra')).toContain('Unexpected arguments')
     expect(validateArguments('disable_telemetry --session ses_other')).toContain('--session is not supported')
+    expect(validateArguments('telemetry destination --use-launch-token https://collector.example/v1/events')).toBeUndefined()
+    expect(validateArguments('dashboard port 65535')).toBeUndefined()
     expect(validateArguments('watch off')).toBeUndefined()
     expect(validateArguments('pane --session ses_other')).toBeUndefined()
     expect(validateArguments('isssues')).toContain("Did you mean 'issues'")
@@ -149,6 +156,42 @@ describe('OpenCode obs command contract', () => {
     expect(served[0]!.argv).toEqual(['dashboard', '--transcript', '/tmp/controlled project/ses_other.json', '--window', '200000', '--port', '7860'])
     await execute('dashboard stop')
     expect(stopped).toEqual([['dashboard', 'ses_current']])
+  })
+
+  test('dashboard port changes persist independently of the current session and apply only to live launches', async () => {
+    const state = await mkdtemp(path.join(tmpdir(), 'trajviz-opencode-dashboard-port-'))
+    const name = process.platform === 'win32' ? 'LOCALAPPDATA' : 'XDG_STATE_HOME'
+    const previous = process.env[name]
+    const preference = path.join(state, 'trajviz-obs', 'opencode-dashboard-port')
+    process.env[name] = state
+    try {
+      const first = fixture({}, { dashboardPort: 8200 })
+      expect((await first.execute('dashboard port')).text).toContain('8200 (plugin configuration)')
+      expect((await first.execute('dashboard port 8300')).text).toContain('8300 (saved preference)')
+      expect(first.served).toEqual([])
+      expect(first.stopped).toEqual([])
+      expect(first.selections).toEqual([])
+      expect(await readFile(preference, 'utf8')).toBe('8300\n')
+
+      const reopened = fixture({}, { dashboardPort: 8200 })
+      await reopened.execute('dashboard')
+      await reopened.execute('dashboard --port 8400')
+      await reopened.execute('dashboard --html /tmp/export.html')
+      await reopened.execute('converge --data-root /tmp/data')
+      expect(reopened.served.slice(0, 2).map(({ argv }) => argv.slice(-2))).toEqual([['--port', '8300'], ['--port', '8400']])
+      expect(reopened.calls[0]?.argv).not.toContain('--port')
+      expect(reopened.served[2]?.argv).not.toContain('--port')
+      expect((await reopened.execute('dashboard port auto')).text).toContain('Automatic (saved preference)')
+      await reopened.execute('dashboard')
+      expect(reopened.served.at(-1)?.argv).not.toContain('--port')
+      expect((await reopened.execute('dashboard port default')).text).toContain('8200 (plugin configuration)')
+      await reopened.execute('dashboard')
+      expect(reopened.served.at(-1)?.argv.slice(-2)).toEqual(['--port', '8200'])
+    } finally {
+      if (previous === undefined) delete process.env[name]
+      else process.env[name] = previous
+      await rm(state, { recursive: true, force: true })
+    }
   })
 
   test('HTML export runs once, while theme and Plotly settings reach the live server', async () => {

@@ -101,10 +101,9 @@ def test_consent_controls_the_local_fallback_without_sending_a_remote_token(opte
 
     dashboard = DashboardUsage.from_environment(adapter, "0.3.8")
     assert dashboard is not None
-    assert dashboard.endpoint == "http://127.0.0.1:8765/v1/events"
-    assert dashboard._token is None
+    assert dashboard._target() == ("http://127.0.0.1:8765/v1/events", opted_in, None)
     assert client.main([*ARGV, "--adapter", adapter]) == 0
-    assert sent == [(dashboard.endpoint, adapter, None)]
+    assert sent == [("http://127.0.0.1:8765/v1/events", adapter, None)]
 
 
 @pytest.mark.parametrize(("url", "token", "expected"), [
@@ -140,6 +139,167 @@ def test_failed_atomic_save_preserves_previous_consent(opted_in, monkeypatch, ca
     marker = opted_in / "claude-code-consent"
     assert list(opted_in.iterdir()) == [marker]
     assert marker.read_bytes() == b"on\n"
+
+
+def test_destination_is_private_persistent_and_independent_of_consent(opted_in, monkeypatch, capsys):
+    adapter = ["--adapter", "claude-code"]
+    saved = "https://192.0.2.10:9443/v1/events"
+    default = "http://127.0.0.1:8765/v1/events"
+    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
+    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY_URL")
+    assert client.main(["--destination", *adapter]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert (status["destination"], status["destination_source"], status["configuration"]) == (
+        default, "default", "disabled",
+    )
+    assert not opted_in.exists()
+
+    assert client.main(["--set-destination", saved, *adapter]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert (status["destination"], status["destination_source"], status["configuration"]) == (saved, "saved", "disabled")
+    marker, = opted_in.iterdir()
+    assert marker.name == "claude-code-destination.json"
+    if os.name != "nt":
+        assert marker.stat().st_mode & 0o777 == 0o600
+    assert client.main(["--destination", "--adapter", "opencode"]) == 0
+    assert json.loads(capsys.readouterr().out)["destination"] == default
+
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY", "1")
+    assert client.delivery_status(client.os.environ, "claude-code")["configuration"] == "ready"
+    assert client.delivery_status(client.os.environ, "opencode")["configuration"] == "missing_endpoint"
+    assert client.main(["--set-consent", "off", *adapter]) == 0
+    assert saved not in capsys.readouterr().out
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_URL", ENDPOINT)
+    assert client.main(["--set-destination", "default", *adapter]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert (status["destination"], status["destination_source"], status["configuration"]) == (ENDPOINT, "launch", "disabled")
+    assert not marker.exists()
+    assert (opted_in / "claude-code-consent").read_bytes() == b"off\n"
+
+
+def test_destination_switch_never_forwards_an_unbound_launch_token(opted_in, monkeypatch, capsys):
+    adapter = ["--adapter", "claude-code"]
+    saved = "https://collector.example.test/v1/events"
+    marker = opted_in / "claude-code-destination.json"
+    attempts = []
+
+    def send(endpoint, _payload, *, token):
+        attempts.append((endpoint, token))
+        return ACCEPTED
+
+    monkeypatch.setattr(client, "_send", send)
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", TOKEN)
+    assert client.main(ARGV) == 0
+    assert client.main(["--set-destination", saved, *adapter]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["credential_configured"] is False
+    assert client.main(ARGV) == 0
+    assert attempts == [(ENDPOINT, TOKEN), (saved, None)]
+
+    assert client.main(["--set-destination", saved, "--use-launch-token", *adapter]) == 0
+    output = capsys.readouterr().out
+    assert json.loads(output)["credential_configured"] is True
+    assert TOKEN not in output and TOKEN not in marker.read_text()
+    assert client.main(ARGV) == 0
+    assert attempts[-1] == (saved, TOKEN)
+
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", ROTATED)
+    assert client.main(ARGV) == 0
+    assert attempts == [(ENDPOINT, TOKEN), (saved, None), (saved, TOKEN)]
+    assert client.delivery_status(client.os.environ, "claude-code")["configuration"] == "invalid_token"
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_URL", saved)
+    assert client.main(ARGV) == 0
+    assert attempts[-1] == (saved, ROTATED)
+
+
+def test_invalid_destination_updates_preserve_the_previous_route(opted_in, monkeypatch, capsys):
+    adapter = ["--adapter", "opencode"]
+    saved = "https://collector.example.test/v1/events"
+    assert client.main(["--set-destination", saved, *adapter]) == 0
+    capsys.readouterr()
+
+    for command, error in [
+        (["--set-destination", "http://192.0.2.10:8443/v1/events"], "invalid_endpoint"),
+        (["--set-destination", "https://collector.example.test:/v1/events"], "invalid_endpoint"),
+        (["--set-destination", "https://collector!.example.test/v1/events"], "invalid_endpoint"),
+        (["--set-destination", "https://host.example/v1/events?secret=example"], "invalid_endpoint"),
+        (["--set-destination", ENDPOINT, "--use-launch-token"], "missing_token"),
+        (["--set-destination", "default", "--use-launch-token"], "invalid_arguments"),
+    ]:
+        assert client.main([*command, *adapter]) == 0
+        output = capsys.readouterr().out
+        status = json.loads(output)
+        assert status["destination_error"] == error and status["destination"] == saved
+        assert "secret=example" not in output
+
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", "invalid-secret")
+    assert client.main(["--set-destination", ENDPOINT, "--use-launch-token", *adapter]) == 0
+    output = capsys.readouterr().out
+    status = json.loads(output)
+    assert status["destination_error"] == "invalid_token" and status["destination"] == saved
+    assert "invalid-secret" not in output
+    (opted_in / "opencode-destination.json").write_text('{"url":"wrong"}')
+    monkeypatch.setattr(client, "_send", lambda *_args, **_kwargs: pytest.fail("invalid destination delivered"))
+    assert client.main([*ARGV, *adapter]) == 0
+    assert client.main(["--destination", *adapter]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["destination"] is None and status["destination_source"] == "invalid"
+    assert status["configuration"] == "invalid_endpoint" and not list(opted_in.glob("*.sqlite3"))
+    assert client.main(["--set-destination", "default", *adapter]) == 0
+    assert json.loads(capsys.readouterr().out)["destination"] == ENDPOINT
+
+
+def test_destination_change_routes_actions_from_an_existing_dashboard(opted_in, monkeypatch, capsys):
+    new_destination = "http://127.0.0.1:18753/v1/events"
+    sending_old, release_old, sending_new = Event(), Event(), Event()
+    dashboard = DashboardUsage.from_environment("claude-code", "0.3.8")
+    assert dashboard is not None
+    attempts = []
+
+    def send(endpoint, payload, *, token):
+        attempts.append((endpoint, token, [event["feature"] for event in payload["events"]]))
+        if endpoint == ENDPOINT:
+            sending_old.set()
+            release_old.wait(timeout=5)
+            return client._Delivery("retry", "network")
+        sending_new.set()
+        return ACCEPTED
+
+    monkeypatch.setattr(client, "_send", send)
+    dashboard._enqueue("dashboard.render")
+    try:
+        assert sending_old.wait(timeout=5)
+        assert client.main(["--set-destination", new_destination, "--adapter", "claude-code"]) == 0
+        assert json.loads(capsys.readouterr().out)["destination"] == new_destination
+        dashboard._enqueue("dashboard.tab")
+    finally:
+        release_old.set()
+    assert sending_new.wait(timeout=5)
+    client.flush_usage(ENDPOINT, opted_in, "claude-code", env=os.environ)
+    assert attempts == [(ENDPOINT, None, ["dashboard.render"]), (new_destination, None, ["dashboard.tab"])]
+    with closing(sqlite3.connect(client._queue_path(opted_in, "claude-code", ENDPOINT))) as queue:
+        assert queue.execute("SELECT count(*) FROM pending").fetchone() == (1,)
+
+
+def test_switching_destination_between_claim_and_send_releases_the_old_lease(opted_in, monkeypatch, capsys):
+    adapter = "opencode"
+    assert client.queue_usage(ENDPOINT, opted_in, adapter=adapter, surface="desktop", feature="help",
+                              outcome="success", duration_ms=0, version="0.5.4")
+    claim = client._claim
+
+    def claim_then_switch(*args, **kwargs):
+        result = claim(*args, **kwargs)
+        assert result is not None
+        assert client.main(["--set-destination", "https://collector.example.test/v1/events", "--adapter", adapter]) == 0
+        assert json.loads(capsys.readouterr().out)["destination_source"] == "saved"
+        return result
+
+    monkeypatch.setattr(client, "_claim", claim_then_switch)
+    monkeypatch.setattr(client, "_send", lambda *_args, **_kwargs: pytest.fail("old destination delivery"))
+    client.flush_usage(ENDPOINT, opted_in, adapter, env=os.environ)
+    with closing(sqlite3.connect(client._queue_path(opted_in, adapter, ENDPOINT))) as queue:
+        assert queue.execute("SELECT lease, lease_until FROM sender").fetchone() == (None, 0)
+        assert queue.execute("SELECT count(*) FROM pending").fetchone() == (1,)
 
 
 def test_disable_pauses_a_running_dashboard_and_only_its_adapters_queue(opted_in, monkeypatch, capsys):
@@ -591,7 +751,8 @@ def test_dashboard_persists_actions_while_delivery_is_stalled(opted_in, monkeypa
         return client._Delivery("retry", "network")
 
     monkeypatch.setattr(client, "_send", stalled_send)
-    dashboard = DashboardUsage(ENDPOINT, opted_in, "claude-code", "0.3.8")
+    dashboard = DashboardUsage.from_environment("claude-code", "0.3.8")
+    assert dashboard is not None
     dashboard._enqueue("dashboard.render")
     try:
         assert sending.wait(timeout=5)

@@ -104,7 +104,7 @@ To set options, replace the adapter's existing string entry with an object:
 {
   "plugins": [{
     "package": "/absolute/path/TrajViz-Obs/opencode",
-    "options": { "watch": true, "statusline": false, "openBrowser": false }
+    "options": { "watch": true, "statusline": false, "openBrowser": false, "dashboardPort": 0 }
   }]
 }
 ```
@@ -115,13 +115,15 @@ Desktop remembers watch and statusline toggles in its own preferences, overridin
 
 `python` overrides interpreter discovery; `trajvizSource` overrides the TrajViz requirement. `cacheRoot` moves the private runtime and session artifacts. Dashboards bind to localhost and stop with `/obs dashboard stop`, `/obs converge stop`, or plugin unload.
 
+Use `/obs dashboard port` to see the effective default or `/obs dashboard port 7863` to change it on the connected server during a session. It applies to the next dashboard launch. `auto` selects a port automatically and `default` restores `dashboardPort` from the plugin options. `dashboardPort: 0` means automatic selection. `/obs dashboard --port N` overrides the default for one launch.
+
 Desktop and the TUI read full history from their connected server. Headless tool calls discover OpenCode's local service; custom servers can set `serverUrl` to a loopback URL on that server's host and `serverPasswordEnv` (default `OPENCODE_PASSWORD`). Set the named password variable in that server's launch environment. History before compaction is retained. Forks remain separate runs; confirmed subagent sessions appear in the parent trajectory.
 
 Live captures are limited to 32 MiB and 64 sessions in one family. For larger inputs, export the session and use `--session /path/to/export.json`.
 
 Run `/obs enable_telemetry` to opt in or `/obs disable_telemetry` to turn it off in Desktop or the terminal. Both save the preference on the connected OpenCode server, where it takes effect immediately and persists across restarts. Disabling pauses queued uploads. After enabling, reopen any existing dashboards to include browser interactions.
 
-Run `/obs telemetry` to check delivery. With no collector URL configured, enabling uses `http://127.0.0.1:8765/v1/events` on the OpenCode server host. Set a custom collector URL and any required credential in the server’s launch environment. [Telemetry setup](../README.md#usage-telemetry)
+Run `/obs telemetry` to check delivery or `/obs telemetry destination` to see the collector. `/obs telemetry destination https://telemetry.example.com/v1/events` changes it immediately on the connected server. `default` restores the server’s launch setting or the loopback collector. For an authenticated collector, supply the token in the server’s launch environment and use `--use-launch-token` to associate it with the new destination. [Telemetry setup](../README.md#usage-telemetry)
 
 ## Development
 

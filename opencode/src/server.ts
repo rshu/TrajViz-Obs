@@ -18,6 +18,7 @@ const optionsSchema = z.object({
   serverPasswordEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).optional(),
   llm: z.enum(['session', 'env']).optional(), analysisModel: z.string().optional(), labelModel: z.string().optional(),
   labelMaxSteps: z.number().int().min(1).max(10000).optional(), openBrowser: z.boolean().optional(), watch: z.boolean().optional(), statusline: z.boolean().optional(),
+  dashboardPort: z.number().int().min(0).max(65535).optional(),
 }).strict()
 
 export default Plugin.define({

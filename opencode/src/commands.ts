@@ -5,10 +5,11 @@ import type { Backend } from './backend.js'
 import type { CommandResult, RunInput } from './rpc.js'
 import type { EmptySnapshot } from './types.js'
 import { Runtime, atomicFile, exists } from './runtime.js'
-import { flagValues, parseArgs, passArgs, quoteOption, valueArgv } from './shared/args.js'
-import { pageArguments, parseExtras, validateArguments } from './command-args.js'
+import { dashboardPortValue, flagValues, parseArgs, passArgs, quoteOption, valueArgv } from './shared/args.js'
+import { isDashboardPortCommand, pageArguments, parseExtras, validateArguments } from './command-args.js'
+import { dashboardPortPreference, defaultDashboardPort } from './dashboard-port.js'
 import { runModel } from './llm.js'
-import { setUsageConsent, usageDeliveryStatus, usageOutcome } from './telemetry.js'
+import { setUsageConsent, usageDeliveryStatus, usageDestination, usageOutcome } from './telemetry.js'
 
 const LONG_TIMEOUT = 600_000
 const EMPTY = 'Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.'
@@ -28,6 +29,7 @@ export const HELP_TEXT = [
   'Browser',
   '  dashboard [--port N] [--dark] [--inline-plotly] | dashboard stop · local session dashboard',
   '  dashboard --html PATH [--dark] · save a standalone HTML dashboard',
+  '  dashboard port [auto|default|N] · show or set the default session dashboard port',
   '  converge [--data-root DIR] [--port N] | converge stop · comparison dashboard',
   'Compare',
   '  compare <session|path> [--anchor-patch P] [--fuzzy-commands] [--reverse]',
@@ -41,6 +43,7 @@ export const HELP_TEXT = [
   'Setup',
   '  setup [--extras all|none|charts,app] [--source S]    doctor    sessions [1–500]',
   '  telemetry · local usage telemetry delivery status',
+  '  telemetry destination [URL|default] [--use-launch-token] · show or set the collector',
   '  enable_telemetry | disable_telemetry · save usage telemetry preference',
   '  watch [on|off]    statusline [on|off]    cancel · cancel the active obs command',
   '  attribution [--reference-root DIR] [--agent A] [--instance I]',
@@ -134,7 +137,12 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
   }
 
   if (sub === 'help') return { text: HELP_TEXT }
-  if (sub === 'telemetry') return { text: await usageDeliveryStatus(backend.runtime, signal) }
+  if (sub === 'telemetry') {
+    return { text: positional[0] === 'destination'
+      ? await usageDestination(backend.runtime, signal, positional[1], flags['use-launch-token'] === true)
+      : await usageDeliveryStatus(backend.runtime, signal) }
+  }
+  if (isDashboardPortCommand(parsed)) return { text: await dashboardPortPreference(backend.options.dashboardPort, positional[1], signal) }
   if (sub === 'enable_telemetry' || sub === 'disable_telemetry') return { text: await setUsageConsent(backend.runtime, signal, sub === 'enable_telemetry' ? 'on' : 'off') }
   if (sub === 'report') return { text: 'The /obs report command was removed. Use /obs dashboard to inspect the session or /obs dashboard --html PATH to save an offline copy.' }
   if (sub === 'analyze' || sub === 'fixes' || sub === 'label') return runModel(backend, input, signal)
@@ -187,9 +195,9 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
       const target = sub === 'dashboard' ? (await backend.resolve(input.sessionID, selector, captureSessionID)).sessionID : undefined
       return { text: await backend.stop(sub, target) ? `${sub === 'dashboard' ? 'Session' : 'Converge'} dashboard stopped.` : 'No matching dashboard is running.' }
     }
-    const port = flags.port === undefined ? undefined : Number(flags.port)
+    const port = dashboardPortValue(flags.port)
     const root = flags['data-root']
-    if (positional.length || (flags.port !== undefined && (typeof flags.port !== 'string' || !/^\d+$/.test(flags.port) || !Number.isSafeInteger(port) || port! < 1 || port! > 65535)) || root === true || (typeof root === 'string' && !root.trim())) return rejected(`Usage: /obs ${sub} ${sub === 'converge' ? '[--data-root DIR] ' : ''}[--port 1–65535] | ${sub} stop`)
+    if (positional.length || (flags.port !== undefined && port === undefined) || root === true || (typeof root === 'string' && !root.trim())) return rejected(`Usage: /obs ${sub} ${sub === 'converge' ? '[--data-root DIR] ' : ''}[--port 1–65535] | ${sub} stop`)
     let args: string[], target: string | undefined
     if (sub === 'dashboard') {
       const source = await session(); target = source.sessionID
@@ -211,7 +219,8 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
       if (root === undefined) await mkdir(dataRoot, { recursive: true, mode: 0o700 })
       args = ['converge', '--data-root', dataRoot]
     }
-    if (port !== undefined) args.push('--port', String(port))
+    const effectivePort = port ?? (sub === 'dashboard' ? await defaultDashboardPort(backend.options.dashboardPort) : 0)
+    if (effectivePort) args.push('--port', String(effectivePort))
     const server = await backend.serve(sub, args, signal, target)
     const stop = `/obs ${sub} stop${sub === 'dashboard' && selector ? ` ${quoteOption('session', selector)}${captureSessionID === undefined ? '' : ` ${quoteOption('session-id', captureSessionID)}`}` : ''}`
     return { text: `${sub === 'dashboard' ? 'Session' : 'Converge'} dashboard: ${server.url}${server.preloaded === false ? '\nSession preload was unavailable; upload /obs bundle in the dashboard.' : ''}\n${stop} closes it. For a remote server, forward this localhost port to your machine.`, url: server.url, sessionID: target }

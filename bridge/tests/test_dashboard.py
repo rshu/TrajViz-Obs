@@ -858,7 +858,7 @@ def test_dashboard_still_launches_when_usage_attachment_fails(kind, fixture_sess
     monkeypatch.setattr(DashboardUsage, "attach", broken_attach)
     monkeypatch.setattr(gradio.Blocks, "launch", lambda _app, **_: (None, "http://127.0.0.1:1234/", None))
     monkeypatch.setattr(dashboard_cmd, "_wait_for_shutdown", lambda **_: None)
-    usage = DashboardUsage("http://127.0.0.1:8765/v1/events", tmp_path, "claude-code", "0.3.8")
+    usage = DashboardUsage("claude-code", "0.3.8")
     if kind == "dashboard":
         dashboard_cmd.serve_insight(str(fixture_session), None, usage=usage)
     else:

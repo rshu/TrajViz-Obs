@@ -96,7 +96,16 @@ export const SUBCOMMANDS: readonly string[] = [
 
 const DEFAULT_SUB = 'overview'
 /** Flags that never consume the next positional, regardless of their order. */
-export const BOOLEAN_FLAGS: readonly string[] = ['with-trajectory', 'views-only', 'dark', 'inline-plotly', 'json', 'fuzzy-commands', 'reverse', 'no-self', 'assistant-only']
+export const BOOLEAN_FLAGS: readonly string[] = ['with-trajectory', 'views-only', 'dark', 'inline-plotly', 'json', 'fuzzy-commands', 'reverse', 'no-self', 'assistant-only', 'use-launch-token']
+
+export const DASHBOARD_PORT_USAGE = 'Usage: /obs dashboard port [auto|default|1–65535]'
+export const TELEMETRY_DESTINATION_USAGE = 'Usage: /obs telemetry destination [URL [--use-launch-token] | default]'
+
+/** Accept a port from a command argument or a numeric host configuration. */
+export function dashboardPortValue(value: unknown): number | undefined {
+  const port = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value
+  return typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65_535 ? port : undefined
+}
 
 /**
  * Splits as a POSIX shell would: whitespace separates, single quotes keep

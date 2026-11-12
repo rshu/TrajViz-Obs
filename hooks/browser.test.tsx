@@ -84,6 +84,7 @@ function host(on: On, world: World = {}): Host {
   on('session.usage', () => ({ value: USAGE }))
   mock.env(on, { HOME, ...(world.env ?? {}) })
   mock.clock(on, { now: NOW })
+  mock.store(on)
   on('settings.read', () => ({ value: world.settingsEnv ? { env: world.settingsEnv } : {} }))
   on('fs.read', (_, e) => {
     if (world.manifestVersion && e.path.endsWith('/.claude-plugin/plugin.json')) return { value: JSON.stringify({ version: world.manifestVersion }) }
@@ -259,6 +260,49 @@ test('a running dashboard is named again, kept in state, stopped by stop and by 
   await $.session.end(END)
   expect(dashboards()).toEqual({ insight: null, converge: null })
   release2()
+})
+
+test('the default dashboard port changes during a session and applies on the next launch', { options: { dashboardPort: 7881, openBrowser: false } }, async ($, on) => {
+  let release = () => {}
+  const world: World = { child: { dashboard: { chunks: [URL_CHUNK], code: 0, gate: new Promise<void>(r => (release = r)) } } }
+  const { spawned, dashboards } = host(on, world)
+  const session = { cwd: CWD, surface: 'terminal' as const, isInteractive: true }
+  try {
+    await $.session.start(session)
+    expect((await obs($, 'dashboard port')).text).toContain('7881 (configuration default)')
+    expect(spawned).toEqual([])
+    await obs($, 'dashboard')
+    expect(children(spawned).at(-1)?.slice(-2)).toEqual(['--port', '7881'])
+
+    expect((await obs($, 'dashboard port 7882')).text).toContain('7882 (saved preference)')
+    expect(spawned).toHaveLength(1)
+    expect(dashboards()?.insight).toEqual({ url: URL, port: 7860 })
+    await obs($, 'dashboard stop')
+    release()
+    world.child = undefined
+    await $.session.end(END)
+    await $.session.start(session)
+    expect((await obs($, 'dashboard port')).text).toContain('7882 (saved preference)')
+    await obs($, 'dashboard')
+    expect(children(spawned).at(-1)?.slice(-2)).toEqual(['--port', '7882'])
+    await obs($, 'dashboard --port 7883')
+    expect(children(spawned).at(-1)?.slice(-2)).toEqual(['--port', '7883'])
+
+    const denied = await $.command.run({ command: 'obs', args: 'dashboard port 7884', origin: { kind: 'sdk' },
+      presentation: { isFullscreen: false, columns: 80 } })
+    expect(denied.text).toContain('directly in the Claude Code composer')
+    for (const args of ['dashboard port 0', 'dashboard port 65536', 'dashboard port auto --port 7884']) {
+      expect((await obs($, args)).text).toContain('Usage: /obs dashboard port')
+    }
+    expect((await obs($, 'dashboard port')).text).toContain('7882 (saved preference)')
+    expect((await obs($, 'dashboard port auto')).text).toContain('Automatic (saved preference)')
+    await obs($, 'dashboard')
+    expect(children(spawned).at(-1)).not.toContain('--port')
+    expect((await obs($, 'dashboard port default')).text).toContain('7881 (configuration default)')
+  } finally {
+    await $.session.end(END)
+    release()
+  }
 })
 
 test('dashboard --session persists its resolved selection and sends only dashboard flags', async ($, on) => {

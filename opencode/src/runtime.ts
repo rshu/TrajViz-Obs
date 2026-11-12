@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto'
 export type Options = {
   python?: string; trajvizSource?: string; cacheRoot?: string; serverUrl?: string; serverPasswordEnv?: string
   llm?: 'session' | 'env'; analysisModel?: string; labelModel?: string; labelMaxSteps?: number
-  openBrowser?: boolean; watch?: boolean; statusline?: boolean
+  openBrowser?: boolean; watch?: boolean; statusline?: boolean; dashboardPort?: number
 }
 type Environment = { python: string; source: string; revision: number; extras: string[]; pythonOption?: string; sourceCwd?: string }
 export const exists = async (p: string) => access(p, constants.F_OK).then(() => true, () => false)

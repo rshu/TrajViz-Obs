@@ -5,7 +5,8 @@ import path from 'node:path'
 import manifest from '../package.json' with { type: 'json' }
 import type { Runtime } from './runtime.js'
 import type { CommandResult } from './rpc.js'
-import { DELIVERY_STATUS_UNAVAILABLE, deliveryStatusText } from './shared/delivery-status.js'
+import { DELIVERY_STATUS_UNAVAILABLE, deliveryStatusText, destinationStatusText } from './shared/delivery-status.js'
+import { userStateRoot } from './user-state.js'
 
 export type UsageSurface = 'terminal' | 'desktop' | 'headless' | 'unknown'
 export type UsageOutcome = 'success' | 'error' | 'cancelled' | 'empty' | 'rejected'
@@ -26,15 +27,15 @@ export function commandUsageOutcome(result: CommandResult): UsageOutcome {
   return outcomes.get(result) ?? (result.snapshot?.empty ? 'empty' : 'success')
 }
 
+function telemetryFile(name: string): string | undefined {
+  const directory = process.env.TRAJVIZ_OBS_TELEMETRY_STATE_DIR || path.join(userStateRoot(), 'trajviz-obs', 'telemetry')
+  return path.isAbsolute(directory) ? path.join(directory, name) : undefined
+}
+
 function savedConsent(): 'on' | 'off' | undefined {
-  const env = process.env
-  const override = env.TRAJVIZ_OBS_TELEMETRY_STATE_DIR
-  const local = process.platform === 'win32' ? env.LOCALAPPDATA : undefined
-  const root = local || env.XDG_STATE_HOME || path.join(homedir(), '.local', 'state')
-  const directory = override || path.join(root, 'trajviz-obs', 'telemetry')
-  if (!path.isAbsolute(directory)) return 'off'
   // Match the helper's adapter-specific marker without starting Python for disabled installs.
-  const marker = path.join(directory, 'opencode-consent')
+  const marker = telemetryFile('opencode-consent')
+  if (!marker) return 'off'
   try {
     const metadata = lstatSync(marker, { throwIfNoEntry: false })
     if (!metadata) return undefined
@@ -44,10 +45,16 @@ function savedConsent(): 'on' | 'off' | undefined {
   } catch { return 'off' }
 }
 
+function hasSavedDestination(): boolean {
+  const marker = telemetryFile('opencode-destination.json')
+  try { return Boolean(marker && lstatSync(marker, { throwIfNoEntry: false })?.isFile()) }
+  catch { return false }
+}
+
 function usageEnabled(): boolean {
   const consent = savedConsent()
   if (consent) return consent === 'on'
-  return process.env.TRAJVIZ_OBS_TELEMETRY === '1' && Boolean(process.env.TRAJVIZ_OBS_TELEMETRY_URL)
+  return process.env.TRAJVIZ_OBS_TELEMETRY === '1' && (Boolean(process.env.TRAJVIZ_OBS_TELEMETRY_URL) || hasSavedDestination())
 }
 
 function usageEnvironment(): NodeJS.ProcessEnv {
@@ -80,7 +87,7 @@ async function usageControl(runtime: Pick<Runtime, 'bridge' | 'telemetryPython'>
 
 /** Read only local delivery metadata. The helper neither installs Python nor sends events. */
 export async function usageDeliveryStatus(runtime: Pick<Runtime, 'bridge' | 'telemetryPython'>, signal: AbortSignal): Promise<string> {
-  if (!process.env.TRAJVIZ_OBS_TELEMETRY_URL && !savedConsent()) {
+  if (!process.env.TRAJVIZ_OBS_TELEMETRY_URL && !savedConsent() && !hasSavedDestination()) {
     return `Usage telemetry · ${process.env.TRAJVIZ_OBS_TELEMETRY === '1' ? 'Endpoint missing' : 'Off'}`
   }
   return usageControl(runtime, signal, ['--status'], DELIVERY_STATUS_UNAVAILABLE, deliveryStatusText)
@@ -96,6 +103,15 @@ export async function setUsageConsent(runtime: Pick<Runtime, 'bridge' | 'telemet
     if (mode === 'off' && configuration === 'disabled') return 'Usage telemetry · Off. Preference saved. Queued uploads are paused.'
     return status
   })
+}
+
+export async function usageDestination(runtime: Pick<Runtime, 'bridge' | 'telemetryPython'>, signal: AbortSignal,
+  destination: string | undefined, useLaunchToken: boolean): Promise<string> {
+  const action = destination === undefined ? ['--destination'] : ['--set-destination', destination]
+  if (useLaunchToken) action.push('--use-launch-token')
+  const operation = destination === undefined ? 'read' : destination === 'default' ? 'reset' : 'set'
+  const unavailable = operation === 'read' ? 'Telemetry destination could not be read.' : 'Telemetry destination could not be saved.'
+  return usageControl(runtime, signal, action, unavailable, value => destinationStatusText(value, operation))
 }
 
 export function dashboardUsageArgs(): string[] {
