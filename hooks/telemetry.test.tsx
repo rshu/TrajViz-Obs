@@ -18,7 +18,7 @@ const DONE = { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: 
 type Settings = {
   consent?: string; endpoint?: string; token?: string; settingsEnv?: Record<string, string>;
   status?: unknown; withoutRuntime?: boolean; stateDirectory?: string; savedConsent?: 'on' | 'off';
-  waitForSnapshot?: Promise<void>; savedDestination?: string; destinationError?: string;
+  waitForSnapshot?: Promise<void>; savedDestination?: string; destinationError?: string; destinationCredentialInvalid?: boolean;
 }
 
 function host(on: On, settings: Settings, sender?: Promise<void>) {
@@ -89,7 +89,8 @@ function host(on: On, settings: Settings, sender?: Promise<void>) {
       }
       const status = { destination: settings.savedDestination ?? settings.endpoint ?? ENDPOINT,
         destination_source: settings.savedDestination ? 'saved' : settings.endpoint ? 'launch' : 'default',
-        destination_error: settings.destinationError, credential_configured: e.argv.includes('--use-launch-token') }
+        destination_error: settings.destinationError, credential_invalid: settings.destinationCredentialInvalid,
+        credential_configured: e.argv.includes('--use-launch-token') || Boolean(settings.token && settings.destinationCredentialInvalid) }
       return { value: { ...DONE.value, stdout: JSON.stringify(status) } }
     }
     await sender
@@ -298,6 +299,15 @@ test('a saved destination supports launch opt-in without a launch URL, and setti
   await $.command.run(command('help'))
   expect((await world.call(4)).argv.slice(7, 11)).toEqual(['--feature', 'help', '--outcome', 'success'])
   expect(world.calls.map(call => call.argv[3])).toEqual(['--adapter', '--set-destination', '--destination', '--adapter'])
+})
+
+test('the destination command shows an invalid credential binding while telemetry stays off', async ($, on) => {
+  host(on, { stateDirectory: CONSENT_DIRECTORY, savedConsent: 'off', savedDestination: ENDPOINT, token: TOKEN,
+    destinationCredentialInvalid: true })
+  const destination = await $.command.run(command('telemetry_destination'))
+  expect(destination.text).toContain('Collector credential · Invalid')
+  expect(destination.text).not.toContain(TOKEN)
+  expect((await $.command.run(command('telemetry'))).text).toContain('Usage telemetry · Off')
 })
 
 test('Claude settings cannot supply the telemetry endpoint', async ($, on) => {

@@ -51,10 +51,11 @@ export function destinationStatusText(value: unknown, operation: 'read' | 'set' 
   const destination = status.destination
   // The helper validates the URL. Keep raw credentials, arbitrary text and controls out of command results even on a bad reply.
   if (!source || typeof destination !== 'string' || destination.length > 2048
-      || !/^https?:\/\/(?:[\w.%-]+|\[[\w:.%-]+\])(?::\d+)?\/v1\/events$/i.test(destination)) return DESTINATION_STATUS_UNAVAILABLE
+      || !/^https?:\/\/(?:[\w.-]+|\[[\w:.-]+(?:%25[\w.-]+)?\])(?::\d+)?\/v1\/events$/i.test(destination)) return DESTINATION_STATUS_UNAVAILABLE
   const lines = [`Telemetry destination · ${destination} (${source})`]
-  if (status.configuration === 'invalid_token') lines.push('Collector credential · Invalid. Check the launch token and its binding.')
-  else if (typeof status.credential_configured === 'boolean') {
+  if (status.credential_invalid === true || status.configuration === 'invalid_token') {
+    lines.push('Collector credential · Invalid. Check the launch token, then run /obs telemetry_destination URL --use-launch-token.')
+  } else if (typeof status.credential_configured === 'boolean') {
     lines.push(`Collector credential · ${status.credential_configured ? 'Configured' : 'Not configured'}`)
   }
   if (operation !== 'read') lines.push(`Destination ${operation === 'reset' ? 'reset' : 'saved'}. Usage telemetry consent is unchanged.`)

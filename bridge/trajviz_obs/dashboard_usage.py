@@ -80,8 +80,8 @@ class DashboardUsage:
         # Only the host supplies these hidden arguments after checking consent.
         if adapter is None or version is None:
             return None
-        settings = usage_settings(os.environ, adapter)
-        if settings.configuration != "ready" or settings.endpoint is None or settings.directory is None:
+        # An opted-in dashboard can wait for a destination or credential correction while open.
+        if usage_settings(os.environ, adapter).configuration == "disabled":
             return None
         return cls(adapter, version)
 

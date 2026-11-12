@@ -181,6 +181,8 @@ def test_destination_is_private_persistent_and_independent_of_consent(opted_in, 
     "https://telemetry.example.com",
     "https://127.0.0.1",
     "https://[::1]:8443/",
+    "https://[::ffff:192.0.2.10]",
+    "https://[fe80::1%25en0]:8443/",
     "http://127.0.0.1:8765",
 ])
 def test_destination_accepts_base_url_and_saves_exact_event_endpoint(base, opted_in, capsys):
@@ -227,6 +229,83 @@ def test_destination_switch_never_forwards_an_unbound_launch_token(opted_in, mon
     assert attempts[-1] == (saved, ROTATED)
 
 
+@pytest.mark.parametrize("tamper", ["url", "adapter"])
+def test_destination_binding_cannot_move_to_another_endpoint_or_adapter(opted_in, monkeypatch, capsys, tamper):
+    adapter = "claude-code"
+    bound = "https://collector.example.test/v1/events"
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", TOKEN)
+    assert client.main(["--set-destination", bound, "--use-launch-token", "--adapter", adapter]) == 0
+    capsys.readouterr()
+    marker = opted_in / "claude-code-destination.json"
+    document = json.loads(marker.read_text())
+    assert document["token_binding"] != client._credential_fingerprint(TOKEN)
+    if tamper == "url":
+        document["url"] = "https://another.example.test/v1/events"
+    else:
+        adapter = "opencode"
+        marker = opted_in / "opencode-destination.json"
+    marker.write_text(json.dumps(document))
+
+    monkeypatch.setattr(client, "_send", lambda *_args, **_kwargs: pytest.fail("invalid binding delivered"))
+    assert client.main([*ARGV, "--adapter", adapter]) == 0
+    assert not list(opted_in.glob("*.sqlite3"))
+    assert client.main(["--destination", "--adapter", adapter]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["destination"] == document["url"]
+    assert status["configuration"] == "invalid_token" and status["credential_invalid"] is True
+
+
+def test_legacy_destination_binding_needs_an_explicit_launch_url_or_rebinding(opted_in, monkeypatch, capsys):
+    adapter = "claude-code"
+    bound = "https://collector.example.test/v1/events"
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", TOKEN)
+    assert client.main(["--set-consent", "on", "--adapter", adapter]) == 0
+    capsys.readouterr()
+    marker = opted_in / "claude-code-destination.json"
+    marker.write_text(json.dumps({"url": bound, "token_hash": client._credential_fingerprint(TOKEN)}))
+    assert client.queue_usage(bound, opted_in, adapter=adapter, surface="terminal", feature="help",
+                              outcome="success", duration_ms=0, version="0.3.8")
+
+    status = client.delivery_status(client.os.environ, adapter)
+    assert status["configuration"] == "invalid_token" and status["queued"] == 1
+    with monkeypatch.context() as local:
+        local.setenv("TRAJVIZ_OBS_TELEMETRY_URL", bound)
+        assert client.usage_settings(client.os.environ, adapter).token == TOKEN
+
+    assert client.main(["--set-destination", bound, "--use-launch-token", "--adapter", adapter]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["configuration"] == "ready" and status["queued"] == 1 and status["credential_invalid"] is False
+    assert (opted_in / "claude-code-consent").read_bytes() == b"on\n"
+
+
+@pytest.mark.parametrize("token", [None, ROTATED])
+def test_destination_query_reports_invalid_credential_while_consent_is_off(opted_in, monkeypatch, capsys, token):
+    adapter = ["--adapter", "claude-code"]
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", TOKEN)
+    assert client.main(["--set-destination", "https://collector.example.test", "--use-launch-token", *adapter]) == 0
+    assert client.main(["--set-consent", "off", *adapter]) == 0
+    capsys.readouterr()
+    if token is None:
+        monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY_TOKEN")
+    else:
+        monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", token)
+    assert client.main(["--destination", *adapter]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["configuration"] == "disabled" and status["credential_invalid"] is True
+    assert "credential_invalid" not in client.delivery_status(client.os.environ, "claude-code")
+
+
+def test_destination_query_reports_invalid_launch_credential_while_consent_is_off(opted_in, monkeypatch, capsys):
+    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", "invalid-launch-secret")
+    assert client.main(["--destination", "--adapter", "claude-code"]) == 0
+    output = capsys.readouterr().out
+    status = json.loads(output)
+    assert status["configuration"] == "disabled" and status["destination"] == ENDPOINT
+    assert status["credential_invalid"] is True and "invalid-launch-secret" not in output
+    assert not opted_in.exists()
+
+
 def test_invalid_destination_updates_preserve_the_previous_route(opted_in, monkeypatch, capsys):
     adapter = ["--adapter", "opencode"]
     saved = "https://collector.example.test/v1/events"
@@ -240,6 +319,9 @@ def test_invalid_destination_updates_preserve_the_previous_route(opted_in, monke
         (["--set-destination", "https://host.example/?secret=example"], "invalid_endpoint"),
         (["--set-destination", "https://collector.example.test:/v1/events"], "invalid_endpoint"),
         (["--set-destination", "https://collector!.example.test/v1/events"], "invalid_endpoint"),
+        (["--set-destination", "https://collector.example.test%3a9443"], "invalid_endpoint"),
+        (["--set-destination", "https://user%40collector.example.test"], "invalid_endpoint"),
+        (["--set-destination", "https://[::1%3a123]"], "invalid_endpoint"),
         (["--set-destination", "https://host.example/v1/events?secret=example"], "invalid_endpoint"),
         (["--set-destination", ENDPOINT, "--use-launch-token"], "missing_token"),
         (["--set-destination", "default", "--use-launch-token"], "invalid_arguments"),
@@ -297,6 +379,37 @@ def test_destination_change_routes_actions_from_an_existing_dashboard(opted_in, 
     assert attempts == [(ENDPOINT, None, ["dashboard.render"]), (new_destination, None, ["dashboard.tab"])]
     with closing(sqlite3.connect(client._queue_path(opted_in, "claude-code", ENDPOINT))) as queue:
         assert queue.execute("SELECT count(*) FROM pending").fetchone() == (1,)
+
+
+def test_rebinding_a_stale_credential_activates_an_existing_opted_in_dashboard(opted_in, monkeypatch, capsys):
+    adapter = ["--adapter", "claude-code"]
+    endpoint = "https://collector.example.test/v1/events"
+    bind = ["--set-destination", endpoint, "--use-launch-token", *adapter]
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", TOKEN)
+    assert client.main(["--set-consent", "on", *adapter]) == 0
+    assert client.main(bind) == 0
+    capsys.readouterr()
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", ROTATED)
+
+    attempts = []
+    sent = Event()
+
+    def send(target, payload, *, token):
+        attempts.append((target, token, [event["feature"] for event in payload["events"]]))
+        sent.set()
+        return ACCEPTED
+
+    monkeypatch.setattr(client, "_send", send)
+    dashboard = DashboardUsage.from_environment("claude-code", "0.3.8")
+    assert dashboard is not None
+    dashboard._enqueue("dashboard.render")
+    assert not list(opted_in.glob("*.sqlite3"))
+
+    assert client.main(bind) == 0
+    assert json.loads(capsys.readouterr().out)["configuration"] == "ready"
+    dashboard._enqueue("dashboard.tab")
+    assert sent.wait(timeout=5)
+    assert attempts == [(endpoint, ROTATED, ["dashboard.tab"])]
 
 
 def test_switching_destination_between_claim_and_send_releases_the_old_lease(opted_in, monkeypatch, capsys):

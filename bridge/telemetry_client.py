@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -49,8 +50,8 @@ CLOCK_ROLLBACK_TOLERANCE = 5
 _EVENTS_PATH = "/v1/events"
 _LOCAL_ENDPOINT = f"http://127.0.0.1:8765{_EVENTS_PATH}"
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]")
-_TOKEN_HASH = re.compile(r"[0-9a-f]{64}")
-_AUTHORITY = re.compile(r"(?:[A-Za-z0-9_.%\-]+|\[[A-Za-z0-9_.:%\-]+\])(?::[0-9]+)?")
+_TOKEN_DIGEST = re.compile(r"[0-9a-f]{64}")
+_AUTHORITY = re.compile(r"(?:[A-Za-z0-9_.-]+|\[[A-Za-z0-9_.:-]+(?:%25[A-Za-z0-9_.-]+)?\])(?::[0-9]+)?")
 _MAX_DESTINATION_BYTES = 4096
 _FAILURES = frozenset({"network", "throttled", "collector_unavailable", "authentication", "endpoint", "payload_rejected"})
 # The standalone sender also runs on system Python 3.9 before the managed runtime exists.
@@ -69,6 +70,7 @@ def _endpoint(url: str, *, allow_base: bool = False) -> str | None:
     except ValueError:
         return None
     loopback = parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+    # urllib unquotes the authority before connecting. Only allow that for a standard IPv6 zone.
     if (not parsed.hostname or not _AUTHORITY.fullmatch(parsed.netloc)
             or (parsed.scheme != "https" and not (parsed.scheme == "http" and loopback))):
         return None
@@ -146,7 +148,8 @@ _DestinationSource = Literal["saved", "launch", "default", "invalid"]
 class _Destination:
     endpoint: str | None
     source: _DestinationSource
-    token_hash: str | None = None
+    token_binding: str | None = None
+    legacy_binding: bool = False
 
 
 def _destination_file(directory: Path, adapter: str) -> Path:
@@ -172,15 +175,17 @@ def _saved_destination(directory: Path, adapter: str) -> _Destination | None:
         if len(encoded) > _MAX_DESTINATION_BYTES:
             return invalid
         data = json.loads(encoded)
-        if not isinstance(data, dict) or data.keys() != {"url", "token_hash"}:
+        if not isinstance(data, dict) or data.keys() not in ({"url", "token_binding"}, {"url", "token_hash"}):
             return invalid
         url = data["url"]
-        token_hash = data["token_hash"]
+        legacy = "token_hash" in data
+        binding = data["token_hash" if legacy else "token_binding"]
         if not isinstance(url, str) or not _endpoint(url):
             return invalid
-        if token_hash is not None and (not isinstance(token_hash, str) or not _TOKEN_HASH.fullmatch(token_hash)):
+        if binding is not None and (not isinstance(binding, str) or not _TOKEN_DIGEST.fullmatch(binding)):
             return invalid
-        return _Destination(url, "saved", token_hash)
+        # An old fingerprint proves token identity, but cannot authorize a destination.
+        return _Destination(url, "saved", None if legacy else binding, legacy_binding=legacy and binding is not None)
     except (OSError, ValueError, RecursionError):
         return invalid
 
@@ -195,6 +200,11 @@ def _destination(env: Mapping[str, str], directory: Path | None, adapter: str) -
     return _Destination(_LOCAL_ENDPOINT, "default")
 
 
+def _destination_token_binding(token: str, adapter: str, endpoint: str) -> str:
+    message = f"trajviz-obs:destination:v1\0{adapter}\0{endpoint}".encode("ascii")
+    return hmac.new(token.encode("ascii"), message, "sha256").hexdigest()
+
+
 @dataclass(frozen=True)
 class UsageSettings:
     configuration: str
@@ -202,6 +212,7 @@ class UsageSettings:
     endpoint: str | None
     token: str | None
     credential_configured: bool
+    credential_invalid: bool
     destination_source: _DestinationSource
 
 
@@ -221,22 +232,30 @@ def usage_settings(env: Mapping[str, str], adapter: str, *, consent: str | None 
     if enabled:
         configuration = "ready" if endpoint else "invalid_endpoint" if destination.source == "invalid" else "missing_endpoint"
     matches_launch = destination.endpoint is not None and destination.endpoint == env.get("TRAJVIZ_OBS_TELEMETRY_URL")
-    credential_configured = (matches_launch or destination.token_hash is not None) and bool(
+    requires_token = destination.token_binding is not None or destination.legacy_binding
+    credential_configured = (matches_launch or requires_token) and bool(
         env.get("TRAJVIZ_OBS_TELEMETRY_TOKEN")
     )
+    credential_invalid = False
     try:
         token = configured_token(env) if credential_configured else None
-        if destination.token_hash is not None and (token is None or (
-            not matches_launch and _credential_fingerprint(token) != destination.token_hash
-        )):
-            raise ValueError("launch credential no longer matches the saved destination")
+        if requires_token:
+            bound = token is not None and (matches_launch or (
+                endpoint is not None and destination.token_binding is not None and hmac.compare_digest(
+                    destination.token_binding, _destination_token_binding(token, adapter, endpoint)
+                )
+            ))
+            if not bound:
+                raise ValueError("launch credential no longer matches the saved destination")
     except ValueError:
         token = None
+        credential_invalid = True
         if configuration == "ready":
             configuration = "invalid_token"
     if configuration == "ready" and directory is None:
         configuration = "invalid_state_directory"
-    return UsageSettings(configuration, directory, endpoint, token, credential_configured, destination.source)
+    return UsageSettings(configuration, directory, endpoint, token, credential_configured, credential_invalid,
+                         destination.source)
 
 
 def _queue_path(directory: Path, adapter: str, endpoint: str) -> Path:
@@ -637,7 +656,7 @@ def _save_destination(env: Mapping[str, str], adapter: str, value: str | None, *
     endpoint = _endpoint(value, allow_base=True)
     if endpoint is None:
         return "invalid_endpoint"
-    token_hash = None
+    token_binding = None
     if use_launch_token:
         try:
             token = configured_token(env)
@@ -645,8 +664,8 @@ def _save_destination(env: Mapping[str, str], adapter: str, value: str | None, *
             return "invalid_token"
         if token is None:
             return "missing_token"
-        token_hash = _credential_fingerprint(token)
-    encoded = json.dumps({"url": endpoint, "token_hash": token_hash}, separators=(",", ":")).encode("ascii")
+        token_binding = _destination_token_binding(token, adapter, endpoint)
+    encoded = json.dumps({"url": endpoint, "token_binding": token_binding}, separators=(",", ":")).encode("ascii")
     _write_private_file(path, encoded + b"\n")
     return None
 
@@ -672,6 +691,7 @@ def _manage_configuration(arguments: list[str]) -> int:
         status.update({
             "destination": _LOCAL_ENDPOINT if settings.destination_source == "default" else settings.endpoint,
             "destination_source": settings.destination_source,
+            "credential_invalid": settings.credential_invalid,
         })
         if error is not None:
             status["destination_error"] = error
