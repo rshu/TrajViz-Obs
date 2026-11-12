@@ -10,7 +10,9 @@ import os
 import random
 import re
 import sqlite3
+import stat
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -44,16 +46,11 @@ NETWORK_TIMEOUT = 3
 MAX_BATCHES_PER_RUN = 3
 MAX_RETRY_SECONDS = 3600
 CLOCK_ROLLBACK_TOLERANCE = 5
+_LOCAL_ENDPOINT = "http://127.0.0.1:8765/v1/events"
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]")
 _FAILURES = frozenset({"network", "throttled", "collector_unavailable", "authentication", "endpoint", "payload_rejected"})
 # The standalone sender also runs on system Python 3.9 before the managed runtime exists.
 _UTC = timezone.utc  # noqa: UP017
-
-
-def configured_endpoint(env: Mapping[str, str]) -> str | None:
-    if env.get("TRAJVIZ_OBS_TELEMETRY") != "1":
-        return None
-    return _endpoint(env.get("TRAJVIZ_OBS_TELEMETRY_URL", ""))
 
 
 def _endpoint(url: str) -> str | None:
@@ -95,6 +92,75 @@ def state_directory(env: Mapping[str, str]) -> Path:
     if not root.is_absolute():
         raise ValueError("telemetry state directory must be absolute")
     return root / "trajviz-obs" / "telemetry"
+
+
+def _saved_consent(directory: Path, adapter: str) -> str | None:
+    if adapter not in ADAPTERS:
+        return "off"
+    marker = directory / f"{adapter}-consent"
+    try:
+        mode = marker.lstat().st_mode
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return "off"
+    if not stat.S_ISREG(mode):
+        return "off"
+    try:
+        with marker.open("rb") as stream:
+            return "on" if stream.read(5) in {b"on", b"on\n"} else "off"
+    except OSError:
+        return "off"
+
+
+def _write_consent(directory: Path, adapter: str, value: str) -> None:
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{adapter}-consent-", dir=directory)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(value.encode("ascii") + b"\n")
+        os.replace(temporary, directory / f"{adapter}-consent")
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@dataclass(frozen=True)
+class UsageSettings:
+    configuration: str
+    directory: Path | None
+    endpoint: str | None
+    token: str | None
+    credential_configured: bool
+
+
+def usage_settings(env: Mapping[str, str], adapter: str, *, consent: str | None = None) -> UsageSettings:
+    """Resolve the active destination and private opt-in choice without writing state."""
+    try:
+        directory = state_directory(env)
+    except (OSError, ValueError, RuntimeError):
+        directory = None
+    if consent is None and directory is not None:
+        consent = _saved_consent(directory, adapter)
+    enabled = consent == "on" or (consent is None and env.get("TRAJVIZ_OBS_TELEMETRY") == "1")
+    configured_url = env.get("TRAJVIZ_OBS_TELEMETRY_URL", "")
+    # A leftover credential without its URL must not be sent to the local default.
+    local_default = consent is not None and not configured_url
+    url = _LOCAL_ENDPOINT if local_default else configured_url
+    endpoint = _endpoint(url)
+    configuration = "disabled"
+    if enabled:
+        configuration = "ready" if endpoint else "invalid_endpoint" if url else "missing_endpoint"
+    try:
+        token = None if local_default else configured_token(env)
+    except ValueError:
+        token = None
+        if configuration == "ready":
+            configuration = "invalid_token"
+    if configuration == "ready" and directory is None:
+        configuration = "invalid_state_directory"
+    return UsageSettings(configuration, directory, endpoint, token,
+                         not local_default and bool(env.get("TRAJVIZ_OBS_TELEMETRY_TOKEN")))
 
 
 def _queue_path(directory: Path, adapter: str, endpoint: str) -> Path:
@@ -340,6 +406,8 @@ def _send(endpoint: str, payload: dict, *, token: str | None = None) -> _Deliver
 def queue_usage(endpoint: str, directory: Path, *, adapter: str, surface: str, feature: str,
                 outcome: str, duration_ms: int, version: str) -> bool:
     """Persist a validated event without waiting for the collector."""
+    if _saved_consent(directory, adapter) == "off":
+        return False
     now = datetime.now(_UTC)
     try:
         event = validate_event({"id": uuid4().hex, "day": now.date().isoformat(), "surface": surface,
@@ -355,15 +423,21 @@ def queue_usage(endpoint: str, directory: Path, *, adapter: str, surface: str, f
 
 def flush_usage(endpoint: str, directory: Path, adapter: str, *, token: str | None = None) -> None:
     """Deliver a bounded number of queued batches if the retry lease is available."""
-    if token is not None and _TOKEN.fullmatch(token) is None:
+    if (token is not None and _TOKEN.fullmatch(token) is None) or _saved_consent(directory, adapter) == "off":
         return
     try:
         with closing(_open_queue(directory, adapter, endpoint)) as connection:
             for _ in range(MAX_BATCHES_PER_RUN):
+                if _saved_consent(directory, adapter) == "off":
+                    break
                 claim = _claim(connection, adapter, datetime.now(_UTC).timestamp(), token)
                 if claim is None:
                     break
                 lease, payload = claim
+                if _saved_consent(directory, adapter) == "off":
+                    with connection:
+                        connection.execute("UPDATE sender SET lease = NULL, lease_until = 0 WHERE lease = ?", (lease,))
+                    break
                 delivery = _send(endpoint, payload, token=token)
                 _finish(connection, lease, payload, delivery, datetime.now(_UTC).timestamp(), token)
                 if delivery.kind in ("retry", "blocked"):
@@ -419,58 +493,54 @@ def _queue_status(path: Path, token: str | None) -> dict:
     return status
 
 
-def delivery_status(env: Mapping[str, str], adapter: str) -> dict:
-    """Inspect only an existing queue for the selected endpoint, without sending or exposing identifiers."""
-    if adapter not in ADAPTERS:
-        raise ValueError("invalid telemetry adapter")
-    url = env.get("TRAJVIZ_OBS_TELEMETRY_URL", "")
-    endpoint = _endpoint(url)
-    if env.get("TRAJVIZ_OBS_TELEMETRY") != "1":
-        configuration = "disabled"
-    elif not url:
-        configuration = "missing_endpoint"
-    else:
-        configuration = "ready" if endpoint else "invalid_endpoint"
-    try:
-        token = configured_token(env)
-    except ValueError:
-        token = None
-        if configuration == "ready":
-            configuration = "invalid_token"
+def _delivery_status(settings: UsageSettings, adapter: str) -> dict:
     status = {
-        "adapter": adapter, "configuration": configuration,
-        "credential_configured": bool(env.get("TRAJVIZ_OBS_TELEMETRY_TOKEN")),
+        "adapter": adapter, "configuration": settings.configuration,
+        "credential_configured": settings.credential_configured,
         "queue_state": "unscoped", "queue_capacity": MAX_PENDING, "queued": None, "dropped": None, "expired": None,
         "rejected": None, "last_success_at": None, "last_failure_at": None, "last_failure": None, "last_http_status": None,
         "retry_at": None,
     }
-    if endpoint is None:
+    if settings.endpoint is None:
         return status
-    try:
-        directory = state_directory(env)
-    except (OSError, ValueError, RuntimeError):
-        if configuration == "ready":
-            status["configuration"] = "invalid_state_directory"
+    if settings.directory is None:
         status["queue_state"] = "unavailable"
         return status
     try:
-        status.update(_queue_status(_queue_path(directory, adapter, endpoint), token))
+        status.update(_queue_status(_queue_path(settings.directory, adapter, settings.endpoint), settings.token))
     except (OSError, ValueError, sqlite3.Error):
         status["queue_state"] = "unavailable"
     return status
 
 
+def delivery_status(env: Mapping[str, str], adapter: str) -> dict:
+    """Inspect only an existing queue for the selected endpoint, without sending or exposing identifiers."""
+    if adapter not in ADAPTERS:
+        raise ValueError("invalid telemetry adapter")
+    return _delivery_status(usage_settings(env, adapter), adapter)
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
-    if "--status" in arguments:
-        parser = argparse.ArgumentParser(description="Inspect local usage telemetry delivery without sending an event.")
-        parser.add_argument("--status", action="store_true", required=True)
+    if "--status" in arguments or any(arg == "--set-consent" or arg.startswith("--set-consent=") for arg in arguments):
+        parser = argparse.ArgumentParser(description="Read local usage telemetry status or save consent.")
+        action = parser.add_mutually_exclusive_group(required=True)
+        action.add_argument("--status", action="store_true")
+        action.add_argument("--set-consent", choices=("on", "off"))
         parser.add_argument("--adapter", required=True, choices=ADAPTERS)
         args = parser.parse_args(arguments)
+        if args.set_consent:
+            candidate = usage_settings(os.environ, args.adapter, consent=args.set_consent)
+            if args.set_consent == "on" and candidate.configuration in {"invalid_endpoint", "invalid_token"}:
+                print(json.dumps(_delivery_status(candidate, args.adapter), allow_nan=False))
+                return 0
+            if candidate.directory is None:
+                return 1
+            try:
+                _write_consent(candidate.directory, args.adapter, args.set_consent)
+            except OSError:
+                return 1
         print(json.dumps(delivery_status(os.environ, args.adapter), allow_nan=False))
-        return 0
-    endpoint = configured_endpoint(os.environ)
-    if endpoint is None:
         return 0
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adapter", required=True, choices=ADAPTERS)
@@ -480,14 +550,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--duration-ms", required=True, type=int)
     parser.add_argument("--version", required=True)
     args = parser.parse_args(arguments)
-    try:
-        token = configured_token(os.environ)
-        directory = state_directory(os.environ)
-    except (OSError, ValueError, RuntimeError):
+    settings = usage_settings(os.environ, args.adapter)
+    if settings.configuration != "ready" or settings.directory is None or settings.endpoint is None:
         return 0
-    if queue_usage(endpoint, directory, adapter=args.adapter, surface=args.surface, feature=args.feature,
+    if queue_usage(settings.endpoint, settings.directory, adapter=args.adapter, surface=args.surface, feature=args.feature,
                    outcome=args.outcome, duration_ms=args.duration_ms, version=args.version):
-        flush_usage(endpoint, directory, args.adapter, token=token)
+        flush_usage(settings.endpoint, settings.directory, args.adapter, token=settings.token)
     return 0
 
 

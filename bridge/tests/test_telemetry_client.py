@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import sqlite3
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
@@ -67,7 +68,138 @@ def test_disabled_sender_never_creates_state(opted_in, monkeypatch, consent):
     "http://[::1]:18752/v1/events",
 ])
 def test_allowed_endpoints_keep_their_exact_configured_scope(url):
-    assert client.configured_endpoint({"TRAJVIZ_OBS_TELEMETRY": "1", "TRAJVIZ_OBS_TELEMETRY_URL": url}) == url
+    settings = client.usage_settings({"TRAJVIZ_OBS_TELEMETRY": "1", "TRAJVIZ_OBS_TELEMETRY_URL": url}, "opencode")
+    assert settings.configuration == "ready" and settings.endpoint == url
+
+
+@pytest.mark.parametrize("adapter", ["claude-code", "opencode"])
+def test_consent_controls_the_local_fallback_without_sending_a_remote_token(opted_in, monkeypatch, capsys, adapter):
+    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
+    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY_URL")
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", TOKEN)
+    sent = []
+
+    def send(endpoint, batch, *, token):
+        sent.append((endpoint, batch["adapter"], token))
+        return ACCEPTED
+
+    monkeypatch.setattr(client, "_send", send)
+    assert client.main([*ARGV, "--adapter", adapter]) == 0
+    assert not opted_in.exists()
+
+    assert client.main(["--set-consent", "on", "--adapter", adapter]) == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response["configuration"] == "ready"
+    assert response["credential_configured"] is False
+    assert response["queue_state"] == "absent"
+    marker = opted_in / f"{adapter}-consent"
+    assert list(opted_in.iterdir()) == [marker]
+    assert marker.read_bytes() == b"on\n"
+    if os.name != "nt":
+        assert marker.stat().st_mode & 0o777 == 0o600
+    assert not sent
+
+    dashboard = DashboardUsage.from_environment(adapter, "0.3.8")
+    assert dashboard is not None
+    assert dashboard.endpoint == "http://127.0.0.1:8765/v1/events"
+    assert dashboard._token is None
+    assert client.main([*ARGV, "--adapter", adapter]) == 0
+    assert sent == [(dashboard.endpoint, adapter, None)]
+
+
+@pytest.mark.parametrize(("url", "token", "expected"), [
+    ("http://non-loopback.example/v1/events", None, "invalid_endpoint"),
+    ("https://collector.example/v1/events", "invalid-secret", "invalid_token"),
+])
+def test_rejected_enable_does_not_change_the_saved_choice(opted_in, monkeypatch, capsys, url, token, expected):
+    assert client.main(["--set-consent", "off", "--adapter", "claude-code"]) == 0
+    capsys.readouterr()
+    marker = opted_in / "claude-code-consent"
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_URL", url)
+    if token is not None:
+        monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", token)
+    assert client.main(["--set-consent", "on", "--adapter", "claude-code"]) == 0
+    output = capsys.readouterr()
+    assert json.loads(output.out)["configuration"] == expected
+    assert url not in output.out and "invalid-secret" not in output.out and not output.err
+    assert marker.read_bytes() == b"off\n"
+    assert client.delivery_status(client.os.environ, "claude-code")["configuration"] == "disabled"
+
+
+def test_failed_atomic_save_preserves_previous_consent(opted_in, monkeypatch, capsys):
+    assert client.main(["--set-consent", "on", "--adapter", "claude-code"]) == 0
+    capsys.readouterr()
+
+    def failed_replace(*_args):
+        raise OSError("synthetic write failure")
+
+    monkeypatch.setattr(client.os, "replace", failed_replace)
+    assert client.main(["--set-consent", "off", "--adapter", "claude-code"]) == 1
+    output = capsys.readouterr()
+    assert not output.out and not output.err
+    marker = opted_in / "claude-code-consent"
+    assert list(opted_in.iterdir()) == [marker]
+    assert marker.read_bytes() == b"on\n"
+
+
+def test_disable_pauses_a_running_dashboard_and_only_its_adapters_queue(opted_in, monkeypatch, capsys):
+    attempts = []
+
+    def send(_endpoint, payload, *, token):
+        attempts.append(payload)
+        if len(attempts) == 1:
+            return client._Delivery("retry", "network")
+        return ACCEPTED
+
+    monkeypatch.setattr(client, "_send", send)
+    dashboard = DashboardUsage.from_environment("claude-code", "0.3.8")
+    assert dashboard is not None
+    assert client.main(ARGV) == 0
+    assert client.main(["--set-consent", "off", "--adapter", "claude-code"]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["configuration"] == "disabled" and status["queued"] == 1
+    queue = client._queue_path(opted_in, "claude-code", ENDPOINT)
+    with closing(sqlite3.connect(queue)) as db, db:
+        db.execute("UPDATE sender SET retry_at = 0")
+
+    # This object launched while opt-in came from the environment.
+    dashboard._enqueue("dashboard.render")
+    client.flush_usage(ENDPOINT, opted_in, "claude-code")
+    assert client.main(ARGV) == 0
+    assert len(attempts) == 1
+    assert client.delivery_status(client.os.environ, "claude-code")["queued"] == 1
+    assert DashboardUsage.from_environment("claude-code", "0.3.8") is None
+
+    assert client.main([*ARGV, "--adapter", "opencode"]) == 0
+    assert attempts[-1]["adapter"] == "opencode"
+    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
+    assert client.main(["--set-consent", "on", "--adapter", "claude-code"]) == 0
+    assert json.loads(capsys.readouterr().out)["queued"] == 1
+    assert len(attempts) == 2
+    assert client.main([*ARGV, "--feature", "help"]) == 0
+    assert len(attempts) == 3 and attempts[-1]["adapter"] == "claude-code"
+    assert attempts[-1]["events"][0]["id"] == attempts[0]["events"][0]["id"]
+    assert client.delivery_status(client.os.environ, "claude-code")["queued"] == 0
+
+
+def test_disabling_between_claim_and_send_releases_the_lease(opted_in, monkeypatch):
+    adapter = "opencode"
+    assert client.queue_usage(ENDPOINT, opted_in, adapter=adapter, surface="desktop", feature="help",
+                              outcome="success", duration_ms=0, version="0.5.4")
+    claim = client._claim
+
+    def claim_then_disable(*args, **kwargs):
+        result = claim(*args, **kwargs)
+        assert result is not None
+        client._write_consent(opted_in, adapter, "off")
+        return result
+
+    monkeypatch.setattr(client, "_claim", claim_then_disable)
+    monkeypatch.setattr(client, "_send", lambda *_args, **_kwargs: pytest.fail("disabled delivery"))
+    client.flush_usage(ENDPOINT, opted_in, adapter)
+    with closing(sqlite3.connect(client._queue_path(opted_in, adapter, ENDPOINT))) as db:
+        assert db.execute("SELECT lease, lease_until FROM sender").fetchone() == (None, 0)
+        assert db.execute("SELECT count(*) FROM pending").fetchone() == (1,)
 
 
 def test_activation_and_commands_share_an_id_only_within_the_same_adapter_and_endpoint(opted_in, monkeypatch):

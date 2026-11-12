@@ -51,7 +51,8 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'obs' }, async ($, e) => {
     try {
-      return await dispatch($, { args: e.args, parsed: parseArgs(e.args), options, presentation: e.presentation })
+      const personRequested = e.origin?.kind === 'composer' || e.origin?.kind === 'bridge'
+      return await dispatch($, { args: e.args, parsed: parseArgs(e.args), options, presentation: e.presentation, personRequested })
     } catch (error) {
       return { text: `obs: ${error instanceof Error ? error.message : String(error)}` }
     }

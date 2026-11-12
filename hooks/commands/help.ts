@@ -28,7 +28,7 @@ export const HELP_TEXT = [
   '    llm=env also accepts --delay SEC (0–3600) and --temperature N (or LABEL_TEMPERATURE).',
   'Setup',
   '  setup [--extras ...] [--source ...]   doctor   sessions [N]   watch [on|off]   statusline [on|off]',
-  '  telemetry   show local usage telemetry delivery status',
+  '  enable_telemetry | disable_telemetry   change usage telemetry consent    telemetry   check delivery',
   '  attribution [--reference-root DIR] [--agent A] [--instance I]   collect <cursor|opencode|codearts> ...',
   '  help   this table',
 ].join('\n')

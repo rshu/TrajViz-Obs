@@ -23,7 +23,7 @@ export type GuiHooks = {
   confirm(confirmation: NonNullable<CommandResult['confirmation']>, signal: AbortSignal): Promise<boolean>
   notice(text: string, error?: boolean): void
 }
-const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'telemetry', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
+const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
 const display = (text: string) => { const clean = safeText(text); return clean.length > 64_000 ? clean.slice(0, 64_000) + '\n\nDisplay clipped. Export the full result with /obs json.' : clean }
 const pause = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
   signal.throwIfAborted()

@@ -26,7 +26,7 @@ type UIState = {
 }
 type Panel = { name: string; sessionID: string; width: number; focused: boolean; focus(): void; close(): void; toggleFullscreen(): void }
 const PANEL = 'trajviz-obs'
-const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'telemetry', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
+const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
 const displayResult = (text: string): string => {
   const clean = safeText(text)
   return clean.length > 64_000 ? `${clean.slice(0, 64_000)}\n\nDisplay clipped. Use /obs json for full session data.` : clean
@@ -62,7 +62,7 @@ export function setup(context: Plugin.Context): () => void {
   }
   const notice = (message: string, error = false) => context.ui.toast.show({ title: 'TrajViz Obs', message: safeText(message), variant: error ? 'error' : 'info' })
   const rpc = () => context.client.rpc(Obs)
-  let reportInteraction = createInteractionReporter('terminal')
+  const reportInteraction = createInteractionReporter('terminal')
   function interaction(base: string, feature: UsageInteraction['feature'], outcome: UsageInteraction['outcome'], started: number): void {
     if (disposed) return
     try { void reportInteraction(context.client, location(base), feature, outcome, started) }
@@ -131,6 +131,7 @@ export function setup(context: Plugin.Context): () => void {
   let stopChanged = () => {}
   let stopProgress = () => {}
   let stopCapture = () => {}
+  let subscribedClient: typeof context.client | undefined
   const captureReads = new Set<AbortController>()
   function subscribe(): void {
     stopChanged()
@@ -138,6 +139,8 @@ export function setup(context: Plugin.Context): () => void {
     stopCapture()
     for (const controller of captureReads) controller.abort()
     const client = context.client
+    if (subscribedClient) reportInteraction.reset(subscribedClient)
+    subscribedClient = client
     const peer = client.rpc(Obs)
     stopCapture = peer.events.on('capture', event => {
       const controller = new AbortController()
@@ -161,7 +164,6 @@ export function setup(context: Plugin.Context): () => void {
   subscribe()
   const stopEvents = context.data.listen(({ details }) => {
     if (details.type === 'server.connected') {
-      reportInteraction = createInteractionReporter('terminal')
       subscribe()
       const base = active()
       if (base && (settings.statusline || context.ui.panel.current()?.name === PANEL)) schedule(selected(base))

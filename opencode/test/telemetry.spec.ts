@@ -2,6 +2,8 @@ import { expect, test } from 'bun:test'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { runCommand } from '../src/commands.js'
+import type { Backend } from '../src/backend.js'
 import { createUsageReporter, dashboardUsageArgs, usageDeliveryStatus } from '../src/telemetry.js'
 import { USAGE_FEATURES, usageFeature } from '../src/usage-features.js'
 
@@ -15,6 +17,10 @@ test('analytics selects only known features and command variants', () => {
   expect(usageFeature('telemetry')).toBeUndefined()
   expect(usageFeature('telemetry --bad')).toBeUndefined()
   expect(USAGE_FEATURES).not.toContain('telemetry')
+  expect(usageFeature('enable_telemetry')).toBeUndefined()
+  expect(usageFeature('disable_telemetry --bad')).toBeUndefined()
+  expect(USAGE_FEATURES).not.toContain('enable_telemetry')
+  expect(USAGE_FEATURES).not.toContain('disable_telemetry')
   expect(usageFeature('private-secret-unknown-command')).toBeUndefined()
 })
 
@@ -43,11 +49,17 @@ test.skipIf(!python)('the reporter requires launch opt-in and spawns with only t
   const runtime = { bridge, telemetryPython: () => { probes++; return interpreter } }
   try {
     for (const [name, value] of entries) process.env[name] = value
-    expect(createUsageReporter(runtime)).toBeUndefined()
+    const report = createUsageReporter(runtime)
+    const activation = { feature: 'activation', surface: 'unknown', outcome: 'success', durationMs: 0 } as const
+    expect(report.enabled()).toBe(false)
+    report(activation)
+    await report.flush()
     expect(dashboardUsageArgs()).toEqual([])
     process.env.TRAJVIZ_OBS_TELEMETRY = '1'
     delete process.env.TRAJVIZ_OBS_TELEMETRY_URL
-    expect(createUsageReporter(runtime)).toBeUndefined()
+    expect(report.enabled()).toBe(false)
+    report(activation)
+    await report.flush()
     expect(dashboardUsageArgs()).toEqual([])
     expect(probes).toBe(0)
     process.env.TRAJVIZ_OBS_TELEMETRY_URL = endpoint
@@ -67,8 +79,7 @@ test.skipIf(!python)('the reporter requires launch opt-in and spawns with only t
       '    }',
       '    output.write(json.dumps(event) + "\\n")',
     ].join('\n'))
-    const report = createUsageReporter(runtime)!
-    report({ feature: 'activation', surface: 'unknown', outcome: 'success', durationMs: 0 })
+    report(activation)
     await new Promise<void>(resolve => setImmediate(resolve))
     expect(probes).toBe(1)
     interpreter = python ?? undefined
@@ -130,6 +141,50 @@ test.skipIf(!python)('local status uses only the read-only helper and omits cred
       else process.env[name] = value
     }
     await rm(bridge, { recursive: true, force: true })
+  }
+})
+
+test.skipIf(!python)('the native commands save adapter consent and update a running reporter and browser launcher', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'trajviz-opencode-consent-'))
+  const marker = path.join(directory, 'opencode-consent')
+  const env = process.env
+  const names = ['TRAJVIZ_OBS_TELEMETRY', 'TRAJVIZ_OBS_TELEMETRY_URL', 'TRAJVIZ_OBS_TELEMETRY_TOKEN', 'TRAJVIZ_OBS_TELEMETRY_STATE_DIR']
+  const previous = names.map(name => [name, env[name]] as const)
+  const runtime = { bridge: path.resolve(import.meta.dir, '../runtime/bridge'), telemetryPython: () => python ?? undefined }
+  const backend = { runtime } as unknown as Backend
+  const signal = new AbortController().signal
+  const command = async (args: string) => (await runCommand(backend, { args, sessionID: 'home', runID: args }, signal)).text
+  try {
+    env.TRAJVIZ_OBS_TELEMETRY_STATE_DIR = directory
+    env.TRAJVIZ_OBS_TELEMETRY_TOKEN = TOKEN
+    delete env.TRAJVIZ_OBS_TELEMETRY
+    delete env.TRAJVIZ_OBS_TELEMETRY_URL
+    await writeFile(path.join(directory, 'claude-code-consent'), 'on\n')
+    const reporter = createUsageReporter(runtime)
+    expect(reporter.enabled()).toBe(false)
+    expect(await command('telemetry')).toBe('Usage telemetry · Off')
+    expect(await command('enable_telemetry')).toContain('On. Preference saved')
+    expect(await readFile(marker, 'utf8')).toBe('on\n')
+    expect(reporter.enabled()).toBe(true)
+    expect(dashboardUsageArgs()).toEqual(['--usage-adapter', 'opencode', '--usage-version', expect.any(String)])
+    expect(await command('telemetry')).toContain('Collector credential · Not configured')
+    env.TRAJVIZ_OBS_TELEMETRY = '1'
+    env.TRAJVIZ_OBS_TELEMETRY_URL = 'http://127.0.0.1:1/v1/events'
+    expect(await command('disable_telemetry')).toContain('Off. Preference saved')
+    expect(await readFile(marker, 'utf8')).toBe('off\n')
+    expect(reporter.enabled()).toBe(false)
+    expect(dashboardUsageArgs()).toEqual([])
+    expect(await command('telemetry')).toContain('Usage telemetry · Off')
+    env.TRAJVIZ_OBS_TELEMETRY_URL = 'http://private-collector.example/v1/events'
+    expect(await command('enable_telemetry')).toContain('Endpoint invalid')
+    expect(await readFile(marker, 'utf8')).toBe('off\n')
+    expect(await readFile(path.join(directory, 'claude-code-consent'), 'utf8')).toBe('on\n')
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete env[name]
+      else env[name] = value
+    }
+    await rm(directory, { recursive: true, force: true })
   }
 })
 

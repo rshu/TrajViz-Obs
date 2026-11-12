@@ -1,6 +1,6 @@
 import type { CommandPresentation, CommandRunResult, EngineInterface, HookFailure, PluginOptions } from 'claude-code'
 import { BOOLEAN_FLAGS, parseArgs, selectionError, suggest, type Parsed } from '../lib/args'
-import { commandFeature, markOutcome, reportTelemetry, telemetryStatus, type OutcomeTracker } from '../lib/telemetry'
+import { commandFeature, markOutcome, reportTelemetry, setTelemetryConsent, telemetryStatus, type OutcomeTracker } from '../lib/telemetry'
 import { browser } from './browser'
 import { compare } from './compare'
 import { exportCmd } from './exports'
@@ -19,6 +19,7 @@ export type CommandContext = {
   parsed: Parsed
   options: PluginOptions
   presentation?: CommandPresentation
+  personRequested?: boolean
   telemetry?: OutcomeTracker
 }
 
@@ -42,10 +43,11 @@ const COMMAND_FLAGS: Record<string, readonly string[]> = {
   dashboard: ['port', 'html', 'dark', 'inline-plotly'], converge: ['data-root', 'port'],
   compare: ['anchor-patch', 'fuzzy-commands', 'reverse'], scorecard: ['fuzzy-commands', 'labels', 'no-self'], labels: [],
   fixes: ['limit'], label: [...OUTPUT_FLAGS, 'assistant-only', 'model', 'max-steps', 'taxonomy', 'max-content-chars', 'delay', 'user-phase', 'user-action', 'max-tokens', 'temperature'],
-  attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [], setup: ['extras', 'source'], doctor: [], telemetry: [], help: [],
+  attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [], setup: ['extras', 'source'], doctor: [],
+  telemetry: [], enable_telemetry: [], disable_telemetry: [], help: [],
 }
 
-const NO_POSITIONALS = ['overview', 'help', 'doctor', 'telemetry', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline']
+const NO_POSITIONALS = ['overview', 'help', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline']
 const SESSION_COMMANDS = ['overview', 'pane', 'view', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution', 'sessions']
 
 export async function dispatch($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
@@ -143,6 +145,10 @@ async function route($: EngineInterface, ctx: CommandContext): Promise<CommandRu
       return misc($, ctx)
     case 'telemetry':
       return telemetryStatus($, ctx.options)
+    case 'enable_telemetry':
+    case 'disable_telemetry':
+      if (!ctx.personRequested) return { text: `Run /obs ${sub} directly in the Claude Code composer to change usage telemetry.` }
+      return setTelemetryConsent($, ctx.options, sub === 'enable_telemetry' ? 'on' : 'off')
     case 'sessions':
       return sessions($, ctx)
     case 'watch':

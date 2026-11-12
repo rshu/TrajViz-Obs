@@ -96,9 +96,9 @@ test('usage counts completed terminal, Desktop, and model-tool actions without p
   const directory = await mkdtemp(path.join(tmpdir(), 'trajviz-opencode-usage-'))
   const transcript = path.join(directory, 'private-transcript.json')
   const sessionID = 'private-session'
-  const events: Parameters<NonNullable<ReturnType<typeof telemetry.createUsageReporter>>>[0][] = []
+  const events: Parameters<ReturnType<typeof telemetry.createUsageReporter>>[0][] = []
   const report = spyOn(telemetry, 'createUsageReporter').mockReturnValue(Object.assign(
-    (event: typeof events[number]) => { events.push(event) }, { flush: async () => {} },
+    (event: typeof events[number]) => { events.push(event) }, { enabled: () => true, flush: async () => {} },
   ))
   const session = spyOn(Backend.prototype, 'session').mockResolvedValue({
     sessionID, transcript, artifacts: directory, argv: ['--transcript', transcript],

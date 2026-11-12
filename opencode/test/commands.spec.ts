@@ -42,6 +42,10 @@ describe('OpenCode obs command contract', () => {
       expect(calls).toEqual([]); expect(served).toEqual([]); expect(selections).toEqual([])
     }
     expect(validateArguments('cancel')).toBeUndefined()
+    expect(validateArguments('enable_telemetry')).toBeUndefined()
+    expect(validateArguments('disable_telemetry')).toBeUndefined()
+    expect(validateArguments('enable_telemetry extra')).toContain('Unexpected arguments')
+    expect(validateArguments('disable_telemetry --session ses_other')).toContain('--session is not supported')
     expect(validateArguments('watch off')).toBeUndefined()
     expect(validateArguments('pane --session ses_other')).toBeUndefined()
     expect(validateArguments('isssues')).toContain("Did you mean 'issues'")
@@ -52,7 +56,9 @@ describe('OpenCode obs command contract', () => {
 
   test('help and SDK session listing need no Python runtime', async () => {
     const { execute, calls } = fixture()
-    expect((await execute('help')).text).toContain('OpenCode 2')
+    const { text } = await execute('help')
+    expect(text).toContain('OpenCode 2')
+    expect(text).toContain('enable_telemetry | disable_telemetry')
     expect((await execute('sessions 20')).text).toContain('* ses_current')
     expect(calls).toEqual([])
   })
