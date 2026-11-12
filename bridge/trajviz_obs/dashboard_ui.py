@@ -67,7 +67,8 @@ _CSS = """
 .obs-dashboard .obs-summary-status, .obs-dashboard .obs-summary-status > .block,
 .obs-dashboard .obs-summary-status .html-container { padding: 0 !important; }
 .obs-dashboard [data-help]::after { left: 0; transform: none; max-width: 100%; }
-.obs-dashboard .overview-issues-body { max-height: 400px; overflow: auto; }
+/* Let issue cards and their actions scroll with the page. */
+.obs-dashboard .overview-issues-body { max-height: none; overflow: visible; scrollbar-gutter: auto; }
 .obs-dashboard .agent-cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
 .obs-dashboard .agent-card { min-width: 0; max-width: none; overflow-wrap: anywhere; }
 .obs-dashboard .agent-card-header { flex-wrap: wrap; }
@@ -129,7 +130,6 @@ _CSS = """
   .obs-dashboard .obs-guide { padding: 10px 12px; }
   .obs-dashboard .obs-guide-grid { grid-template-columns: 1fr; gap: 10px; }
   .obs-dashboard .ov-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
-  .obs-dashboard .overview-issues-body { max-height: 340px; }
   .obs-dashboard .overview-section-nav { padding: 4px; margin-bottom: 8px; }
   .obs-dashboard .overview-nav-title { padding: 4px 8px; margin-bottom: 0; }
   .obs-dashboard .overview-section-radio > .wrap { scrollbar-width: thin; }
@@ -280,7 +280,7 @@ _GUIDE = {
     "insight": """<section class="obs-guide" aria-label="Dashboard guide">
 <div class="obs-guide-header"><h1>TrajViz Obs</h1><p>Session health, evidence, and comparisons.</p></div>
 <details><summary>How to use this dashboard</summary><div class="obs-guide-grid">
-<p><strong>1 · Overview</strong>Start with health and issues. Click a token bar for its breakdown, or switch the execution timeline to wall-clock time. Find context growth in Deep Dive.</p>
+<p><strong>1 · Overview</strong>Review health and issues in Summary. Choose <b>Analyze issue with AI</b> on a finding to discuss it in the sidebar. Find context growth in Deep Dive.</p>
 <p><strong>2 · Workflow</strong>Follow individual steps and switch to Expanded for full evidence. Click an issue’s step number to jump to its evidence.</p>
 <p><strong>3 · Comparison</strong>Compare runs. Patterns, Raw Data, and Labels provide the supporting detail.</p>
 </div><p class="obs-model-note">Use <code>/obs analyze</code> or <code>/obs fixes</code> for your host’s configured model.
