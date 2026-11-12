@@ -180,6 +180,31 @@ def test_dashboard_gantt_hover_distinguishes_missing_tokens_from_measured_zero(n
         assert hover[1].startswith("<b>Step 3</b>") and hover[1].endswith("0 tokens")
 
 
+def test_dashboard_workflow_view_control_is_serialized_with_its_native_change_event(fixture_session):
+    config = build_preloaded_insight(str(fixture_session)).get_config_file()
+    components = {component["id"]: component for component in config["components"]}
+
+    def descendants(node):
+        for child in node.get("children", []):
+            yield child
+            yield from descendants(child)
+
+    workflow, = [node for node in descendants(config["layout"])
+                 if components[node["id"]]["props"].get("label") == "Workflow"]
+    toolbar, = [node for node in workflow["children"]
+                if "obs-workflow-filters" in (components[node["id"]]["props"].get("elem_classes") or [])]
+    view, = [components[node["id"]] for node in descendants(toolbar)
+             if components[node["id"]]["type"] == "radio"]
+    props = view["props"]
+    assert props["label"] == "View" and props["visible"] is True
+    assert props["choices"] == [("Cards", "Cards"), ("Expanded", "Expanded")]
+    assert props["value"] == "Cards" and "obs-workflow-view" in props["elem_classes"]
+
+    change, = [dependency for dependency in config["dependencies"]
+               if any(target == view["id"] and event == "change" for target, event in dependency["targets"])]
+    assert change["api_name"] == "do_filter_workflow" and view["id"] in change["inputs"]
+
+
 def test_dashboard_workflow_keeps_token_evidence_when_switching_modes(native_timed_parent_and_child):
     app = build_preloaded_insight(str(native_timed_parent_and_child))
     callback = next(entry for entry in app.fns.values() if entry.api_name == "do_filter_workflow")
@@ -264,6 +289,7 @@ def test_labels_preload_uses_all_native_charts_and_resets_for_other_trajectories
     assert reset.outputs[-1] is label_file and gradio.utils.is_static_file(str(dashboard_labels))
     native = next(block for block in app.fns.values() if getattr(block.fn, "__name__", "") == "do_load_labels")
     values = native.fn(str(dashboard_labels), False)
+    assert values[0]["visible"] and "coverage" in values[0]["value"].lower()
     assert all(values[index]["visible"] for index in (2, 5, 8))
     assert all(values[index].data for index in (3, 4, 6, 7, 9))
     assert any(target == (label_file._id, "change") for target in native.targets) or any(
@@ -318,7 +344,9 @@ def test_cached_labels_refuse_changed_step_identity(filtered_label_run, tmp_path
 
 
 def test_incompatible_cached_labels_show_notice_and_clear_on_another_trajectory(fixture_session,
-                                                                             fixture_run, tmp_path):
+                                                                             fixture_run, tmp_path, monkeypatch):
+    warnings = []
+    monkeypatch.setattr(gradio, "Warning", warnings.append)
     path = tmp_path / "labels.json"
     step = next(step for step in fixture_run.steps if step["role"] == "assistant")
     path.write_text(json.dumps({"steps": [dict(step, index=len(fixture_run.steps) + 1)]}))
@@ -328,7 +356,9 @@ def test_incompatible_cached_labels_show_notice_and_clear_on_another_trajectory(
     loaded = _loaded_run(_loader(app), fixture_session)
     outputs = reset.fn(str(fixture_session), None, loaded)
     assert outputs[-1]["value"] is None and "Run /obs label again" in outputs[1]
+    assert len(warnings) == 1 and "Run /obs label again" in warnings[0]
     assert "Run /obs label again" not in reset.fn(str(tmp_path / "another.jsonl"), None, loaded)[1]
+    assert len(warnings) == 1
     assert path.read_bytes() == before
 
 

@@ -229,6 +229,8 @@ def _add_labels_preload(app: gr.Blocks, transcript_path: str, labels_path: str, 
                                       run=loaded_run) if same_run else None
         outputs[-1] = gr.update(value=labels_path if same_run and notice is None else None)
         if notice:
+            # The rejected sidecar never reaches the native label badge callback.
+            gr.Warning(notice)
             outputs[1] = f"<div style='padding:1em;color:var(--ov-muted);'>{notice}</div>"
         return tuple(outputs)
 

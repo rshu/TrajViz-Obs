@@ -11,7 +11,7 @@ const CONSENT_DIRECTORY = '/usage-state'
 const CONSENT_PATH = `${CONSENT_DIRECTORY}/claude-code-consent`
 const PRIVATE_VALUE = 'PRIVATE-SESSION-PATH-OR-CONTENT'
 const TOOL = 'mcp__trajviz-obs__obs'
-const STATE = JSON.stringify({ revision: 6, python: PYTHON, trajviz: '0.5.0', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.5.0', createdAt: 1 })
+const STATE = JSON.stringify({ revision: 6, python: PYTHON, trajviz: '0.5.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.5.1', createdAt: 1 })
 const DONE = { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
 
 type Settings = {

@@ -17,6 +17,7 @@ import weakref
 from collections import defaultdict
 from dataclasses import fields as dataclass_fields
 from dataclasses import replace
+from datetime import datetime
 from functools import cached_property
 
 from agent_trajviz import Trajectory
@@ -49,6 +50,31 @@ def _observed(step, field):
     value = (step.get("tokens") or {}).get(key)
     return (TOKEN_LABELS[key] not in step.get("_metrics_unavailable_fields", []) and _number(value)
             and value >= 0 and (isinstance(value, int) or value.is_integer()))
+
+
+def _native_wall_clock(elapsed, steps, raw):
+    """Keep TrajViz's elapsed time and distinguish recorded zero from missing clocks."""
+    if _number(elapsed) and elapsed > 0:
+        return elapsed
+
+    timing = raw.get("timing")
+    if isinstance(timing, dict):
+        started, finished = timing.get("started_at"), timing.get("finished_at")
+        if isinstance(started, str) and isinstance(finished, str):
+            try:
+                span = (datetime.fromisoformat(finished) - datetime.fromisoformat(started)).total_seconds()
+            except (ValueError, TypeError, OverflowError):
+                pass
+            else:
+                # Claude fills both envelope endpoints from a lone transcript timestamp.
+                if span > 0 or (span == 0 and not raw.get("_claude_code_format")):
+                    return span
+
+    if elapsed == 0 and any(_observed(step, "duration") for step in steps):
+        return 0.0
+    stamps = [step[key] for step in steps for key in ("time_created_ms", "time_completed_ms")
+              if _number(step.get(key))]
+    return 0.0 if len(stamps) >= 2 and min(stamps) == max(stamps) else None
 
 
 def dashboard_field_observed(step, field):
@@ -242,12 +268,7 @@ class _Projection:
         result["median_tokens_per_second"] = round(statistics.median(rates), 1) if rates else None
         if not result["total_duration"]:
             result["tokens_per_second"] = None
-        if result["total_duration"] is None:
-            from agent_trajviz.insight.metrics import session_wall_clock_seconds
-
-            # The canonical native metric falls back to the sum of durations,
-            # which is zero even when no duration was recorded.
-            result["wall_clock"] = session_wall_clock_seconds(self.steps, self._original.raw.get("timing"))
+        result["wall_clock"] = _native_wall_clock(result.get("wall_clock"), self.steps, self._original.raw)
         return result
 
     @cached_property
@@ -417,14 +438,29 @@ def project_dashboard_session(session):
         return session
     projection = project_analysis(run)
     shown = _DashboardTrajectory(**{field.name: getattr(run, field.name) for field in dataclass_fields(run)})
-    if projection is run._analysis:
-        return replace(session, shown=shown)
-    from agent_trajviz.insight.metrics import wall_clock_fmt
+    metrics = projection.metrics
+    elapsed = metrics.get("wall_clock")
+    if session.truncated and session.run is not None:
+        from agent_trajviz.insight.metrics import session_wall_clock_seconds
 
-    return replace(session, shown=shown, metrics=projection.metrics, verdicts=projection.verdicts,
-                   agent_summaries=projection.agent_summaries, message_rows=projection.message_rows,
-                   step_analytics=projection.step_analytics, user_repeats=projection.user_repeats,
-                   wall_clock=wall_clock_fmt(projection.metrics)[1])
+        # Only the displayed steps are capped. Use the full trace for elapsed
+        # time without computing unbounded dashboard charts or analysis.
+        full = session.run
+        elapsed = session_wall_clock_seconds(full.steps, full.raw.get("timing"))
+        if elapsed is None and projection is not run._analysis:
+            duration = sum(step["duration"] for step in full.steps if _observed(step, "duration"))
+            elapsed = _native_wall_clock(duration, full.steps, full.raw)
+        metrics = {**metrics, "wall_clock": elapsed}
+
+    from agent_trajviz.insight.metrics import format_duration_seconds
+
+    session = replace(session, shown=shown, metrics=metrics,
+                      wall_clock=format_duration_seconds(elapsed) if elapsed is not None else "n/a")
+    if projection is run._analysis:
+        return session
+    return replace(session, verdicts=projection.verdicts, agent_summaries=projection.agent_summaries,
+                   message_rows=projection.message_rows, step_analytics=projection.step_analytics,
+                   user_repeats=projection.user_repeats)
 
 
 def project_view(run, view):
@@ -547,17 +583,8 @@ def project_brief(run):
         return "unknown" if number is None else f"{number}{unit}"
 
     def session_lines(raw, steps, metrics, wall_fmt):
-        from .comparison_quality import _elapsed_seconds
-
-        # Captures retain the engine's authoritative availability. Native
-        # exports may also record a zero elapsed clock without model timing.
-        elapsed = metrics.get("wall_clock") if captured else _elapsed_seconds(run)
-        if elapsed is None:
+        if metrics.get("wall_clock") is None:
             wall_fmt = "unknown"
-        elif metrics.get("wall_clock") is None:
-            from agent_trajviz.insight.metrics import wall_clock_fmt
-
-            _, wall_fmt = wall_clock_fmt({"wall_clock": elapsed, "total_duration": None})
         lines = assistant._session_header(raw, steps, metrics, wall_fmt)
         for index, line in enumerate(lines):
             if line.startswith("tool_calls: "):

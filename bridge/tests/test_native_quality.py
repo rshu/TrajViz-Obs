@@ -11,6 +11,8 @@ import pytest
 
 from trajviz_obs.compat import load_run, project_analysis, project_brief, project_view
 from trajviz_obs.native_quality import _recent_outcome_lines, project_dashboard_session
+from trajviz_obs.sidecars import scan_transcript
+from trajviz_obs.snapshot import build_snapshot
 
 BASE = 1790000000000
 
@@ -188,6 +190,35 @@ def test_missing_native_clock_is_unknown_instead_of_a_zero_duration(native_run):
     summary = project_view(run, run.view("summary"))
     assert summary.data["wall_clock_s"] is None
     jsonschema.validate(summary.to_dict(), tv.view_schema("summary"))
+
+
+def test_lone_claude_timestamp_does_not_measure_elapsed(fixture_session, tmp_path):
+    records = [json.loads(line) for line in fixture_session.read_text().splitlines() if line]
+    assistant = next(record for record in records if record.get("type") == "assistant")
+    path = tmp_path / "single-timestamp.jsonl"
+    path.write_text(json.dumps(assistant) + "\n")
+    run = load_run(str(path))
+    assert run.raw["timing"]["started_at"] == run.raw["timing"]["finished_at"]
+    assert project_analysis(run).metrics["wall_clock"] is None
+
+
+def test_full_elapsed_clock_matches_trajviz_even_when_dashboard_caps_steps(native_run, monkeypatch):
+    from agent_trajviz.insight import session
+
+    elapsed = 340 * 3600 + 24 * 60
+    path, run = native_run([
+        message("start", completed=None),
+        {**message("middle", completed=None), "time": {"created": BASE + 1100}},
+        {**message("end", completed=None), "time": {"created": BASE + 100 + elapsed * 1000}},
+    ], session_time=False)
+    monkeypatch.setattr(session, "MAX_STEPS", 2)
+    browser = project_dashboard_session(session.session_from_run(run))
+    snapshot = build_snapshot(run, transcript_path=str(path), facts=scan_transcript(str(path)),
+                              agents_meta={}, artifacts=None)
+    assert browser.truncated and len(browser.steps) == browser.metrics["total_steps"] == 2
+    assert browser.metrics["wall_clock"] == snapshot["timing"]["wall_clock_s"] == run.metrics["wall_clock"] == elapsed
+    assert browser.wall_clock == snapshot["timing"]["wall_clock_fmt"] == run._analysis.wall_clock == "14d 4h"
+    assert "wall clock 14d 4h" in snapshot["text"]
 
 
 def test_generation_rates_use_the_same_timed_steps_for_both_tokens_and_seconds(native_run):
@@ -520,7 +551,9 @@ def test_pending_native_brief_formats_generated_unknowns_without_rewriting_sourc
     assert run.to_dict(include_raw=True) == original and path.read_bytes() == source
 
 
-def test_brief_preserves_a_measured_zero_elapsed_without_assistant_completion(native_run):
+def test_measured_zero_elapsed_without_assistant_completion_reaches_every_overview(native_run):
+    from agent_trajviz.insight.session import session_from_run
+
     path, _ = native_run([message(tokens=usage(0, 0, 0, 0, 0), completed=None)])
     document = json.loads(path.read_text())
     document["session"]["time"]["updated"] = BASE
@@ -528,6 +561,12 @@ def test_brief_preserves_a_measured_zero_elapsed_without_assistant_completion(na
     path.write_text(json.dumps(document))
     run = load_run(str(path))
     brief = project_brief(run)
+    browser = project_dashboard_session(session_from_run(run))
+    snapshot = build_snapshot(run, transcript_path=str(path), facts=scan_transcript(str(path)),
+                              agents_meta={}, artifacts=None)
+    assert browser.metrics["wall_clock"] == snapshot["timing"]["wall_clock_s"] == 0
+    assert browser.wall_clock == snapshot["timing"]["wall_clock_fmt"] == "0s"
+    assert "wall clock 0s" in snapshot["text"]
     assert "wall_clock: 0s" in brief and "tokens_total: 0" in brief
     assert "avg_duration_s: unknown" in brief  # Elapsed and per-model timing have separate evidence.
 

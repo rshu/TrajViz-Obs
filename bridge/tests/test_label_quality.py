@@ -146,7 +146,8 @@ def test_native_label_load_preserves_run_validation_provenance_and_all_charts(la
     app = dashboard.insight_app()
     load = next(fn.fn for fn in app.fns.values() if fn.api_name == "do_load_labels")
     result = load(str(sidecar), False, run, "")
-    assert "Labels loaded" in result[0] and "Label provenance" in result[1]
+    assert result[0]["visible"] and "Labels loaded" in result[0]["value"]
+    assert "Label provenance" in result[1]
     assert "could not be loaded" not in str(result[:2])
     assert all(result[index].data for index in (3, 4, 6, 7, 9))
     assert all(result[index]["visible"] is True for index in (2, 5, 8, 10))
@@ -175,7 +176,8 @@ def test_native_label_load_refuses_conflicting_run_identity(labels_for_run, chan
     app = dashboard.insight_app()
     load = next(fn.fn for fn in app.fns.values() if fn.api_name == "do_load_labels")
     result = load(str(sidecar), False, run, "")
-    assert "Labels could not be loaded" in result[0] and message in result[0]
+    assert result[0]["visible"] and result[10]["visible"]
+    assert "Labels could not be loaded" in result[0]["value"] and message in result[0]["value"]
     assert not any(result[index].data for index in (3, 4, 6, 7, 9))
     assert all(result[index]["visible"] is False for index in (2, 5, 8))
     assert sidecar.read_bytes() == before

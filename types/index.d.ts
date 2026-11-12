@@ -44,6 +44,8 @@ export type Tokens = {
 
 export type Timing = {
   wall_clock_s: number | null
+  /** TrajViz's wall-clock display value when measured. Older snapshots may omit it. */
+  wall_clock_fmt?: string | null
   started_at: string | null
   finished_at: string | null
   avg_step_s: number | null
