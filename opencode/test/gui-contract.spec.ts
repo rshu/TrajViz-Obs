@@ -85,6 +85,7 @@ describe('Desktop command coordination', () => {
       expect(h.rpc.usageStatus).not.toHaveBeenCalled()
       ui.selectTab(h.origin, 2)
       ui.selectTab(h.origin, 2)
+      await tick()
       await ui.refreshPane(h.origin)
       h.rpc.snapshot.mockRejectedValueOnce(new Error('private snapshot error'))
       await ui.refreshPane(h.origin)
@@ -102,6 +103,25 @@ describe('Desktop command coordination', () => {
         { feature: 'pane.refresh', surface: 'desktop', outcome: 'success' },
         { feature: 'pane.refresh', surface: 'desktop', outcome: 'error' },
       ])
+    } finally { ui.dispose() }
+  })
+
+  test('enabling during a Desktop pane refresh does not report a gesture started while off', async () => {
+    const h = connection(), { ui } = controller()
+    const snapshot = Promise.withResolvers<typeof h.snapshot>()
+    h.rpc.snapshot.mockReturnValueOnce(snapshot.promise)
+    try {
+      const refresh = ui.refreshPane(h.origin)
+      await tick()
+      expect(h.rpc.usageStatus).toHaveBeenCalledTimes(1)
+      expect(h.rpc.snapshot).toHaveBeenCalledTimes(1)
+      h.rpc.usageStatus.mockResolvedValue({ enabled: true })
+      snapshot.resolve(h.snapshot)
+      await refresh
+      await tick()
+      expect(h.rpc.usageInteraction).not.toHaveBeenCalled()
+      await ui.refreshPane(h.origin)
+      expect(h.rpc.usageInteraction).toHaveBeenCalledTimes(1)
     } finally { ui.dispose() }
   })
 

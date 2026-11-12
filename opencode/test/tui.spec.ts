@@ -75,6 +75,21 @@ describe('OpenCode command adapter', () => {
     } finally { h.cleanup() }
   })
 
+  test('enabling during terminal preflight does not report a command started while off', async () => {
+    const h = host()
+    const resolving = Promise.withResolvers<{ sessionID: string }>()
+    h.rpc.resolve.mockReturnValueOnce(resolving.promise)
+    try {
+      const command = h.command('issues --session missing')
+      await Bun.sleep(0)
+      expect(h.rpc.usageStatus).toHaveBeenCalledTimes(1)
+      h.rpc.usageStatus.mockResolvedValue({ enabled: true })
+      resolving.reject(new Error('Missing session'))
+      await command
+      expect(h.rpc.usageInteraction).not.toHaveBeenCalled()
+    } finally { h.cleanup() }
+  })
+
   test('pane gestures require server consent and skip the snapshot used to render the pane', async () => {
     const off = host(), on = host()
     on.rpc.usageStatus.mockResolvedValue({ enabled: true })

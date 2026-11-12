@@ -12,7 +12,7 @@ import { publicationGeneration } from './publication'
 import { fmtBytes, fmtInt } from './format'
 import { captureSnapshot, ensureReady, isEmpty, sessionArgv } from './snapshot'
 import { readLatest, readSession } from './state'
-import { markOutcome, reportTelemetry, type OutcomeTracker } from './telemetry'
+import { markOutcome, reportTelemetry, telemetryConsentAtStart, type OutcomeTracker } from './telemetry'
 import { EMPTY_TEXT, observedError } from '../commands/overview'
 import { MAX_LIMIT, catalogText, viewText, type CatalogEntry, type ViewPayload } from '../commands/inline'
 
@@ -159,6 +159,7 @@ async function viewOf($: EngineInterface, options: PluginOptions, id: string | u
  */
 export async function serveTool($: EngineInterface, options: PluginOptions, input: ObsInput): Promise<ObsResult> {
   const started = Date.now()
+  const consentAtStart = telemetryConsentAtStart($)
   const telemetry: OutcomeTracker = { outcome: 'success' }
   try {
     return await answerTool($, options, input, telemetry)
@@ -166,7 +167,7 @@ export async function serveTool($: EngineInterface, options: PluginOptions, inpu
     telemetry.outcome = 'error'
     throw error
   } finally {
-    void reportTelemetry($, options, 'tool', telemetry.outcome, Date.now() - started)
+    void reportTelemetry($, options, 'tool', telemetry.outcome, Date.now() - started, consentAtStart)
   }
 }
 

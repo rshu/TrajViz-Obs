@@ -202,6 +202,54 @@ def test_disabling_between_claim_and_send_releases_the_lease(opted_in, monkeypat
         assert db.execute("SELECT count(*) FROM pending").fetchone() == (1,)
 
 
+@pytest.mark.parametrize("statement", ["BEGIN IMMEDIATE", "INSERT INTO pending"])
+def test_disabling_during_queue_write_does_not_record_an_event(opted_in, monkeypatch, capsys, statement):
+    adapter = "claude-code"
+    open_queue = client._open_queue
+    writing, resume = Event(), Event()
+
+    def enqueue(feature):
+        return client.queue_usage(ENDPOINT, opted_in, adapter=adapter, surface="terminal", feature=feature,
+                                  outcome="success", duration_ms=0, version="0.3.8")
+
+    def traced_queue(*args):
+        connection = open_queue(*args)
+
+        def trace(sql):
+            if sql.startswith(statement):
+                writing.set()
+                resume.wait(timeout=5)
+
+        connection.set_trace_callback(trace)
+        return connection
+
+    assert enqueue("help")
+    monkeypatch.setattr(client, "_open_queue", traced_queue)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(enqueue, "overview")
+        try:
+            assert writing.wait(timeout=5)
+            assert client.main(["--set-consent", "off", "--adapter", adapter]) == 0
+            status = json.loads(capsys.readouterr().out)
+            assert status["configuration"] == "disabled" and status["queued"] == 1
+        finally:
+            resume.set()
+        assert not pending.result(timeout=5)
+
+    assert client.main(["--set-consent", "on", "--adapter", adapter]) == 0
+    assert json.loads(capsys.readouterr().out)["queued"] == 1
+    sent = []
+
+    def send(_endpoint, payload, *, token):
+        sent.extend(event["feature"] for event in payload["events"])
+        return ACCEPTED
+
+    monkeypatch.setattr(client, "_open_queue", open_queue)
+    monkeypatch.setattr(client, "_send", send)
+    client.flush_usage(ENDPOINT, opted_in, adapter)
+    assert sent == ["help"]
+
+
 def test_activation_and_commands_share_an_id_only_within_the_same_adapter_and_endpoint(opted_in, monkeypatch):
     sent = []
 
@@ -425,7 +473,7 @@ def test_queue_is_bounded_and_a_single_sender_claims_a_batch(opted_in, monkeypat
           closing(client._open_queue(opted_in, "opencode", ENDPOINT)) as second):
         ids = [uuid4().hex for _ in range(4)]
         for event_id, day in zip(ids, ("2026-10-12", now, now, now), strict=True):
-            client._record(database, {**event, "id": event_id, "day": day}, cutoff)
+            client._record(database, {**event, "id": event_id, "day": day}, cutoff, opted_in, "opencode")
         lease, batch = client._claim(database, "opencode", timestamp)
         assert [row["id"] for row in batch["events"]] == ids[-2:]
         assert client._claim(second, "opencode", timestamp - 0.1) is None
@@ -444,11 +492,11 @@ def test_corrected_clock_unblocks_valid_events(opted_in):
     event = {"id": uuid4().hex, "day": today, "surface": "desktop", "feature": "help",
              "outcome": "success", "duration_bucket": "lt_100ms", "version": "0.5.4"}
     with closing(client._open_queue(opted_in, "opencode", ENDPOINT)) as database:
-        client._record(database, {**event, "id": uuid4().hex, "day": "2026-11-20"}, cutoff)
+        client._record(database, {**event, "id": uuid4().hex, "day": "2026-11-20"}, cutoff, opted_in, "opencode")
         with database:
             database.execute("UPDATE sender SET lease = 'old', lease_until = ?, retry_at = ?, failures = 7",
                              (timestamp + 900_000, timestamp + 900_000))
-        client._record(database, event, cutoff)
+        client._record(database, event, cutoff, opted_in, "opencode")
         lease, payload = client._claim(database, "opencode", timestamp)
         assert lease != "old"
         assert payload["events"] == [event]
@@ -463,7 +511,7 @@ def test_flush_discards_out_of_window_events_after_suspend(opted_in, monkeypatch
             for offset in (-client.BACKFILL_DAYS - 1, -client.BACKFILL_DAYS, 1, 2)]
     with closing(client._open_queue(opted_in, "opencode", ENDPOINT)) as database:
         for day in days:
-            client._record(database, {**event, "id": uuid4().hex, "day": day}, days[0])
+            client._record(database, {**event, "id": uuid4().hex, "day": day}, days[0], opted_in, "opencode")
         assert database.execute("SELECT count(*) FROM pending").fetchone() == (4,)
 
     class Clock(datetime):

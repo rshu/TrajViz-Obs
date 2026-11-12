@@ -203,10 +203,13 @@ def _expire_pending(connection: sqlite3.Connection, cutoff: str, latest: str) ->
     connection.execute("DELETE FROM activation WHERE day < ? OR day > ?", (cutoff, latest))
 
 
-def _record(connection: sqlite3.Connection, event: dict, cutoff: str) -> None:
+def _record(connection: sqlite3.Connection, event: dict, cutoff: str, directory: Path, adapter: str) -> bool:
     latest = (date.fromisoformat(event["day"]) + timedelta(days=1)).isoformat()
     with connection:
         connection.execute("BEGIN IMMEDIATE")
+        # A consent change must take effect even if this event waited for another writer.
+        if _saved_consent(directory, adapter) == "off":
+            return False
         connection.execute("""
             CREATE TABLE IF NOT EXISTS sender (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -223,7 +226,7 @@ def _record(connection: sqlite3.Connection, event: dict, cutoff: str) -> None:
         if event["feature"] == "activation":
             recorded = connection.execute("INSERT OR IGNORE INTO activation (day) VALUES (?)", (event["day"],))
             if not recorded.rowcount:
-                return
+                return True
         connection.execute("INSERT INTO pending VALUES (?, ?, ?)",
                            (event["id"], event["day"], json.dumps(event, separators=(",", ":"))))
         dropped = connection.execute("""
@@ -233,6 +236,10 @@ def _record(connection: sqlite3.Connection, event: dict, cutoff: str) -> None:
         """, (MAX_PENDING - 1,)).rowcount
         if dropped:
             connection.execute("UPDATE sender_health SET dropped = dropped + ?", (dropped,))
+        if _saved_consent(directory, adapter) == "off":
+            connection.rollback()
+            return False
+    return True
 
 
 def _credential_fingerprint(token: str | None) -> str:
@@ -415,10 +422,9 @@ def queue_usage(endpoint: str, directory: Path, *, adapter: str, surface: str, f
                                 "duration_bucket": duration_bucket(duration_ms), "version": version})
         cutoff = (now.date() - timedelta(days=BACKFILL_DAYS)).isoformat()
         with closing(_open_queue(directory, adapter, endpoint)) as connection:
-            _record(connection, event, cutoff)
+            return _record(connection, event, cutoff, directory, adapter)
     except (OSError, sqlite3.Error, ValueError):
         return False
-    return True
 
 
 def flush_usage(endpoint: str, directory: Path, adapter: str, *, token: str | None = None) -> None:

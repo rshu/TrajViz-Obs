@@ -63,10 +63,19 @@ export function setup(context: Plugin.Context): () => void {
   const notice = (message: string, error = false) => context.ui.toast.show({ title: 'TrajViz Obs', message: safeText(message), variant: error ? 'error' : 'info' })
   const rpc = () => context.client.rpc(Obs)
   const reportInteraction = createInteractionReporter('terminal')
-  function interaction(base: string, feature: UsageInteraction['feature'], outcome: UsageInteraction['outcome'], started: number): void {
+  function beginInteraction(base: string, started: number) {
     if (disposed) return
-    try { void reportInteraction(context.client, location(base), feature, outcome, started) }
-    catch { /* The UI can be reloading or between connections. */ }
+    try {
+      const client = context.client
+      const finish = reportInteraction(client, location(base), started)
+      return (feature: UsageInteraction['feature'], outcome: UsageInteraction['outcome']): void => {
+        try { if (!disposed && context.client === client) void finish?.(feature, outcome) }
+        catch { /* The UI can be reloading or between connections. */ }
+      }
+    } catch { /* The UI can be reloading or between connections. */ }
+  }
+  function interaction(base: string, feature: UsageInteraction['feature'], outcome: UsageInteraction['outcome'], started: number): void {
+    beginInteraction(base, started)?.(feature, outcome)
   }
   function paneAction(base: string, feature: 'pane.tab' | 'pane.expand' | 'pane.close', action: () => void): void {
     const started = performance.now()
@@ -251,7 +260,7 @@ export function setup(context: Plugin.Context): () => void {
       notice('An obs command is running. Use /obs cancel to stop it.')
       return
     }
-    const client = context.client
+    const finishUsage = feature ? beginInteraction(base, started) : undefined
     const runID = crypto.randomUUID()
     const controller = new AbortController()
     aborts.add(controller)
@@ -324,8 +333,8 @@ export function setup(context: Plugin.Context): () => void {
       if (presentation === 'pane' && result.text && !result.snapshot) notice(result.text)
       if (result.url && context.options.openBrowser === true) void openURL(result.url)
     } catch (error) {
-      if (!dispatched && feature && context.client === client) {
-        interaction(base, feature, controller.signal.aborted ? 'cancelled' : preflightOutcome, started)
+      if (!dispatched && feature) {
+        finishUsage?.(feature, controller.signal.aborted ? 'cancelled' : preflightOutcome)
       }
       if (!disposed) {
         const message = controller.signal.aborted ? 'Obs command cancelled.' : errorText(error)
@@ -368,10 +377,10 @@ export function setup(context: Plugin.Context): () => void {
       if (option && option !== 'on' && option !== 'off') { notice(`Usage: /obs ${parsed.sub} [on|off]`, true); return }
       const key = parsed.sub
       const enabled = option ? option === 'on' : !settings[key]
-      const started = performance.now()
+      const finishUsage = beginInteraction(base, performance.now())
       let outcome: UsageInteraction['outcome'] = 'error'
       try { await updateSettings(draft => { draft[key] = enabled }); outcome = 'success' }
-      finally { interaction(base, key, outcome, started) }
+      finally { finishUsage?.(key, outcome) }
       notice(`${key} ${enabled ? 'on' : 'off'}`)
       if (enabled && base !== 'home') await refresh(selected(base))
       return
@@ -442,9 +451,9 @@ export function setup(context: Plugin.Context): () => void {
       scroll?.scrollTo(0)
     }
     const manualRefresh = async () => {
-      const base = props.panel.sessionID, client = context.client, started = performance.now()
+      const finishUsage = beginInteraction(props.panel.sessionID, performance.now())
       const outcome = await refresh(id())
-      if (context.client === client) interaction(base, 'pane.refresh', outcome, started)
+      finishUsage?.('pane.refresh', outcome)
     }
     const fullscreen = () => paneAction(props.panel.sessionID, 'pane.expand', () => props.panel.toggleFullscreen())
     const close = () => paneAction(props.panel.sessionID, 'pane.close', () => props.panel.close())

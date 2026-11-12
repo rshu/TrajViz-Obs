@@ -13,7 +13,7 @@ import { runSelectedCommand, runSnapshotCommand } from '../lib/actions'
 import { clip, failureSummary, fmtCompact, fmtInt, fmtPct, qualitySummary, unavailableView } from '../lib/format'
 import { isEmpty } from '../lib/snapshot'
 import { toggleWatch, writePaneTab } from '../lib/state'
-import { reportTelemetry, type OutcomeTracker } from '../lib/telemetry'
+import { reportTelemetry, telemetryConsentAtStart, type OutcomeTracker } from '../lib/telemetry'
 import {
   ContextBlock,
   DataQualityNote,
@@ -336,28 +336,31 @@ function tabBody(tab: number, b: Body): RenderElement {
 
 async function closeFromPane($: EngineInterface, options: PluginOptions): Promise<void> {
   const started = Date.now()
+  const consentAtStart = telemetryConsentAtStart($)
   let outcome: 'success' | 'error' = 'error'
   try {
     await $.ui.close({ id: PANE_ID })
     outcome = 'success'
   } finally {
-    void reportTelemetry($, options, 'pane.close', outcome, Date.now() - started)
+    void reportTelemetry($, options, 'pane.close', outcome, Date.now() - started, consentAtStart)
   }
 }
 
 async function selectTab($: EngineInterface, tab: number, options: PluginOptions): Promise<void> {
   const started = Date.now()
+  const consentAtStart = telemetryConsentAtStart($)
   let outcome: 'success' | 'error' = 'error'
   try {
     await writePaneTab($, tab)
     outcome = 'success'
   } finally {
-    void reportTelemetry($, options, 'pane.tab', outcome, Date.now() - started)
+    void reportTelemetry($, options, 'pane.tab', outcome, Date.now() - started, consentAtStart)
   }
 }
 
 async function refreshFromPane($: EngineInterface, options: PluginOptions): Promise<void> {
   const started = Date.now()
+  const consentAtStart = telemetryConsentAtStart($)
   const telemetry: OutcomeTracker = { outcome: 'success' }
   try {
     const row = await refreshPane($, options, undefined, undefined, telemetry)
@@ -366,18 +369,19 @@ async function refreshFromPane($: EngineInterface, options: PluginOptions): Prom
     telemetry.outcome = 'error'
     throw error
   } finally {
-    void reportTelemetry($, options, 'pane.refresh', telemetry.outcome, Date.now() - started)
+    void reportTelemetry($, options, 'pane.refresh', telemetry.outcome, Date.now() - started, consentAtStart)
   }
 }
 
 async function toggleWatchFromPane($: EngineInterface, options: PluginOptions): Promise<void> {
   const started = Date.now()
+  const consentAtStart = telemetryConsentAtStart($)
   let outcome: 'success' | 'error' = 'error'
   try {
     $.ui.toast(`obs: watch ${(await toggleWatch($)) ? 'on' : 'off'}`)
     outcome = 'success'
   } finally {
-    void reportTelemetry($, options, 'watch', outcome, Date.now() - started)
+    void reportTelemetry($, options, 'watch', outcome, Date.now() - started, consentAtStart)
   }
 }
 

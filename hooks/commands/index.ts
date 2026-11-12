@@ -1,6 +1,6 @@
 import type { CommandPresentation, CommandRunResult, EngineInterface, HookFailure, PluginOptions } from 'claude-code'
 import { BOOLEAN_FLAGS, parseArgs, selectionError, suggest, type Parsed } from '../lib/args'
-import { commandFeature, markOutcome, reportTelemetry, setTelemetryConsent, telemetryStatus, type OutcomeTracker } from '../lib/telemetry'
+import { commandFeature, markOutcome, reportTelemetry, setTelemetryConsent, telemetryConsentAtStart, telemetryStatus, type OutcomeTracker } from '../lib/telemetry'
 import { browser } from './browser'
 import { compare } from './compare'
 import { exportCmd } from './exports'
@@ -54,6 +54,7 @@ export async function dispatch($: EngineInterface, ctx: CommandContext): Promise
   const feature = commandFeature(ctx.parsed)
   if (!feature) return route($, ctx)
   const started = Date.now()
+  const consentAtStart = telemetryConsentAtStart($)
   const telemetry: OutcomeTracker = { outcome: 'success' }
   try {
     return await route($, { ...ctx, telemetry })
@@ -61,7 +62,7 @@ export async function dispatch($: EngineInterface, ctx: CommandContext): Promise
     telemetry.outcome = 'error'
     throw error
   } finally {
-    void reportTelemetry($, ctx.options, feature, telemetry.outcome, Date.now() - started)
+    void reportTelemetry($, ctx.options, feature, telemetry.outcome, Date.now() - started, consentAtStart)
   }
 }
 

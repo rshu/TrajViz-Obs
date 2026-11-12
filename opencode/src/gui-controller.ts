@@ -53,10 +53,19 @@ export class GuiController {
   snapshot(origin: GuiOrigin) { return this.view(origin).snapshots[this.target(origin).id] }
   error(origin: GuiOrigin) { return this.view(origin).errors[this.target(origin).id] }
   resetInteractionConsent(client: OpenCodeClient): void { this.report.reset(client) }
-  interaction(origin: GuiOrigin, feature: UsageInteraction['feature'], outcome: UsageInteraction['outcome'], started: number): void {
+  private beginInteraction(origin: GuiOrigin, started: number) {
     if (this.closed || this.lifetime?.aborted) return
-    try { void this.report(origin.client(), origin.location(), feature, outcome, started) }
-    catch { /* The UI can be reloading or between connections. */ }
+    try {
+      const client = origin.client()
+      const finish = this.report(client, origin.location(), started)
+      return (feature: UsageInteraction['feature'], outcome: UsageInteraction['outcome']): void => {
+        try { if (!this.closed && !this.lifetime?.aborted && origin.client() === client) void finish?.(feature, outcome) }
+        catch { /* The UI can be reloading or between connections. */ }
+      }
+    } catch { /* The UI can be reloading or between connections. */ }
+  }
+  interaction(origin: GuiOrigin, feature: UsageInteraction['feature'], outcome: UsageInteraction['outcome'], started: number): void {
+    this.beginInteraction(origin, started)?.(feature, outcome)
   }
   selectTab(origin: GuiOrigin, tab: number) {
     const view = this.view(origin), next = Math.max(0, Math.min(TABS.length - 1, tab))
@@ -153,6 +162,7 @@ export class GuiController {
   private async execute(job: GuiJob, controller: AbortController, client: OpenCodeClient, model?: RunInput['model'], paneSnapshot?: true): Promise<void> {
     const { origin, args } = job, view = this.view(origin), signal = this.signal(controller), rpc = client.rpc(Obs)
     const started = performance.now(), feature = paneSnapshot ? undefined : usageFeature(args)
+    const finishUsage = feature ? this.beginInteraction(origin, started) : undefined
     let target: GuiTarget = { id: origin.id }, key: string | undefined, generation: number | undefined
     let dispatched = false
     let preflightOutcome: 'error' | 'rejected' = 'error'
@@ -206,8 +216,8 @@ export class GuiController {
       if (result.tab) { const tab = TABS.findIndex(name => name.toLowerCase() === result.tab?.toLowerCase()); if (tab >= 0) view.tab = tab }
       if (parsed.sub === 'label' && result.path) void this.refresh(origin)
     } catch (error) {
-      if (!dispatched && feature && origin.client() === client) {
-        this.interaction(origin, feature, signal.aborted ? 'cancelled' : preflightOutcome, started)
+      if (!dispatched && feature) {
+        finishUsage?.(feature, signal.aborted ? 'cancelled' : preflightOutcome)
       }
       if (!this.closed) job.text = signal.aborted ? 'Obs command cancelled.' : message(error)
     } finally {
@@ -221,9 +231,9 @@ export class GuiController {
     }
   }
   async refreshPane(origin: GuiOrigin): Promise<void> {
-    const client = origin.client(), started = performance.now()
+    const finishUsage = this.beginInteraction(origin, performance.now())
     const outcome = await this.refresh(origin)
-    if (origin.client() === client) this.interaction(origin, 'pane.refresh', outcome, started)
+    finishUsage?.('pane.refresh', outcome)
   }
   async refresh(origin: GuiOrigin): Promise<UsageInteraction['outcome']> {
     if (this.closed || origin.id === 'home') return 'cancelled'

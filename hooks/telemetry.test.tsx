@@ -17,6 +17,7 @@ const DONE = { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: 
 type Settings = {
   consent?: string; endpoint?: string; token?: string; settingsEnv?: Record<string, string>;
   status?: unknown; withoutRuntime?: boolean; stateDirectory?: string; savedConsent?: 'on' | 'off';
+  waitForSnapshot?: Promise<void>;
 }
 
 function host(on: On, settings: Settings, sender?: Promise<void>) {
@@ -64,6 +65,7 @@ function host(on: On, settings: Settings, sender?: Promise<void>) {
     }
     if (e.argv[3] === 'snapshot') {
       snapshots++
+      await settings.waitForSnapshot
       return { value: { ...DONE.value, stdout: JSON.stringify(SNAPSHOT) } }
     }
     if (!e.argv[2]?.endsWith('/bridge/telemetry_client.py')) return { deny: 'unexpected process' }
@@ -193,6 +195,34 @@ test('native Claude consent commands persist, take effect immediately, and are n
   await $.command.run(command('help'))
   expect((await $.command.run(command('telemetry'))).text).toContain('Usage telemetry · Off')
   expect(world.calls.map(call => call.argv[3])).toEqual(['--set-consent', '--adapter', '--status', '--adapter', '--set-consent', '--status'])
+})
+
+test('a slow Claude command requires telemetry consent at both invocation and completion', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_700_000_000_000 })
+  const settings: Settings = { stateDirectory: CONSENT_DIRECTORY, savedConsent: 'off' }
+  const world = host(on, settings)
+  await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+  await $.classic.SessionStart({ source: 'startup', transcript_path: '/tmp/session.jsonl', session_id: 'test-session' })
+
+  for (const [index, preference] of ['enable_telemetry', 'disable_telemetry'].entries()) {
+    let finishSnapshot = () => {}
+    settings.waitForSnapshot = new Promise<void>(resolve => { finishSnapshot = resolve })
+    const running = $.command.run(command('overview'))
+    try {
+      await clock.settle()
+      expect(world.snapshots()).toBe(index + 1)
+      expect((await $.command.run(command(preference))).text).toContain('Preference saved.')
+    } finally {
+      finishSnapshot()
+    }
+    expect((await running).text).toContain('obs snapshot')
+    await clock.settle()
+    expect(world.calls.map(call => call.argv[3])).toEqual(Array(index + 1).fill('--set-consent'))
+  }
+
+  await $.command.run(command('enable_telemetry'))
+  expect((await $.command.run(command('overview'))).text).toContain('obs snapshot')
+  expect((await world.call(4)).argv.slice(7, 11)).toEqual(['--feature', 'overview', '--outcome', 'success'])
 })
 
 test('Claude telemetry consent requires a user command and trusted configuration', async ($, on) => {

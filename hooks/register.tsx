@@ -4,7 +4,7 @@ import { safeRenderText } from './lib/format'
 import { resetServers, stopAll } from './lib/servers'
 import { rememberTranscript } from './lib/session'
 import { isEmpty, parseSnapshotId } from './lib/snapshot'
-import { finishTelemetry, reportTelemetry, setTelemetrySurface } from './lib/telemetry'
+import { finishTelemetry, reportTelemetry, setTelemetrySurface, telemetryConsentAtStart } from './lib/telemetry'
 import { OBS_TOOL, serveTool } from './lib/tool'
 import { onTurnComplete, resetStatusLine } from './lib/watch'
 import { readDashboards, readFlags, readLatest, readPaneTab, readSession, readSnapshotMember, resetRefreshLock, seedFlags } from './lib/state'
@@ -89,8 +89,9 @@ export const register: Register = (on, options) => {
   // for its native close mark and keyboard shortcut.
   on('ui.close', { id: 'obs', origin: { kind: 'person' } }, async ($, e, next) => {
     const startedAt = Date.now()
+    const consentAtStart = telemetryConsentAtStart($)
     const closed = await next(e)
-    void reportTelemetry($, options, 'pane.close', closed.deny === undefined ? 'success' : 'error', Date.now() - startedAt)
+    void reportTelemetry($, options, 'pane.close', closed.deny === undefined ? 'success' : 'error', Date.now() - startedAt, consentAtStart)
     return closed
   })
 

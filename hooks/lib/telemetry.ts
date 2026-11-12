@@ -74,16 +74,28 @@ async function readConsent($: EngineInterface): Promise<Consent | undefined> {
   return value === 'on' || value === 'on\n' ? 'on' : 'off'
 }
 
-async function launchTelemetry($: EngineInterface): Promise<(LaunchSettings & { version: string }) | undefined> {
+async function launchSettings($: EngineInterface): Promise<LaunchSettings | undefined> {
   const preference = await readConsent($)
   if (preference === 'off') return
   const enabled = await $.env.get('TRAJVIZ_OBS_TELEMETRY') === '1'
   if (preference !== 'on' && !enabled) return
   const endpoint = (await $.env.get('TRAJVIZ_OBS_TELEMETRY_URL')) ?? ''
   if ((preference !== 'on' && !endpoint.trim()) || !(await hasTrustedTelemetrySettings($))) return
+  return { enabled, endpoint }
+}
+
+/** Begin a non-blocking consent check before starting an observed action. */
+export async function telemetryConsentAtStart($: EngineInterface): Promise<boolean> {
+  try { return (await launchSettings($)) !== undefined }
+  catch { return false }
+}
+
+async function launchTelemetry($: EngineInterface): Promise<(LaunchSettings & { version: string }) | undefined> {
+  const settings = await launchSettings($)
+  if (!settings) return
   const manifest = JSON.parse(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)) as { version?: unknown }
   const version = manifest.version
-  if (typeof version === 'string' && /^\d+\.\d+\.\d+(?:[-+][\w.+-]+)?$/.test(version)) return { enabled, endpoint, version }
+  if (typeof version === 'string' && /^\d+\.\d+\.\d+(?:[-+][\w.+-]+)?$/.test(version)) return { ...settings, version }
 }
 
 async function telemetryPython($: EngineInterface, options: PluginOptions): Promise<string | undefined> {
@@ -160,8 +172,9 @@ export async function dashboardUsageArgs($: EngineInterface): Promise<string[]> 
   return []
 }
 
-async function sendTelemetry($: EngineInterface, options: PluginOptions, feature: string, outcome: TelemetryOutcome, elapsedMs: number, hostSurface: typeof surface): Promise<void> {
+async function sendTelemetry($: EngineInterface, options: PluginOptions, feature: string, outcome: TelemetryOutcome, elapsedMs: number, hostSurface: typeof surface, consentAtStart?: Promise<boolean>): Promise<void> {
   try {
+    if (consentAtStart && !(await consentAtStart)) return
     const launch = await launchTelemetry($)
     if (!launch) return
     const root = $.plugin.root
@@ -180,9 +193,9 @@ async function sendTelemetry($: EngineInterface, options: PluginOptions, feature
 }
 
 /** Best effort, without installing Python or blocking the observed operation. */
-export async function reportTelemetry($: EngineInterface, options: PluginOptions, feature: string, outcome: TelemetryOutcome, elapsedMs: number): Promise<void> {
+export async function reportTelemetry($: EngineInterface, options: PluginOptions, feature: string, outcome: TelemetryOutcome, elapsedMs: number, consentAtStart?: Promise<boolean>): Promise<void> {
   if (pending.size >= 8) return
-  const send = sendTelemetry($, options, feature, outcome, elapsedMs, surface)
+  const send = sendTelemetry($, options, feature, outcome, elapsedMs, surface, consentAtStart)
   pending.add(send)
   try { await send } finally { pending.delete(send) }
 }
