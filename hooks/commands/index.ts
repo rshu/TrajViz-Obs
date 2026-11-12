@@ -44,10 +44,10 @@ const COMMAND_FLAGS: Record<string, readonly string[]> = {
   compare: ['anchor-patch', 'fuzzy-commands', 'reverse'], scorecard: ['fuzzy-commands', 'labels', 'no-self'], labels: [],
   fixes: ['limit'], label: [...OUTPUT_FLAGS, 'assistant-only', 'model', 'max-steps', 'taxonomy', 'max-content-chars', 'delay', 'user-phase', 'user-action', 'max-tokens', 'temperature'],
   attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [], setup: ['extras', 'source'], doctor: [],
-  telemetry: ['use-launch-token'], enable_telemetry: [], disable_telemetry: [], help: [],
+  telemetry: [], telemetry_destination: ['use-launch-token'], enable_telemetry: [], disable_telemetry: [], help: [],
 }
 
-const NO_POSITIONALS = ['overview', 'help', 'doctor', 'enable_telemetry', 'disable_telemetry', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline']
+const NO_POSITIONALS = ['overview', 'help', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline']
 const SESSION_COMMANDS = ['overview', 'pane', 'view', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution', 'sessions']
 
 export async function dispatch($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
@@ -75,7 +75,6 @@ function argumentError(ctx: CommandContext): string | undefined {
   if (flags['session-id'] !== undefined && (!SESSION_COMMANDS.includes(sub) || sub === 'sessions')) return `--session-id is not supported by /obs ${sub}.`
   let invalid = passthrough.length > 0 || (NO_POSITIONALS.includes(sub) && positional.length > 0)
   if (sub === 'pane') invalid ||= positional.length > 1 || (positional.length === 1 && positional[0] !== 'close')
-  if (sub === 'telemetry') invalid ||= positional.length > 0 && positional[0] !== 'destination'
   if (sub === 'schemas') invalid ||= positional.length > 1
   if (sub === 'view') invalid ||= positional.slice(1).some(p => !/^[^=]+=/.test(p))
   if (invalid) return `Unexpected arguments for /obs ${sub}. /obs help lists the supported form.`
@@ -145,15 +144,16 @@ async function route($: EngineInterface, ctx: CommandContext): Promise<CommandRu
     case 'setup':
     case 'doctor':
       return misc($, ctx)
-    case 'telemetry': {
-      const [action, destination, ...rest] = ctx.parsed.positional
+    case 'telemetry':
+      return telemetryStatus($, ctx.options)
+    case 'telemetry_destination': {
+      const [destination, ...rest] = ctx.parsed.positional
       const bindLaunchToken = ctx.parsed.flags['use-launch-token'] === true
-      if (action === undefined && !bindLaunchToken) return telemetryStatus($, ctx.options)
-      if (action !== 'destination' || rest.length || destination === '' || (bindLaunchToken && (destination === undefined || destination === 'default'))) {
+      if (rest.length || destination === '' || (bindLaunchToken && (destination === undefined || destination === 'default'))) {
         return { text: TELEMETRY_DESTINATION_USAGE }
       }
       if (destination !== undefined && !ctx.personRequested) {
-        return { text: 'Run /obs telemetry destination directly in the Claude Code composer to change the collector.' }
+        return { text: 'Run /obs telemetry_destination directly in the Claude Code composer to change the collector.' }
       }
       return telemetryDestination($, ctx.options, destination, bindLaunchToken)
     }

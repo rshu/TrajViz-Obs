@@ -40,7 +40,7 @@ function fixture(responses: Record<string, unknown> = {}, options: Options = {})
 describe('OpenCode obs command contract', () => {
   test('rejects ignored flags, values, extra positionals and malformed paging before work', async () => {
     for (const args of ['overview extra', 'view health --unused', 'json --view', 'bundle -o', 'pane close extra', 'watch on extra', 'statusline off --session s', 'cancel now', 'view health --json=false', 'view health --limit 501', 'view health --offset -1', 'sessions 0', 'dashboard --port 0', 'dashboard stop --port 7860', 'converge --data-root', 'label --model',
-      'dashboard port 0', 'dashboard port 65536', 'dashboard port auto --port 9000', 'dashboard port default --session ses_other', 'dashboard port auto extra', 'telemetry destination --use-launch-token', 'telemetry destination default --use-launch-token', 'telemetry destination https://collector.example/v1/events --use-launch-token=false', 'telemetry other']) {
+      'dashboard port 0', 'dashboard port 65536', 'dashboard port auto --port 9000', 'dashboard port default --session ses_other', 'dashboard port auto extra', 'telemetry_destination --use-launch-token', 'telemetry_destination default --use-launch-token', 'telemetry_destination https://collector.example --use-launch-token=false', 'telemetry_destination https://collector.example extra', 'telemetry_destination https://collector.example --session ses_other', 'telemetry destination']) {
       const { execute, calls, served, selections } = fixture()
       const result = await execute(args)
       expect(result.text).not.toBe('Bridge result')
@@ -51,7 +51,11 @@ describe('OpenCode obs command contract', () => {
     expect(validateArguments('disable_telemetry')).toBeUndefined()
     expect(validateArguments('enable_telemetry extra')).toContain('Unexpected arguments')
     expect(validateArguments('disable_telemetry --session ses_other')).toContain('--session is not supported')
-    expect(validateArguments('telemetry destination --use-launch-token https://collector.example/v1/events')).toBeUndefined()
+    expect(validateArguments('telemetry_destination')).toBeUndefined()
+    expect(validateArguments('telemetry_destination default')).toBeUndefined()
+    expect(validateArguments('telemetry_destination https://127.0.0.1')).toBeUndefined()
+    expect(validateArguments('telemetry_destination --use-launch-token https://collector.example')).toBeUndefined()
+    expect(validateArguments('telemetry --use-launch-token')).toContain('Unknown option')
     expect(validateArguments('dashboard port 65535')).toBeUndefined()
     expect(validateArguments('watch off')).toBeUndefined()
     expect(validateArguments('pane --session ses_other')).toBeUndefined()
@@ -65,6 +69,7 @@ describe('OpenCode obs command contract', () => {
     const { execute, calls } = fixture()
     const { text } = await execute('help')
     expect(text).toContain('OpenCode 2')
+    expect(text).toContain('telemetry_destination')
     expect(text).toContain('enable_telemetry | disable_telemetry')
     expect((await execute('sessions 20')).text).toContain('* ses_current')
     expect(calls).toEqual([])

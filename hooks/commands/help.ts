@@ -29,7 +29,7 @@ export const HELP_TEXT = [
   'Setup',
   '  setup [--extras ...] [--source ...]   doctor   sessions [N]   watch [on|off]   statusline [on|off]',
   '  enable_telemetry | disable_telemetry   change usage telemetry consent    telemetry   check delivery',
-  '  telemetry destination [URL [--use-launch-token] | default]   show or save the collector',
+  '  telemetry_destination [URL [--use-launch-token] | default]   show or save the collector',
   '  attribution [--reference-root DIR] [--agent A] [--instance I]   collect <cursor|opencode|codearts> ...',
   '  help   this table',
 ].join('\n')

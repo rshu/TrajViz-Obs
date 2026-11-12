@@ -24,7 +24,7 @@ const DESTINATION_SOURCE: Record<string, string> = {
 }
 
 const DESTINATION_ERROR: Record<string, string> = {
-  invalid_endpoint: 'Use an HTTPS collector URL ending in /v1/events. Plain HTTP is only supported for loopback.',
+  invalid_endpoint: 'Use an HTTPS collector URL such as https://telemetry.example.com. Plain HTTP is only supported for loopback.',
   missing_token: 'Set TRAJVIZ_OBS_TELEMETRY_TOKEN in the host launch environment before binding it.',
   invalid_token: 'The token in the host launch environment is invalid.',
   invalid_arguments: 'Check the command form in /obs help.',
@@ -46,7 +46,7 @@ export function destinationStatusText(value: unknown, operation: 'read' | 'set' 
   const status = value as Record<string, unknown>
   const error = label(DESTINATION_ERROR, status.destination_error)
   if (error) return `Telemetry destination · Could not save. ${error}`
-  if (status.destination_source === 'invalid') return 'Telemetry destination · Invalid configuration. Set a valid collector URL or run /obs telemetry destination default.'
+  if (status.destination_source === 'invalid') return 'Telemetry destination · Invalid configuration. Set a valid collector URL or run /obs telemetry_destination default.'
   const source = label(DESTINATION_SOURCE, status.destination_source)
   const destination = status.destination
   // The helper validates the URL. Keep raw credentials, arbitrary text and controls out of command results even on a bad reply.

@@ -513,9 +513,9 @@ describe('Desktop command coordination', () => {
       await ui.start(h.origin, 'disable_telemetry').done
       expect(h.rpc.run.mock.calls[2]?.[0]).toMatchObject({ sessionID: 'home', args: 'enable_telemetry' })
       expect(h.rpc.run.mock.calls[3]?.[0]).toMatchObject({ sessionID: 'home', args: 'disable_telemetry' })
-      await ui.start(h.origin, 'telemetry destination').done
+      await ui.start(h.origin, 'telemetry_destination').done
       await ui.start(h.origin, 'dashboard port auto').done
-      expect(h.rpc.run.mock.calls[4]?.[0]).toMatchObject({ sessionID: 'home', args: 'telemetry destination' })
+      expect(h.rpc.run.mock.calls[4]?.[0]).toMatchObject({ sessionID: 'home', args: 'telemetry_destination' })
       expect(h.rpc.run.mock.calls[5]?.[0]).toMatchObject({ sessionID: 'home', args: 'dashboard port auto' })
       expect(h.rpc.sync).not.toHaveBeenCalled()
       const job = ui.start(h.origin, 'issues')
@@ -674,7 +674,7 @@ describe('built Desktop GUI contract', () => {
   test('the native slash command exposes every backend feature without rewriting its arguments', async () => {
     const h = desktop()
     const commands = [
-      '', 'overview', 'help', 'setup --extras none', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'telemetry destination https://collector.example/v1/events --use-launch-token', 'sessions 20', 'schemas /server/schemas',
+      '', 'overview', 'help', 'setup --extras none', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'telemetry_destination https://collector.example --use-launch-token', 'sessions 20', 'schemas /server/schemas',
       'view', 'view data_quality --json', 'issues --limit 2 --offset 1', 'health', 'patterns', 'agents', 'context', 'timeline', 'brief',
       'json --with-trajectory --view health --view issues -o "/server/output dir"', 'bundle -o /server/source.zip',
       'compare /server/other.json', 'scorecard /server/other.json --labels current,other', 'labels /server/labels.json',

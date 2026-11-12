@@ -83,8 +83,9 @@ function host(on: On, settings: Settings, sender?: Promise<void>) {
       return { value: { ...DONE.value, stdout: JSON.stringify(status) } }
     }
     if (e.argv[3] === '--destination' || e.argv[3] === '--set-destination') {
-      if (e.argv[3] === '--set-destination' && !settings.destinationError) {
-        settings.savedDestination = e.argv[4] === 'default' ? undefined : e.argv[4]
+      if (e.argv[3] === '--set-destination' && e.argv[4] && !settings.destinationError) {
+        const target = e.argv[4].replace(/\/$/, '')
+        settings.savedDestination = target === 'default' ? undefined : target.endsWith('/v1/events') ? target : `${target}/v1/events`
       }
       const status = { destination: settings.savedDestination ?? settings.endpoint ?? ENDPOINT,
         destination_source: settings.savedDestination ? 'saved' : settings.endpoint ? 'launch' : 'default',
@@ -255,32 +256,35 @@ test('Claude telemetry consent requires a user command and trusted configuration
 test('Claude can change the destination during a session without sending telemetry or embedding a token in the command', async ($, on) => {
   const settings: Settings = { stateDirectory: CONSENT_DIRECTORY, token: TOKEN }
   const world = host(on, settings)
-  const endpoint = 'https://collector.example.test:8443/v1/events'
+  const collector = 'https://collector.example.test:8443'
+  const endpoint = `${collector}/v1/events`
   await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
-  expect((await $.command.run(command('telemetry destination'))).text).toContain(`${ENDPOINT} (local default)`)
-  expect((await $.command.run(command(`telemetry destination ${endpoint} --use-launch-token`))).text).toContain(`${endpoint} (saved)`)
+  expect((await $.command.run(command('telemetry_destination'))).text).toContain(`${ENDPOINT} (local default)`)
+  expect((await $.command.run(command(`telemetry_destination ${collector} --use-launch-token`))).text).toContain(`${endpoint} (saved)`)
   const write = world.calls[1]!
-  expect(write.argv.slice(3)).toEqual(['--set-destination', endpoint, '--use-launch-token', '--adapter', 'claude-code'])
+  expect(write.argv.slice(3)).toEqual(['--set-destination', collector, '--use-launch-token', '--adapter', 'claude-code'])
   expect(write.env?.TRAJVIZ_OBS_TELEMETRY_TOKEN).toBe(TOKEN)
   expect(JSON.stringify(write.argv)).not.toContain(TOKEN)
   expect(settings.savedConsent).toBeUndefined()
   expect((await $.command.run(command('telemetry'))).text).toContain('Usage telemetry · Off')
 
-  const sdk = { ...command('telemetry destination default'), origin: { kind: 'sdk' as const } }
+  const sdk = { ...command('telemetry_destination default'), origin: { kind: 'sdk' as const } }
   expect((await $.command.run(sdk)).text).toContain('directly in the Claude Code composer')
-  expect((await $.command.run(command('telemetry destination default --use-launch-token'))).text).toContain('Usage: /obs telemetry destination')
-  expect((await $.command.run(command('telemetry --use-launch-token'))).text).toContain('Usage: /obs telemetry destination')
+  expect((await $.command.run(command('telemetry_destination default --use-launch-token'))).text).toContain('Usage: /obs telemetry_destination')
+  expect((await $.command.run(command('telemetry_destination --use-launch-token'))).text).toContain('Usage: /obs telemetry_destination')
+  expect((await $.command.run(command('telemetry destination'))).text).toContain('Unexpected arguments')
   settings.destinationError = 'invalid_endpoint'
-  const rejected = await $.command.run(command(`telemetry destination https://${PRIVATE_VALUE}@collector.example.test/v1/events`))
+  const rejected = await $.command.run(command(`telemetry_destination https://${PRIVATE_VALUE}@collector.example.test`))
   expect(rejected.text).toContain('Use an HTTPS collector URL')
   expect(rejected.text).not.toContain(PRIVATE_VALUE)
   expect(settings.savedDestination).toBe(endpoint)
   delete settings.destinationError
-  expect((await $.command.run(command('telemetry destination default'))).text).toContain('Destination reset. Usage telemetry consent is unchanged.')
-  expect(world.calls.map(call => call.argv[3])).toEqual(['--destination', '--set-destination', '--status', '--set-destination', '--set-destination'])
+  expect((await $.command.run(command('telemetry_destination https://127.0.0.1/'))).text).toContain('https://127.0.0.1/v1/events (saved)')
+  expect((await $.command.run(command('telemetry_destination default'))).text).toContain('Destination reset. Usage telemetry consent is unchanged.')
+  expect(world.calls.map(call => call.argv[3])).toEqual(['--destination', '--set-destination', '--status', '--set-destination', '--set-destination', '--set-destination'])
 })
 
-test('a saved destination supports launch opt-in without a launch URL, and port controls are never reported', async ($, on) => {
+test('a saved destination supports launch opt-in without a launch URL, and settings controls are never reported', async ($, on) => {
   const settings: Settings = { stateDirectory: CONSENT_DIRECTORY, consent: '1', savedDestination: ENDPOINT }
   const world = host(on, settings)
   await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
@@ -289,9 +293,11 @@ test('a saved destination supports launch opt-in without a launch URL, and port 
   expect(activation.env?.TRAJVIZ_OBS_TELEMETRY_URL).toBe('')
   await $.command.run(command('dashboard port 8000'))
   await $.command.run(command('dashboard port'))
+  await $.command.run(command('telemetry_destination https://collector.example.test'))
+  await $.command.run(command('telemetry_destination'))
   await $.command.run(command('help'))
-  expect((await world.call(2)).argv.slice(7, 11)).toEqual(['--feature', 'help', '--outcome', 'success'])
-  expect(world.calls).toHaveLength(2)
+  expect((await world.call(4)).argv.slice(7, 11)).toEqual(['--feature', 'help', '--outcome', 'success'])
+  expect(world.calls.map(call => call.argv[3])).toEqual(['--adapter', '--set-destination', '--destination', '--adapter'])
 })
 
 test('Claude settings cannot supply the telemetry endpoint', async ($, on) => {

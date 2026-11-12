@@ -46,7 +46,8 @@ NETWORK_TIMEOUT = 3
 MAX_BATCHES_PER_RUN = 3
 MAX_RETRY_SECONDS = 3600
 CLOCK_ROLLBACK_TOLERANCE = 5
-_LOCAL_ENDPOINT = "http://127.0.0.1:8765/v1/events"
+_EVENTS_PATH = "/v1/events"
+_LOCAL_ENDPOINT = f"http://127.0.0.1:8765{_EVENTS_PATH}"
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]")
 _TOKEN_HASH = re.compile(r"[0-9a-f]{64}")
 _AUTHORITY = re.compile(r"(?:[A-Za-z0-9_.%\-]+|\[[A-Za-z0-9_.:%\-]+\])(?::[0-9]+)?")
@@ -56,7 +57,7 @@ _FAILURES = frozenset({"network", "throttled", "collector_unavailable", "authent
 _UTC = timezone.utc  # noqa: UP017
 
 
-def _endpoint(url: str) -> str | None:
+def _endpoint(url: str, *, allow_base: bool = False) -> str | None:
     if not url or len(url) > 2048:
         return None
     if any(ord(char) < 33 or ord(char) > 126 or char in "\\?#" for char in url):
@@ -68,10 +69,16 @@ def _endpoint(url: str) -> str | None:
     except ValueError:
         return None
     loopback = parsed.hostname in {"127.0.0.1", "::1", "localhost"}
-    if (not parsed.hostname or not _AUTHORITY.fullmatch(parsed.netloc) or parsed.path != "/v1/events"
+    if (not parsed.hostname or not _AUTHORITY.fullmatch(parsed.netloc)
             or (parsed.scheme != "https" and not (parsed.scheme == "http" and loopback))):
         return None
-    return url
+    if parsed.path == _EVENTS_PATH:
+        return url
+    if allow_base and parsed.path in {"", "/"}:
+        endpoint = url.removesuffix("/") + _EVENTS_PATH
+        if len(endpoint) <= 2048:
+            return endpoint
+    return None
 
 
 def configured_token(env: Mapping[str, str]) -> str | None:
@@ -627,7 +634,7 @@ def _save_destination(env: Mapping[str, str], adapter: str, value: str | None, *
     if value == "default":
         path.unlink(missing_ok=True)
         return None
-    endpoint = _endpoint(value)
+    endpoint = _endpoint(value, allow_base=True)
     if endpoint is None:
         return "invalid_endpoint"
     token_hash = None

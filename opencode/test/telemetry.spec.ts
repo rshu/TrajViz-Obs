@@ -17,8 +17,9 @@ test('analytics selects only known features and command variants', () => {
   expect(usageFeature('analyze private model prompt')).toBe('analyze')
   expect(usageFeature('telemetry')).toBeUndefined()
   expect(usageFeature('telemetry --bad')).toBeUndefined()
-  expect(usageFeature('telemetry destination https://collector.example/v1/events --use-launch-token')).toBeUndefined()
+  expect(usageFeature('telemetry_destination https://collector.example --use-launch-token')).toBeUndefined()
   expect(USAGE_FEATURES).not.toContain('telemetry')
+  expect(USAGE_FEATURES).not.toContain('telemetry_destination')
   expect(usageFeature('enable_telemetry')).toBeUndefined()
   expect(usageFeature('disable_telemetry --bad')).toBeUndefined()
   expect(USAGE_FEATURES).not.toContain('enable_telemetry')
@@ -199,15 +200,16 @@ test.skipIf(!python)('the native destination command changes the running server 
   const backend = { runtime } as unknown as Backend
   const signal = new AbortController().signal
   const command = async (args: string) => (await runCommand(backend, { args, sessionID: 'ses_active', runID: args }, signal)).text
-  const endpoint = 'https://collector.example:8443/v1/events'
+  const origin = 'https://collector.example:8443'
+  const endpoint = `${origin}/v1/events`
   try {
     env.TRAJVIZ_OBS_TELEMETRY_STATE_DIR = directory
     env.TRAJVIZ_OBS_TELEMETRY_TOKEN = TOKEN
     delete env.TRAJVIZ_OBS_TELEMETRY
     delete env.TRAJVIZ_OBS_TELEMETRY_URL
     const reporter = createUsageReporter(runtime)
-    expect(await command('telemetry destination')).toContain('http://127.0.0.1:8765/v1/events')
-    const saved = await command(`telemetry destination ${endpoint} --use-launch-token`)
+    expect(await command('telemetry_destination')).toContain('http://127.0.0.1:8765/v1/events')
+    const saved = await command(`telemetry_destination ${origin} --use-launch-token`)
     expect(saved).toContain(endpoint)
     expect(saved).not.toContain(TOKEN)
     expect(await readFile(path.join(directory, 'opencode-destination.json'), 'utf8')).not.toContain(TOKEN)
@@ -218,7 +220,8 @@ test.skipIf(!python)('the native destination command changes the running server 
     expect(dashboardUsageArgs()).toEqual(['--usage-adapter', 'opencode', '--usage-version', expect.any(String)])
     expect(await command('telemetry')).toContain('Collector credential · Configured')
     expect(await command('telemetry')).not.toContain(endpoint)
-    expect(await command('telemetry destination default')).toContain('http://127.0.0.1:8765/v1/events')
+    expect(await command('telemetry_destination https://127.0.0.1')).toContain('https://127.0.0.1/v1/events')
+    expect(await command('telemetry_destination default')).toContain('http://127.0.0.1:8765/v1/events')
     expect(reporter.enabled()).toBe(false)
     expect(await command('telemetry')).toBe('Usage telemetry · Endpoint missing')
   } finally {

@@ -177,9 +177,24 @@ def test_destination_is_private_persistent_and_independent_of_consent(opted_in, 
     assert (opted_in / "claude-code-consent").read_bytes() == b"off\n"
 
 
+@pytest.mark.parametrize("base", [
+    "https://telemetry.example.com",
+    "https://127.0.0.1",
+    "https://[::1]:8443/",
+    "http://127.0.0.1:8765",
+])
+def test_destination_accepts_base_url_and_saves_exact_event_endpoint(base, opted_in, capsys):
+    endpoint = f"{base.rstrip('/')}/v1/events"
+    assert client.main(["--set-destination", base, "--adapter", "claude-code"]) == 0
+    assert json.loads(capsys.readouterr().out)["destination"] == endpoint
+    marker = opted_in / "claude-code-destination.json"
+    assert json.loads(marker.read_text())["url"] == endpoint
+
+
 def test_destination_switch_never_forwards_an_unbound_launch_token(opted_in, monkeypatch, capsys):
     adapter = ["--adapter", "claude-code"]
-    saved = "https://collector.example.test/v1/events"
+    base = "https://collector.example.test"
+    saved = f"{base}/v1/events"
     marker = opted_in / "claude-code-destination.json"
     attempts = []
 
@@ -190,7 +205,7 @@ def test_destination_switch_never_forwards_an_unbound_launch_token(opted_in, mon
     monkeypatch.setattr(client, "_send", send)
     monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", TOKEN)
     assert client.main(ARGV) == 0
-    assert client.main(["--set-destination", saved, *adapter]) == 0
+    assert client.main(["--set-destination", base, *adapter]) == 0
     status = json.loads(capsys.readouterr().out)
     assert status["credential_configured"] is False
     assert client.main(ARGV) == 0
@@ -219,7 +234,10 @@ def test_invalid_destination_updates_preserve_the_previous_route(opted_in, monke
     capsys.readouterr()
 
     for command, error in [
+        (["--set-destination", "http://192.0.2.10:8443"], "invalid_endpoint"),
         (["--set-destination", "http://192.0.2.10:8443/v1/events"], "invalid_endpoint"),
+        (["--set-destination", "https://host.example/dashboard"], "invalid_endpoint"),
+        (["--set-destination", "https://host.example/?secret=example"], "invalid_endpoint"),
         (["--set-destination", "https://collector.example.test:/v1/events"], "invalid_endpoint"),
         (["--set-destination", "https://collector!.example.test/v1/events"], "invalid_endpoint"),
         (["--set-destination", "https://host.example/v1/events?secret=example"], "invalid_endpoint"),

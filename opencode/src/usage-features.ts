@@ -1,7 +1,7 @@
 import { parseArgs, SUBCOMMANDS } from './shared/args.js'
 import { isDashboardPortCommand } from './command-args.js'
 
-const ADMIN_COMMANDS = ['telemetry', 'enable_telemetry', 'disable_telemetry']
+const ADMIN_COMMANDS = ['telemetry', 'telemetry_destination', 'enable_telemetry', 'disable_telemetry']
 export const USAGE_FEATURES = [
   ...SUBCOMMANDS.filter(sub => !ADMIN_COMMANDS.includes(sub)), 'brief', 'dashboard.html', 'dashboard.stop', 'converge.stop',
   'pane.close', 'pane.tab', 'pane.refresh', 'pane.expand',

@@ -43,7 +43,7 @@ export const HELP_TEXT = [
   'Setup',
   '  setup [--extras all|none|charts,app] [--source S]    doctor    sessions [1–500]',
   '  telemetry · local usage telemetry delivery status',
-  '  telemetry destination [URL|default] [--use-launch-token] · show or set the collector',
+  '  telemetry_destination [URL [--use-launch-token] | default] · show or set the collector',
   '  enable_telemetry | disable_telemetry · save usage telemetry preference',
   '  watch [on|off]    statusline [on|off]    cancel · cancel the active obs command',
   '  attribution [--reference-root DIR] [--agent A] [--instance I]',
@@ -137,10 +137,9 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
   }
 
   if (sub === 'help') return { text: HELP_TEXT }
-  if (sub === 'telemetry') {
-    return { text: positional[0] === 'destination'
-      ? await usageDestination(backend.runtime, signal, positional[1], flags['use-launch-token'] === true)
-      : await usageDeliveryStatus(backend.runtime, signal) }
+  if (sub === 'telemetry') return { text: await usageDeliveryStatus(backend.runtime, signal) }
+  if (sub === 'telemetry_destination') {
+    return { text: await usageDestination(backend.runtime, signal, positional[0], flags['use-launch-token'] === true) }
   }
   if (isDashboardPortCommand(parsed)) return { text: await dashboardPortPreference(backend.options.dashboardPort, positional[1], signal) }
   if (sub === 'enable_telemetry' || sub === 'disable_telemetry') return { text: await setUsageConsent(backend.runtime, signal, sub === 'enable_telemetry' ? 'on' : 'off') }

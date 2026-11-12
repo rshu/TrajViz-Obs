@@ -123,7 +123,7 @@ Live captures are limited to 32 MiB and 64 sessions in one family. For larger in
 
 Run `/obs enable_telemetry` to opt in or `/obs disable_telemetry` to turn it off in Desktop or the terminal. Both save the preference on the connected OpenCode server, where it takes effect immediately and persists across restarts. Disabling pauses queued uploads. After enabling, reopen any existing dashboards to include browser interactions.
 
-Run `/obs telemetry` to check delivery or `/obs telemetry destination` to see the collector. `/obs telemetry destination https://telemetry.example.com/v1/events` changes it immediately on the connected server. `default` restores the server’s launch setting or the loopback collector. For an authenticated collector, supply the token in the server’s launch environment and use `--use-launch-token` to associate it with the new destination. [Telemetry setup](../README.md#usage-telemetry)
+Run `/obs telemetry` to check delivery or `/obs telemetry_destination` to see the collector. `/obs telemetry_destination https://telemetry.example.com` changes it immediately on the connected server and adds `/v1/events` automatically. `default` restores the server’s launch setting or the loopback collector. For an authenticated collector, supply the token in the server’s launch environment and use `--use-launch-token` to associate it with the new destination. [Telemetry setup](../README.md#usage-telemetry)
 
 ## Development
 

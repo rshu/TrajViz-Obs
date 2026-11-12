@@ -26,7 +26,7 @@ export function setTelemetrySurface(value: string | null, interactive: boolean):
 
 /** Only command names and fixed variants may leave the host. */
 export function commandFeature({ sub, positional, flags }: Parsed): string | undefined {
-  if (sub === 'telemetry' || (sub === 'dashboard' && positional[0] === 'port') || !SUBCOMMANDS.includes(sub)) return undefined
+  if (sub === 'telemetry' || sub === 'telemetry_destination' || (sub === 'dashboard' && positional[0] === 'port') || !SUBCOMMANDS.includes(sub)) return undefined
   if (positional.length === 1) {
     if (sub === 'pane' && positional[0] === 'close') return 'pane.close'
     if (sub === 'dashboard' && positional[0] === 'stop') return 'dashboard.stop'
