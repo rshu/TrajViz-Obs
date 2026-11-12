@@ -2,7 +2,7 @@
 
 Telemetry is off by default. When enabled, Claude Code and OpenCode queue allowlisted usage events locally and send them in the background during plugin activity. The collector validates and deduplicates uploads in SQLite. A separate publisher reads aggregate statistics and refreshes a self-contained HTML report on a schedule.
 
-This guide uses the collector from `codex/telemetry-service` and plugins installed from `codex/usage-telemetry`. Run the collector commands from the service checkout with Python 3.11 or newer.
+Run the collector commands from the service checkout with Python 3.11 or newer. The quickstart uses a plugin build that supports `/obs enable_telemetry`.
 
 ## Try it locally
 
@@ -14,24 +14,20 @@ This guide uses the collector from `codex/telemetry-service` and plugins install
 
 2. Open [the local report](http://127.0.0.1:8765/) in a browser. It shows the most recent 30 UTC days and reads fresh data on each reload.
 
-3. In another terminal, set the plugin environment and launch Claude Code or the OpenCode server from that environment. Run `/obs help` or `/obs`, then `/obs telemetry` to check delivery.
-
-   ```sh
-   export TRAJVIZ_OBS_TELEMETRY=1
-   export TRAJVIZ_OBS_TELEMETRY_URL=http://127.0.0.1:8765/v1/events
-   unset TRAJVIZ_OBS_TELEMETRY_TOKEN
-   ```
+3. In Claude Code or OpenCode, run `/obs enable_telemetry`, then `/obs help` and `/obs telemetry` to check delivery. The enable command uses the local collector on port 8765 when no endpoint is configured. For a custom port, set `TRAJVIZ_OBS_TELEMETRY_URL` before launching the host.
 
 ## Plugin configuration
 
 | Launch environment variable | Setting |
 | --- | --- |
-| `TRAJVIZ_OBS_TELEMETRY` | Set to `1` to opt in. Unset it and restart the host to turn telemetry off. |
-| `TRAJVIZ_OBS_TELEMETRY_URL` | Full URL ending in `/v1/events`, with no user info, query, or fragment. There is no default. HTTPS is required except on HTTP loopback (`localhost`, `127.0.0.1`, or `::1`). |
+| `TRAJVIZ_OBS_TELEMETRY` | Set to `1` to opt in at launch when no consent preference has been saved. |
+| `TRAJVIZ_OBS_TELEMETRY_URL` | Full URL ending in `/v1/events`, with no user info, query, or fragment. An explicit `/obs enable_telemetry` uses `http://127.0.0.1:8765/v1/events` when this is unset. HTTPS is required except on HTTP loopback (`localhost`, `127.0.0.1`, or `::1`). |
 | `TRAJVIZ_OBS_TELEMETRY_TOKEN` | Bearer token issued by the collector. Required for authenticated receivers. |
 | `TRAJVIZ_OBS_TELEMETRY_STATE_DIR` | Optional absolute path for local queue state. Defaults to `~/.local/state/trajviz-obs/telemetry` on macOS and Linux, honoring `XDG_STATE_HOME`, or `%LOCALAPPDATA%\trajviz-obs\telemetry` on Windows when set. |
 
 Set these in Claude Code’s launch environment or the OpenCode **server’s** launch environment for both terminal and Desktop clients. Claude Code ignores telemetry values in its settings files. On macOS, apps opened from Finder do not inherit terminal exports. Restart the host or server after changing the settings.
+
+`/obs enable_telemetry` and `/obs disable_telemetry` save the choice per adapter in the local state directory. Changes apply without a restart. An explicit disable stops recording and pauses queued uploads until telemetry is enabled again. Reopen existing dashboards after enabling telemetry to track browser actions.
 
 `/obs telemetry` reads local status, including the queue, last upload, and retry deadline, without sending an event. The queue holds up to 512 events per adapter and endpoint and retries on later activity for up to seven days. Temporary failures back off and respect `Retry-After` within the retry limit. Authentication failures preserve the queue for a replacement token. Upload failures do not block plugin commands.
 
