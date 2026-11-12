@@ -18,11 +18,11 @@ resolution-markers = [
 
 [[package]]
 name = "agent-trajviz"
-version = "0.5.0"
+version = "0.5.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9e/44/e5f134c2f65b174db89cc8f62e45e11ac7f6cf4b1e6589e47ab9f2dd7451/agent_trajviz-0.5.0.tar.gz", hash = "sha256:8a9e9570ab6114a985c8f0d53e60a9f80531ba91138c2e1c1474a06ddd9e4faf", size = 1055942, upload-time = "2026-11-09T08:26:36.036Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/54/10/fca9d5e39d005e72de55bad7344b6b80fa8d7f38c24caeb5474e8d50b3fd/agent_trajviz-0.5.1.tar.gz", hash = "sha256:1db7940271c67c2dca5e196bb07b857a92dbc2135befb184d73c64c56e38f66f", size = 1057968, upload-time = "2026-11-12T08:15:45.317Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/44/5b/1a164dba048097d21df6bc1b65d04fea8b6cc14a26a09688f1f2f424bd2d/agent_trajviz-0.5.0-py3-none-any.whl", hash = "sha256:4dd3a48b8fa8fb583de6cbbaa15c4a8a7fa9ec15c7ea0f8c92ba8b259df356b0", size = 1247696, upload-time = "2026-11-09T08:26:34.147Z" },
+    { url = "https://files.pythonhosted.org/packages/08/d8/5e1abf3914dcc285462fd135c408da21ef7f134a15294acd2804a9662cff/agent_trajviz-0.5.1-py3-none-any.whl", hash = "sha256:c73c70315e4e7e8358a0d3969fd46bb41969e3dce166bbc14ac9fb8bdd593467", size = 1249949, upload-time = "2026-11-12T08:15:43.708Z" },
 ]
 
 [package.optional-dependencies]
@@ -1820,7 +1820,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-trajviz", extras = ["all"], specifier = "==0.5.0" },
+    { name = "agent-trajviz", extras = ["all"], specifier = "==0.5.1" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.23,<5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },

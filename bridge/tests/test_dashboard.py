@@ -289,6 +289,7 @@ def test_labels_preload_uses_all_native_charts_and_resets_for_other_trajectories
     assert reset.outputs[-1] is label_file and gradio.utils.is_static_file(str(dashboard_labels))
     native = next(block for block in app.fns.values() if getattr(block.fn, "__name__", "") == "do_load_labels")
     values = native.fn(str(dashboard_labels), False)
+    assert values[0]["visible"] and "coverage" in values[0]["value"].lower()
     assert all(values[index]["visible"] for index in (2, 5, 8))
     assert all(values[index].data for index in (3, 4, 6, 7, 9))
     assert any(target == (label_file._id, "change") for target in native.targets) or any(
@@ -343,7 +344,9 @@ def test_cached_labels_refuse_changed_step_identity(filtered_label_run, tmp_path
 
 
 def test_incompatible_cached_labels_show_notice_and_clear_on_another_trajectory(fixture_session,
-                                                                             fixture_run, tmp_path):
+                                                                             fixture_run, tmp_path, monkeypatch):
+    warnings = []
+    monkeypatch.setattr(gradio, "Warning", warnings.append)
     path = tmp_path / "labels.json"
     step = next(step for step in fixture_run.steps if step["role"] == "assistant")
     path.write_text(json.dumps({"steps": [dict(step, index=len(fixture_run.steps) + 1)]}))
@@ -353,7 +356,9 @@ def test_incompatible_cached_labels_show_notice_and_clear_on_another_trajectory(
     loaded = _loaded_run(_loader(app), fixture_session)
     outputs = reset.fn(str(fixture_session), None, loaded)
     assert outputs[-1]["value"] is None and "Run /obs label again" in outputs[1]
+    assert len(warnings) == 1 and "Run /obs label again" in warnings[0]
     assert "Run /obs label again" not in reset.fn(str(tmp_path / "another.jsonl"), None, loaded)[1]
+    assert len(warnings) == 1
     assert path.read_bytes() == before
 
 
