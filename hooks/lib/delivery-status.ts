@@ -27,6 +27,7 @@ const DESTINATION_ERROR: Record<string, string> = {
   invalid_endpoint: 'Use an HTTPS collector URL such as https://telemetry.example.com. Plain HTTP is only supported for loopback.',
   missing_token: 'Set TRAJVIZ_OBS_TELEMETRY_TOKEN in the host launch environment before binding it.',
   invalid_token: 'The token in the host launch environment is invalid.',
+  token_endpoint_mismatch: 'OpenCode uses its launch token only for the exact collector in TRAJVIZ_OBS_TELEMETRY_URL. Set the server’s launch URL or save this destination without --use-launch-token.',
   invalid_arguments: 'Check the command form in /obs help.',
 }
 
@@ -54,7 +55,9 @@ export function destinationStatusText(value: unknown, operation: 'read' | 'set' 
       || !/^https?:\/\/(?:[\w.-]+|\[[\w:.-]+(?:%25[\w.-]+)?\])(?::\d+)?\/v1\/events$/i.test(destination)) return DESTINATION_STATUS_UNAVAILABLE
   const lines = [`Telemetry destination · ${destination} (${source})`]
   if (status.credential_invalid === true || status.configuration === 'invalid_token') {
-    lines.push('Collector credential · Invalid. Check the launch token, then run /obs telemetry_destination URL --use-launch-token.')
+    lines.push(status.adapter === 'opencode'
+      ? 'Collector credential · Invalid. Run /obs telemetry_destination default to restore the server’s launch destination, or set its launch URL and token and restart the server.'
+      : 'Collector credential · Invalid. Check the launch token, then run /obs telemetry_destination URL --use-launch-token.')
   } else if (typeof status.credential_configured === 'boolean') {
     lines.push(`Collector credential · ${status.credential_configured ? 'Configured' : 'Not configured'}`)
   }

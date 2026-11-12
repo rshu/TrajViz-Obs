@@ -202,6 +202,8 @@ test.skipIf(!python)('the native destination command changes the running server 
   const command = async (args: string) => (await runCommand(backend, { args, sessionID: 'ses_active', runID: args }, signal)).text
   const origin = 'https://collector.example:8443'
   const endpoint = `${origin}/v1/events`
+  const marker = path.join(directory, 'opencode-destination.json')
+  const denied = 'OpenCode uses its launch token only for the exact collector in TRAJVIZ_OBS_TELEMETRY_URL'
   try {
     env.TRAJVIZ_OBS_TELEMETRY_STATE_DIR = directory
     env.TRAJVIZ_OBS_TELEMETRY_TOKEN = TOKEN
@@ -209,10 +211,16 @@ test.skipIf(!python)('the native destination command changes the running server 
     delete env.TRAJVIZ_OBS_TELEMETRY_URL
     const reporter = createUsageReporter(runtime)
     expect(await command('telemetry_destination')).toContain('http://127.0.0.1:8765/v1/events')
+    expect(await command(`telemetry_destination ${origin} --use-launch-token`)).toContain(denied)
+    await expect(readFile(marker, 'utf8')).rejects.toThrow('ENOENT')
+    env.TRAJVIZ_OBS_TELEMETRY_URL = endpoint
     const saved = await command(`telemetry_destination ${origin} --use-launch-token`)
-    expect(saved).toContain(endpoint)
+    expect(saved).toContain(`${endpoint} (saved)`)
     expect(saved).not.toContain(TOKEN)
-    expect(await readFile(path.join(directory, 'opencode-destination.json'), 'utf8')).not.toContain(TOKEN)
+    const savedMarker = await readFile(marker, 'utf8')
+    expect(savedMarker).not.toContain(TOKEN)
+    expect(await command('telemetry_destination https://127.0.0.1 --use-launch-token')).toContain(denied)
+    expect(await readFile(marker, 'utf8')).toBe(savedMarker)
     expect(await command('telemetry')).toContain('Usage telemetry · Off')
     expect(reporter.enabled()).toBe(false)
     env.TRAJVIZ_OBS_TELEMETRY = '1'
@@ -220,7 +228,11 @@ test.skipIf(!python)('the native destination command changes the running server 
     expect(dashboardUsageArgs()).toEqual(['--usage-adapter', 'opencode', '--usage-version', expect.any(String)])
     expect(await command('telemetry')).toContain('Collector credential · Configured')
     expect(await command('telemetry')).not.toContain(endpoint)
-    expect(await command('telemetry_destination https://127.0.0.1')).toContain('https://127.0.0.1/v1/events')
+    delete env.TRAJVIZ_OBS_TELEMETRY_URL
+    const anonymous = await command('telemetry_destination https://127.0.0.1')
+    expect(anonymous).toContain('https://127.0.0.1/v1/events')
+    expect(anonymous).toContain('Collector credential · Not configured')
+    expect(reporter.enabled()).toBe(true)
     expect(await command('telemetry_destination default')).toContain('http://127.0.0.1:8765/v1/events')
     expect(reporter.enabled()).toBe(false)
     expect(await command('telemetry')).toBe('Usage telemetry · Endpoint missing')

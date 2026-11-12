@@ -240,12 +240,14 @@ def usage_settings(env: Mapping[str, str], adapter: str, *, consent: str | None 
     try:
         token = configured_token(env) if credential_configured else None
         if requires_token:
-            bound = token is not None and (matches_launch or (
-                endpoint is not None and destination.token_binding is not None and hmac.compare_digest(
+            # OpenCode's RPC does not identify an administrator who can authorize a new collector.
+            bound = matches_launch or (
+                adapter == "claude-code" and token is not None and endpoint is not None
+                and destination.token_binding is not None and hmac.compare_digest(
                     destination.token_binding, _destination_token_binding(token, adapter, endpoint)
                 )
-            ))
-            if not bound:
+            )
+            if token is None or not bound:
                 raise ValueError("launch credential no longer matches the saved destination")
     except ValueError:
         token = None
@@ -658,6 +660,8 @@ def _save_destination(env: Mapping[str, str], adapter: str, value: str | None, *
         return "invalid_endpoint"
     token_binding = None
     if use_launch_token:
+        if adapter == "opencode" and endpoint != _endpoint(env.get("TRAJVIZ_OBS_TELEMETRY_URL", "")):
+            return "token_endpoint_mismatch"
         try:
             token = configured_token(env)
         except ValueError:

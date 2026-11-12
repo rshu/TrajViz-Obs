@@ -229,6 +229,47 @@ def test_destination_switch_never_forwards_an_unbound_launch_token(opted_in, mon
     assert attempts[-1] == (saved, ROTATED)
 
 
+@pytest.mark.parametrize("launch_url", [None, ENDPOINT])
+def test_opencode_rejects_token_binding_outside_its_launch_endpoint(opted_in, monkeypatch, capsys, launch_url):
+    adapter = ["--adapter", "opencode"]
+    base = "https://other.example.test"
+    saved = f"{base}/v1/events"
+    marker = opted_in / "opencode-destination.json"
+    attempts = []
+
+    def send(endpoint, _payload, *, token):
+        attempts.append((endpoint, token))
+        return ACCEPTED
+
+    if launch_url is None:
+        monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY_URL")
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", TOKEN)
+    monkeypatch.setattr(client, "_send", send)
+    assert client.main(["--set-destination", base, *adapter]) == 0
+    capsys.readouterr()
+    original = marker.read_bytes()
+
+    assert client.main(["--set-destination", base, "--use-launch-token", *adapter]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["destination_error"] == "token_endpoint_mismatch"
+    assert marker.read_bytes() == original
+    assert client.main([*ARGV, *adapter]) == 0
+    assert attempts == [(saved, None)]
+
+    # A saved binding written by an earlier version is not server authorization.
+    marker.write_text(json.dumps({"url": saved, "token_binding": client._destination_token_binding(TOKEN, "opencode", saved)}))
+    assert client.main([*ARGV, *adapter]) == 0
+    assert attempts == [(saved, None)]
+    assert client.delivery_status(os.environ, "opencode")["configuration"] == "invalid_token"
+
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_URL", saved)
+    assert client.main(["--set-destination", base, "--use-launch-token", *adapter]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert "destination_error" not in status and status["credential_configured"] is True
+    assert client.main([*ARGV, *adapter]) == 0
+    assert attempts == [(saved, None), (saved, TOKEN)]
+
+
 @pytest.mark.parametrize("tamper", ["url", "adapter"])
 def test_destination_binding_cannot_move_to_another_endpoint_or_adapter(opted_in, monkeypatch, capsys, tamper):
     adapter = "claude-code"
