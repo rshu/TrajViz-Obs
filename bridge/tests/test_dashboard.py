@@ -180,6 +180,31 @@ def test_dashboard_gantt_hover_distinguishes_missing_tokens_from_measured_zero(n
         assert hover[1].startswith("<b>Step 3</b>") and hover[1].endswith("0 tokens")
 
 
+def test_dashboard_workflow_view_control_is_serialized_with_its_native_change_event(fixture_session):
+    config = build_preloaded_insight(str(fixture_session)).get_config_file()
+    components = {component["id"]: component for component in config["components"]}
+
+    def descendants(node):
+        for child in node.get("children", []):
+            yield child
+            yield from descendants(child)
+
+    workflow, = [node for node in descendants(config["layout"])
+                 if components[node["id"]]["props"].get("label") == "Workflow"]
+    toolbar, = [node for node in workflow["children"]
+                if "obs-workflow-filters" in (components[node["id"]]["props"].get("elem_classes") or [])]
+    view, = [components[node["id"]] for node in descendants(toolbar)
+             if components[node["id"]]["type"] == "radio"]
+    props = view["props"]
+    assert props["label"] == "View" and props["visible"] is True
+    assert props["choices"] == [("Cards", "Cards"), ("Expanded", "Expanded")]
+    assert props["value"] == "Cards" and "obs-workflow-view" in props["elem_classes"]
+
+    change, = [dependency for dependency in config["dependencies"]
+               if any(target == view["id"] and event == "change" for target, event in dependency["targets"])]
+    assert change["api_name"] == "do_filter_workflow" and view["id"] in change["inputs"]
+
+
 def test_dashboard_workflow_keeps_token_evidence_when_switching_modes(native_timed_parent_and_child):
     app = build_preloaded_insight(str(native_timed_parent_and_child))
     callback = next(entry for entry in app.fns.values() if entry.api_name == "do_filter_workflow")

@@ -92,12 +92,16 @@ _CSS = """
 .obs-dashboard .cvg-report { min-width: 0; max-width: 100%; overflow-x: auto; }
 .obs-dashboard .obs-chart:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .obs-dashboard .insight-step-link:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
-.obs-dashboard .obs-workflow-filters { display: grid; align-items: start;
-  grid-template-columns: auto minmax(160px, .45fr) minmax(0, 1fr) minmax(160px, .6fr); }
-.obs-dashboard .obs-workflow-filters > button { align-self: start !important; justify-self: start; height: auto !important; }
-.obs-dashboard .obs-workflow-filters > .obs-workflow-view-form { background: transparent !important;
-  border: 0; box-shadow: none; }
-.obs-dashboard .obs-workflow-view-form > .block { width: 100%; }
+.obs-dashboard .obs-workflow-filters { display: grid; align-items: start; gap: 12px;
+  grid-template-areas: "toc view filters search";
+  grid-template-columns: max-content minmax(210px, 250px) minmax(0, 1fr) minmax(160px, .4fr); }
+.obs-dashboard .obs-workflow-filters > button { grid-area: toc;
+  align-self: start !important; justify-self: start; height: auto !important; }
+.obs-dashboard .obs-workflow-filters > .form:has(> .obs-workflow-view) { grid-area: view;
+  min-width: 0 !important; background: transparent !important; border: 0; box-shadow: none; }
+.obs-dashboard .obs-workflow-view { flex: 1 1 auto !important; width: 100%; min-width: 0 !important; }
+.obs-dashboard .obs-workflow-filters > #wf-filter-chips { grid-area: filters; min-width: 0; }
+.obs-dashboard .obs-workflow-filters > .form:has(> .wf-toolbar-search) { grid-area: search; min-width: 0 !important; }
 .obs-dashboard .filter-group { align-items: start; }
 .obs-dashboard .filter-options { min-width: 0; max-height: 128px; overflow-y: auto; padding: 2px; }
 .obs-dashboard .filter-chip { flex-shrink: 0; }
@@ -129,8 +133,6 @@ _CSS = """
   .obs-dashboard .overview-section-nav { padding: 4px; margin-bottom: 8px; }
   .obs-dashboard .overview-nav-title { padding: 4px 8px; margin-bottom: 0; }
   .obs-dashboard .overview-section-radio > .wrap { scrollbar-width: thin; }
-  .obs-dashboard .obs-workflow-filters { grid-template-columns: minmax(0, 1fr); }
-  .obs-dashboard .obs-workflow-filters > .form { grid-column: 1 / -1; }
   .obs-dashboard .obs-workflow-body { grid-template-columns: minmax(0, 1fr); }
   .obs-dashboard .obs-workflow-body > .column { grid-column: 1; grid-row: auto !important; }
   .obs-dashboard .wf-toc-sidebar { max-height: 140px; position: static; }
@@ -145,10 +147,13 @@ _CSS = """
 .obs-main-tabs.obs-content-medium .obs-workflow-body > .column:first-child { grid-row: 1 / span 2; }
 .obs-main-tabs.obs-content-medium .obs-workflow-body > .detail-panel { grid-column: 2; position: relative; top: auto; }
 .obs-main-tabs.obs-content-medium .obs-workflow-body .wf-scroll { max-height: 50vh; }
-.obs-main-tabs.obs-content-medium .obs-workflow-filters { grid-template-columns: auto minmax(0, 1fr); }
-.obs-main-tabs.obs-content-medium .obs-workflow-filters > #wf-filter-chips { grid-column: 1 / -1; }
+.obs-main-tabs.obs-content-medium .obs-workflow-filters {
+  grid-template-areas: "toc view filters" ". search filters";
+  grid-template-columns: max-content minmax(240px, .7fr) minmax(0, 1fr); }
 .obs-main-tabs.obs-content-narrow .ov-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
-.obs-main-tabs.obs-content-narrow .obs-workflow-filters { grid-template-columns: minmax(0, 1fr); }
+.obs-main-tabs.obs-content-narrow .obs-workflow-filters {
+  grid-template-areas: "toc view" "filters filters" "search search";
+  grid-template-columns: max-content minmax(0, 1fr); }
 .obs-main-tabs.obs-content-narrow .obs-workflow-body { grid-template-columns: minmax(0, 1fr); }
 .obs-main-tabs.obs-content-narrow .obs-workflow-body > .column { grid-column: 1; grid-row: auto !important; }
 .obs-main-tabs.obs-content-narrow .wf-toc-sidebar { max-height: 140px; position: static; }
@@ -520,10 +525,11 @@ def decorate_dashboard(app: gr.Blocks, kind: str, *, dark: bool = False) -> gr.B
                     child.visible = False
         if isinstance(block, gr.Row) and any(child.elem_id == "wf-filter-chips" for child in block.children):
             block.elem_classes = [*(block.elem_classes or []), "obs-workflow-filters"]
+            # Gradio serializes the radio's classes but drops them from its generated Form.
             for child in block.children:
-                if any(isinstance(control, gr.Radio) and control.label == "View"
-                       for control in getattr(child, "children", [])):
-                    child.elem_classes = [*(child.elem_classes or []), "obs-workflow-view-form"]
+                for control in getattr(child, "children", (child,)):
+                    if isinstance(control, gr.Radio) and control.label == "View":
+                        control.elem_classes = [*(control.elem_classes or []), "obs-workflow-view"]
         if isinstance(block, gr.Row) and any(
             isinstance(child, gr.Column) and any(part.elem_id == "wf-toc-container" for part in child.children)
             for child in block.children
