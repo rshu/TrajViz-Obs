@@ -6,7 +6,7 @@ import { captureSession } from './collect.js'
 import { createInteractionReporter } from './interaction.js'
 import { Obs, type CommandResult, type UsageInteraction } from './rpc.js'
 import { analyzeSelection, parseArgs, passArgs, quoteOption } from './shared/args.js'
-import { validateArguments } from './command-args.js'
+import { isSessionlessCommand, validateArguments } from './command-args.js'
 import { usageFeature } from './usage-features.js'
 import { TABS, commandText, compact as compactNumber, duration, errorMessage as errorText, failures, metrics, safeText, sections, statusText, type Section } from './tui-model.js'
 import { agentFailureTone, healthRowTone, healthStatusLabel, metricTone, resultFragments, type Tone } from './presentation.js'
@@ -26,7 +26,6 @@ type UIState = {
 }
 type Panel = { name: string; sessionID: string; width: number; focused: boolean; focus(): void; close(): void; toggleFullscreen(): void }
 const PANEL = 'trajviz-obs'
-const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
 const displayResult = (text: string): string => {
   const clean = safeText(text)
   return clean.length > 64_000 ? `${clean.slice(0, 64_000)}\n\nDisplay clipped. Use /obs json for full session data.` : clean
@@ -275,8 +274,8 @@ export function setup(context: Plugin.Context): () => void {
     let dispatched = false
     let preflightOutcome: 'error' | 'rejected' = 'error'
     try {
-      const parsed = parseArgs(args)
-      if (!SESSIONLESS.has(parsed.sub)) {
+      const parsed = parseArgs(args), sessionless = isSessionlessCommand(parsed)
+      if (!sessionless) {
         // Questions preserve apostrophes; the generic shell lexer can treat one as an open quote.
         const analyze = parsed.sub === 'analyze' ? analyzeSelection(args) : undefined
         const selector = analyze ? analyze.session : parsed.flags.session
@@ -323,9 +322,9 @@ export function setup(context: Plugin.Context): () => void {
       target = result.sessionID ?? target
       if (disposed) return
       update(draft => {
-        if (base !== 'home' && !SESSIONLESS.has(parsed.sub)) draft.selected[base] = target
+        if (base !== 'home' && !sessionless) draft.selected[base] = target
         if (result.snapshot && generations.get(target) === generation) { draft.snapshots[target] = result.snapshot; delete draft.errors[target] }
-        draft.jobs[runID] = { args, sessionID: base, ...(!SESSIONLESS.has(parsed.sub) ? { targetID: target } : {}), text: displayResult(commandText(result)), pending: false, url: result.url, path: result.path, snapshot: result.snapshot, data: result.data }
+        draft.jobs[runID] = { args, sessionID: base, ...(!sessionless ? { targetID: target } : {}), text: displayResult(commandText(result)), pending: false, url: result.url, path: result.path, snapshot: result.snapshot, data: result.data }
         if (result.tab) { const tab = TABS.findIndex(name => name.toLowerCase() === result.tab?.toLowerCase()); if (tab >= 0) draft.tab = tab }
       })
       if (presentation === 'pane' && !result.snapshot) await refresh(target)
@@ -357,7 +356,7 @@ export function setup(context: Plugin.Context): () => void {
   async function command(raw = '', followSelection = false): Promise<void> {
     let args = raw.trim().replace(/^\/obs(?:\s+|$)/, '')
     const base = active() ?? 'home'
-    if (followSelection) {
+    if (followSelection && !isSessionlessCommand(parseArgs(args))) {
       const target = selected(base)
       const file = state.files[target]
       if (file) args += ` ${quoteOption('session', file.selector)}${file.captureSessionID ? ` ${quoteOption('session-id', file.captureSessionID)}` : ''}`

@@ -101,6 +101,8 @@ In Claude Code, use `/plugin configure trajviz-obs@trajviz-obs` or `/config` for
 
 OpenCode uses [options in its configuration file](opencode/README.md#options) and defaults to its selected model.
 
+Run `/obs dashboard port` to see the default port or `/obs dashboard port 7863` to save a new one during a session. The change applies the next time you run `/obs dashboard`. Use `auto` for automatic selection or `default` to restore the `dashboardPort` plugin option (`0` means automatic). `/obs dashboard --port N` overrides the default for one launch.
+
 <details>
 <summary>Use an external model provider</summary>
 
@@ -141,7 +143,9 @@ Exports and cached analysis contain session data and stay on the host unless sha
 
 Usage telemetry is off by default. In Claude Code or OpenCode, run `/obs enable_telemetry` to opt in, `/obs disable_telemetry` to stop recording and pause queued uploads, and `/obs telemetry` to check delivery. The choice persists locally and takes precedence over the launch-time opt-in. On a shared OpenCode server, the choice applies to that server.
 
-With no endpoint configured, the enable command uses `http://127.0.0.1:8765/v1/events`. For a remote collector, set `TRAJVIZ_OBS_TELEMETRY_URL` to its HTTPS `/v1/events` endpoint and `TRAJVIZ_OBS_TELEMETRY_TOKEN` to its issued token in Claude Code’s launch environment or the OpenCode server’s launch environment. Reopen any existing dashboards after enabling telemetry to track browser actions.
+Run `/obs telemetry_destination` to see the collector. Change it during a session with `/obs telemetry_destination https://telemetry.example.com` or `/obs telemetry_destination https://127.0.0.1`. The command adds `/v1/events` to a base URL. Use `default` to restore `TRAJVIZ_OBS_TELEMETRY_URL` or the loopback default at port 8765. Changing the destination preserves consent. Each collector endpoint has its own queue and installation ID.
+
+For an authenticated collector, supply its token as `TRAJVIZ_OBS_TELEMETRY_TOKEN` in the host’s launch environment. In Claude Code, append `--use-launch-token` to associate the token with a new destination. In OpenCode, the server sends its launch token only to the exact endpoint configured in `TRAJVIZ_OBS_TELEMETRY_URL`. To change that endpoint, update the server’s launch environment, restart the server, and run `/obs telemetry_destination default` if a saved destination overrides it. Remote collectors require HTTPS. For local HTTP on a custom port, use a URL such as `http://127.0.0.1:8765`. Reopen dashboards that were started before telemetry was enabled to track browser actions.
 
 The sender reports allowlisted feature names, outcomes, coarse timing, and a random installation ID. Prompts, transcripts, paths, and command arguments stay on the host. Collector and HTML reporting development is tracked on `codex/telemetry-service`.
 

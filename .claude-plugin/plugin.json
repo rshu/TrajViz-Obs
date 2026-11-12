@@ -63,6 +63,12 @@
       "title": "Open browser",
       "description": "Open dashboards in the browser",
       "default": true
+    },
+    "dashboardPort": {
+      "type": "number",
+      "title": "Dashboard port",
+      "description": "Default local dashboard port from 1 to 65535, or 0 for automatic selection. Override with /obs dashboard port or --port.",
+      "default": 0
     }
   }
 }

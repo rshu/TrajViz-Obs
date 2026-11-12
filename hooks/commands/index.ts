@@ -1,6 +1,6 @@
 import type { CommandPresentation, CommandRunResult, EngineInterface, HookFailure, PluginOptions } from 'claude-code'
-import { BOOLEAN_FLAGS, parseArgs, selectionError, suggest, type Parsed } from '../lib/args'
-import { commandFeature, markOutcome, reportTelemetry, setTelemetryConsent, telemetryConsentAtStart, telemetryStatus, type OutcomeTracker } from '../lib/telemetry'
+import { BOOLEAN_FLAGS, parseArgs, selectionError, suggest, TELEMETRY_DESTINATION_USAGE, type Parsed } from '../lib/args'
+import { commandFeature, markOutcome, reportTelemetry, setTelemetryConsent, telemetryConsentAtStart, telemetryDestination, telemetryStatus, type OutcomeTracker } from '../lib/telemetry'
 import { browser } from './browser'
 import { compare } from './compare'
 import { exportCmd } from './exports'
@@ -44,7 +44,7 @@ const COMMAND_FLAGS: Record<string, readonly string[]> = {
   compare: ['anchor-patch', 'fuzzy-commands', 'reverse'], scorecard: ['fuzzy-commands', 'labels', 'no-self'], labels: [],
   fixes: ['limit'], label: [...OUTPUT_FLAGS, 'assistant-only', 'model', 'max-steps', 'taxonomy', 'max-content-chars', 'delay', 'user-phase', 'user-action', 'max-tokens', 'temperature'],
   attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [], setup: ['extras', 'source'], doctor: [],
-  telemetry: [], enable_telemetry: [], disable_telemetry: [], help: [],
+  telemetry: [], telemetry_destination: ['use-launch-token'], enable_telemetry: [], disable_telemetry: [], help: [],
 }
 
 const NO_POSITIONALS = ['overview', 'help', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline']
@@ -146,6 +146,17 @@ async function route($: EngineInterface, ctx: CommandContext): Promise<CommandRu
       return misc($, ctx)
     case 'telemetry':
       return telemetryStatus($, ctx.options)
+    case 'telemetry_destination': {
+      const [destination, ...rest] = ctx.parsed.positional
+      const bindLaunchToken = ctx.parsed.flags['use-launch-token'] === true
+      if (rest.length || destination === '' || (bindLaunchToken && (destination === undefined || destination === 'default'))) {
+        return { text: TELEMETRY_DESTINATION_USAGE }
+      }
+      if (destination !== undefined && !ctx.personRequested) {
+        return { text: 'Run /obs telemetry_destination directly in the Claude Code composer to change the collector.' }
+      }
+      return telemetryDestination($, ctx.options, destination, bindLaunchToken)
+    }
     case 'enable_telemetry':
     case 'disable_telemetry':
       if (!ctx.personRequested) return { text: `Run /obs ${sub} directly in the Claude Code composer to change usage telemetry.` }

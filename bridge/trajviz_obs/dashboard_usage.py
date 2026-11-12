@@ -68,12 +68,9 @@ _JS = r"""(actions, insight) => {
 
 
 class DashboardUsage:
-    def __init__(self, endpoint: str, directory: Path, adapter: str, version: str, *, token: str | None = None) -> None:
-        self.endpoint = endpoint
-        self.directory = directory
+    def __init__(self, adapter: str, version: str) -> None:
         self.adapter = adapter
         self.version = version
-        self._token = token
         self._lock = Lock()
         self._requested = False
         self._running = False
@@ -83,14 +80,24 @@ class DashboardUsage:
         # Only the host supplies these hidden arguments after checking consent.
         if adapter is None or version is None:
             return None
-        settings = usage_settings(os.environ, adapter)
-        if settings.configuration != "ready" or settings.endpoint is None or settings.directory is None:
+        # An opted-in dashboard can wait for a destination or credential correction while open.
+        if usage_settings(os.environ, adapter).configuration == "disabled":
             return None
-        return cls(settings.endpoint, settings.directory, adapter, version, token=settings.token)
+        return cls(adapter, version)
+
+    def _target(self) -> tuple[str, Path, str | None] | None:
+        settings = usage_settings(os.environ, self.adapter)
+        if settings.configuration == "ready" and settings.endpoint is not None and settings.directory is not None:
+            return settings.endpoint, settings.directory, settings.token
+        return None
 
     def _enqueue(self, feature: str) -> None:
-        if not queue_usage(self.endpoint, self.directory, adapter=self.adapter, surface="browser", feature=feature,
-                           outcome="observed", duration_ms=0, version=self.version):
+        target = self._target()
+        if target is None:
+            return
+        endpoint, directory, _token = target
+        if not queue_usage(endpoint, directory, adapter=self.adapter, surface="browser", feature=feature,
+                           outcome="observed", duration_ms=0, version=self.version, env=os.environ):
             return
         with self._lock:
             self._requested = True
@@ -109,7 +116,9 @@ class DashboardUsage:
                     self._running = False
                     return
                 self._requested = False
-            flush_usage(self.endpoint, self.directory, self.adapter, token=self._token)
+            if (target := self._target()) is not None:
+                endpoint, directory, token = target
+                flush_usage(endpoint, directory, self.adapter, token=token, env=os.environ)
 
     def _callback(self, feature: str):
         def observe() -> None:

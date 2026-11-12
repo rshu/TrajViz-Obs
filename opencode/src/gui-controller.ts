@@ -3,7 +3,7 @@ import { captureSession } from './collect.js'
 import { createInteractionReporter } from './interaction.js'
 import { Obs, type CommandResult, type RunInput, type UsageInteraction } from './rpc.js'
 import { analyzeSelection, parseArgs, passArgs, quoteOption } from './shared/args.js'
-import { validateArguments } from './command-args.js'
+import { isSessionlessCommand, validateArguments } from './command-args.js'
 import { usageFeature } from './usage-features.js'
 import { commandText, errorMessage as message, safeText, TABS } from './tui-model.js'
 import type { Snapshot, EmptySnapshot } from './types.js'
@@ -23,7 +23,6 @@ export type GuiHooks = {
   confirm(confirmation: NonNullable<CommandResult['confirmation']>, signal: AbortSignal): Promise<boolean>
   notice(text: string, error?: boolean): void
 }
-const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
 const display = (text: string) => { const clean = safeText(text); return clean.length > 64_000 ? clean.slice(0, 64_000) + '\n\nDisplay clipped. Export the full result with /obs json.' : clean }
 const pause = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
   signal.throwIfAborted()
@@ -84,7 +83,7 @@ export class GuiController {
   }
   follow(origin: GuiOrigin, args: string): string {
     const parsed = parseArgs(args)
-    if (SESSIONLESS.has(parsed.sub) || ['watch', 'statusline', 'cancel'].includes(parsed.sub) || parsed.flags.session !== undefined || parsed.sub === 'analyze' && analyzeSelection(args).session !== undefined) return args
+    if (isSessionlessCommand(parsed) || ['watch', 'statusline', 'cancel'].includes(parsed.sub) || parsed.flags.session !== undefined || parsed.sub === 'analyze' && analyzeSelection(args).session !== undefined) return args
     const target = this.target(origin)
     return target.selector ? `${args} ${quoteOption('session', target.selector)}${target.captureSessionID ? ` ${quoteOption('session-id', target.captureSessionID)}` : ''}`
       : target.id !== origin.id ? `${args} ${quoteOption('session', target.id)}` : args
@@ -168,9 +167,10 @@ export class GuiController {
     let preflightOutcome: 'error' | 'rejected' = 'error'
     try {
       const location = await this.location(origin, client, signal), options = { location, signal }, parsed = parseArgs(args)
+      const sessionless = isSessionlessCommand(parsed)
       const active = this.active.get(job.id)
       if (active) active.location = location
-      if (!SESSIONLESS.has(parsed.sub)) {
+      if (!sessionless) {
         const analyze = parsed.sub === 'analyze' ? analyzeSelection(args) : undefined
         const selector = analyze ? analyze.session : parsed.flags.session, captureID = analyze ? analyze.captureSessionId : parsed.flags['session-id']
         if (origin.id === 'home' && typeof selector !== 'string') {
@@ -210,7 +210,7 @@ export class GuiController {
       if (this.closed) return
       if (origin.client() !== client) throw new Error('The server reconnected. Run the command again to refresh its result.')
       if (result.sessionID) target = { ...target, id: result.sessionID }
-      if (!SESSIONLESS.has(parsed.sub)) { view.selected = target; job.target = target }
+      if (!sessionless) { view.selected = target; job.target = target }
       if (result.snapshot && key && this.generations.get(key) === generation) { view.snapshots[target.id] = result.snapshot; delete view.errors[target.id] }
       job.text = display(commandText(result)); job.url = result.url; job.path = result.path; job.data = result.data; job.snapshot = result.snapshot
       if (result.tab) { const tab = TABS.findIndex(name => name.toLowerCase() === result.tab?.toLowerCase()); if (tab >= 0) view.tab = tab }

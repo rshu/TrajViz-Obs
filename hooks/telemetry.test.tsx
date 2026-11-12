@@ -9,6 +9,7 @@ const ENDPOINT = 'http://127.0.0.1:8765/v1/events'
 const TOKEN = 'A'.repeat(43)
 const CONSENT_DIRECTORY = '/usage-state'
 const CONSENT_PATH = `${CONSENT_DIRECTORY}/claude-code-consent`
+const DESTINATION_PATH = `${CONSENT_DIRECTORY}/claude-code-destination.json`
 const PRIVATE_VALUE = 'PRIVATE-SESSION-PATH-OR-CONTENT'
 const TOOL = 'mcp__trajviz-obs__obs'
 const STATE = JSON.stringify({ revision: 6, python: PYTHON, trajviz: '0.5.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.5.1', createdAt: 1 })
@@ -17,7 +18,7 @@ const DONE = { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: 
 type Settings = {
   consent?: string; endpoint?: string; token?: string; settingsEnv?: Record<string, string>;
   status?: unknown; withoutRuntime?: boolean; stateDirectory?: string; savedConsent?: 'on' | 'off';
-  waitForSnapshot?: Promise<void>;
+  waitForSnapshot?: Promise<void>; savedDestination?: string; destinationError?: string; destinationCredentialInvalid?: boolean;
 }
 
 function host(on: On, settings: Settings, sender?: Promise<void>) {
@@ -35,6 +36,7 @@ function host(on: On, settings: Settings, sender?: Promise<void>) {
       XDG_CACHE_HOME: '/cache' }[e.name] }
   })
   on('command.register', () => ({ value: { command: 'obs' } }))
+  mock.store(on)
   on('settings.read', () => {
     settingsRead = true
     notify()
@@ -51,7 +53,8 @@ function host(on: On, settings: Settings, sender?: Promise<void>) {
   on('ui.log', () => ({ value: undefined }))
   on('ui.close', () => ({ value: undefined }))
   on('fs.stat', (_, e) => ({ value: { kind: 'file', size: e.path === CONSENT_PATH ? (settings.savedConsent?.length ?? 0) + 1 : 1_000, mtimeMs: 10, isLink: false } }))
-  on('fs.exists', (_, e) => ({ value: e.path === PYTHON || e.path === CONSENT_PATH && settings.savedConsent !== undefined }))
+  on('fs.exists', (_, e) => ({ value: e.path === PYTHON || e.path === CONSENT_PATH && settings.savedConsent !== undefined
+    || e.path === DESTINATION_PATH && settings.savedDestination !== undefined }))
   on('fs.read', (_, e) => {
     fileReads.push(e.path)
     if (e.path.endsWith('/.claude-plugin/plugin.json')) return { value: '{"version":"1.2.3"}' }
@@ -77,6 +80,17 @@ function host(on: On, settings: Settings, sender?: Promise<void>) {
     }
     if (e.argv[3] === '--status') {
       const status = settings.status ?? { configuration: settings.savedConsent === 'on' ? 'ready' : 'disabled' }
+      return { value: { ...DONE.value, stdout: JSON.stringify(status) } }
+    }
+    if (e.argv[3] === '--destination' || e.argv[3] === '--set-destination') {
+      if (e.argv[3] === '--set-destination' && e.argv[4] && !settings.destinationError) {
+        const target = e.argv[4].replace(/\/$/, '')
+        settings.savedDestination = target === 'default' ? undefined : target.endsWith('/v1/events') ? target : `${target}/v1/events`
+      }
+      const status = { destination: settings.savedDestination ?? settings.endpoint ?? ENDPOINT,
+        destination_source: settings.savedDestination ? 'saved' : settings.endpoint ? 'launch' : 'default',
+        destination_error: settings.destinationError, credential_invalid: settings.destinationCredentialInvalid,
+        credential_configured: e.argv.includes('--use-launch-token') || Boolean(settings.token && settings.destinationCredentialInvalid) }
       return { value: { ...DONE.value, stdout: JSON.stringify(status) } }
     }
     await sender
@@ -238,6 +252,62 @@ test('Claude telemetry consent requires a user command and trusted configuration
   expect((await $.command.run(command('enable_telemetry'))).text).toContain('could not be changed')
   expect(settings.savedConsent).toBeUndefined()
   expect(world.calls).toEqual([])
+})
+
+test('Claude can change the destination during a session without sending telemetry or embedding a token in the command', async ($, on) => {
+  const settings: Settings = { stateDirectory: CONSENT_DIRECTORY, token: TOKEN }
+  const world = host(on, settings)
+  const collector = 'https://collector.example.test:8443'
+  const endpoint = `${collector}/v1/events`
+  await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+  expect((await $.command.run(command('telemetry_destination'))).text).toContain(`${ENDPOINT} (local default)`)
+  expect((await $.command.run(command(`telemetry_destination ${collector} --use-launch-token`))).text).toContain(`${endpoint} (saved)`)
+  const write = world.calls[1]!
+  expect(write.argv.slice(3)).toEqual(['--set-destination', collector, '--use-launch-token', '--adapter', 'claude-code'])
+  expect(write.env?.TRAJVIZ_OBS_TELEMETRY_TOKEN).toBe(TOKEN)
+  expect(JSON.stringify(write.argv)).not.toContain(TOKEN)
+  expect(settings.savedConsent).toBeUndefined()
+  expect((await $.command.run(command('telemetry'))).text).toContain('Usage telemetry · Off')
+
+  const sdk = { ...command('telemetry_destination default'), origin: { kind: 'sdk' as const } }
+  expect((await $.command.run(sdk)).text).toContain('directly in the Claude Code composer')
+  expect((await $.command.run(command('telemetry_destination default --use-launch-token'))).text).toContain('Usage: /obs telemetry_destination')
+  expect((await $.command.run(command('telemetry_destination --use-launch-token'))).text).toContain('Usage: /obs telemetry_destination')
+  expect((await $.command.run(command('telemetry destination'))).text).toContain('Unexpected arguments')
+  settings.destinationError = 'invalid_endpoint'
+  const rejected = await $.command.run(command(`telemetry_destination https://${PRIVATE_VALUE}@collector.example.test`))
+  expect(rejected.text).toContain('Use an HTTPS collector URL')
+  expect(rejected.text).not.toContain(PRIVATE_VALUE)
+  expect(settings.savedDestination).toBe(endpoint)
+  delete settings.destinationError
+  expect((await $.command.run(command('telemetry_destination https://127.0.0.1/'))).text).toContain('https://127.0.0.1/v1/events (saved)')
+  expect((await $.command.run(command('telemetry_destination default'))).text).toContain('Destination reset. Usage telemetry consent is unchanged.')
+  expect(world.calls.map(call => call.argv[3])).toEqual(['--destination', '--set-destination', '--status', '--set-destination', '--set-destination', '--set-destination'])
+})
+
+test('a saved destination supports launch opt-in without a launch URL, and settings controls are never reported', async ($, on) => {
+  const settings: Settings = { stateDirectory: CONSENT_DIRECTORY, consent: '1', savedDestination: ENDPOINT }
+  const world = host(on, settings)
+  await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+  const activation = await world.call(1)
+  expect(activation.argv.slice(7, 11)).toEqual(['--feature', 'activation', '--outcome', 'success'])
+  expect(activation.env?.TRAJVIZ_OBS_TELEMETRY_URL).toBe('')
+  await $.command.run(command('dashboard port 8000'))
+  await $.command.run(command('dashboard port'))
+  await $.command.run(command('telemetry_destination https://collector.example.test'))
+  await $.command.run(command('telemetry_destination'))
+  await $.command.run(command('help'))
+  expect((await world.call(4)).argv.slice(7, 11)).toEqual(['--feature', 'help', '--outcome', 'success'])
+  expect(world.calls.map(call => call.argv[3])).toEqual(['--adapter', '--set-destination', '--destination', '--adapter'])
+})
+
+test('the destination command shows an invalid credential binding while telemetry stays off', async ($, on) => {
+  host(on, { stateDirectory: CONSENT_DIRECTORY, savedConsent: 'off', savedDestination: ENDPOINT, token: TOKEN,
+    destinationCredentialInvalid: true })
+  const destination = await $.command.run(command('telemetry_destination'))
+  expect(destination.text).toContain('Collector credential · Invalid')
+  expect(destination.text).not.toContain(TOKEN)
+  expect((await $.command.run(command('telemetry'))).text).toContain('Usage telemetry · Off')
 })
 
 test('Claude settings cannot supply the telemetry endpoint', async ($, on) => {

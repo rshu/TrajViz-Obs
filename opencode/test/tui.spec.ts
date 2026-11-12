@@ -191,9 +191,13 @@ describe('OpenCode command adapter', () => {
       await h.command('disable_telemetry')
       expect(h.rpc.run.mock.calls[2]?.[0]).toMatchObject({ sessionID: 'home', args: 'enable_telemetry' })
       expect(h.rpc.run.mock.calls[3]?.[0]).toMatchObject({ sessionID: 'home', args: 'disable_telemetry' })
+      await h.command('telemetry_destination https://collector.example --use-launch-token')
+      await h.command('dashboard port 8400')
+      expect(h.rpc.run.mock.calls[4]?.[0]).toMatchObject({ sessionID: 'home', args: 'telemetry_destination https://collector.example --use-launch-token' })
+      expect(h.rpc.run.mock.calls[5]?.[0]).toMatchObject({ sessionID: 'home', args: 'dashboard port 8400' })
       expect(h.rpc.sync).toHaveBeenCalledTimes(0)
       await h.command('issues')
-      expect(h.rpc.run).toHaveBeenCalledTimes(4)
+      expect(h.rpc.run).toHaveBeenCalledTimes(6)
       const state = [...h.memory.values()][0] as { jobs: Record<string, { text: string }> }
       expect(Object.values(state.jobs).some(job => job.text.includes('Open a session'))).toBe(true)
     } finally { h.cleanup() }

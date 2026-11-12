@@ -1,4 +1,4 @@
-import { BOOLEAN_FLAGS, parseArgs, selectionError, suggest, type Parsed } from './shared/args.js'
+import { BOOLEAN_FLAGS, DASHBOARD_PORT_USAGE, TELEMETRY_DESTINATION_USAGE, dashboardPortValue, parseArgs, selectionError, suggest, type Parsed } from './shared/args.js'
 
 const VIEW = ['limit', 'offset', 'json']
 const OUTPUT = ['o', 'out']
@@ -10,15 +10,30 @@ const FLAGS: Record<string, readonly string[]> = {
   compare: ['anchor-patch', 'fuzzy-commands', 'reverse'], scorecard: ['fuzzy-commands', 'labels', 'no-self'], labels: [],
   fixes: ['limit'], label: [...OUTPUT, 'assistant-only', 'model', 'max-steps', 'taxonomy', 'max-content-chars', 'delay', 'user-phase', 'user-action', 'max-tokens', 'temperature'],
   attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [],
-  setup: ['extras', 'source'], doctor: [], telemetry: [], enable_telemetry: [], disable_telemetry: [], help: [], cancel: [], report: [],
+  setup: ['extras', 'source'], doctor: [], telemetry: [], telemetry_destination: ['use-launch-token'], enable_telemetry: [], disable_telemetry: [], help: [], cancel: [], report: [],
 }
 const SESSION = ['overview', 'pane', 'brief', 'view', ...Object.keys(FLAGS).filter(k => FLAGS[k] === VIEW), 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution', 'sessions']
 const NO_POSITIONALS = ['overview', 'brief', 'help', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'cancel', 'report']
+const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'telemetry', 'telemetry_destination', 'enable_telemetry', 'disable_telemetry', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
+
+export function isDashboardPortCommand({ sub, positional }: Pick<Parsed, 'sub' | 'positional'>): boolean {
+  return sub === 'dashboard' && positional[0] === 'port'
+}
+
+export function isSessionlessCommand(parsed: Parsed): boolean {
+  return SESSIONLESS.has(parsed.sub) || isDashboardPortCommand(parsed)
+}
 
 /** Pure validation shared by local TUI commands and the server. */
 export function validateArguments(args: string, parsed: Parsed = parseArgs(args)): string | undefined {
   const { sub, positional, flags, passthrough } = parsed
   if (sub === 'collect' || sub === 'converge-cli') return undefined
+  if (isDashboardPortCommand(parsed)) {
+    const value = positional[1]
+    if (positional.length > 2 || Object.keys(flags).length || passthrough.length
+      || (value !== undefined && value !== 'auto' && value !== 'default' && dashboardPortValue(value) === undefined)) return DASHBOARD_PORT_USAGE
+    return
+  }
   const invalidSelection = selectionError(flags, sub === 'analyze' ? args : undefined)
   if (invalidSelection) return invalidSelection
   if (sub === 'analyze') return undefined
@@ -37,6 +52,11 @@ export function validateArguments(args: string, parsed: Parsed = parseArgs(args)
     if (!BOOLEAN_FLAGS.includes(flag) && value === true) return `--${flag} needs a value.`
   }
   let invalid = passthrough.length > 0 || (NO_POSITIONALS.includes(sub) && positional.length > 0)
+  if (sub === 'telemetry_destination') {
+    const value = positional[0]
+    if (positional.length > 1 || value === '' || passthrough.length
+      || (flags['use-launch-token'] && (value === undefined || value === 'default'))) return TELEMETRY_DESTINATION_USAGE
+  }
   if (sub === 'json' && flags['with-trajectory'] && flags['views-only']) return 'Choose either --with-trajectory or --views-only.'
   if (sub === 'dashboard' && typeof flags.html === 'string' && !flags.html.trim()) return '--html needs an output path.'
   if (sub === 'dashboard' && flags.html !== undefined && flags.port !== undefined) return '--html exports a file and cannot be combined with --port.'

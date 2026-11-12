@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -15,7 +16,7 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -46,14 +47,18 @@ NETWORK_TIMEOUT = 3
 MAX_BATCHES_PER_RUN = 3
 MAX_RETRY_SECONDS = 3600
 CLOCK_ROLLBACK_TOLERANCE = 5
-_LOCAL_ENDPOINT = "http://127.0.0.1:8765/v1/events"
+_EVENTS_PATH = "/v1/events"
+_LOCAL_ENDPOINT = f"http://127.0.0.1:8765{_EVENTS_PATH}"
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]")
+_TOKEN_DIGEST = re.compile(r"[0-9a-f]{64}")
+_AUTHORITY = re.compile(r"(?:[A-Za-z0-9_.-]+|\[[A-Za-z0-9_.:-]+(?:%25[A-Za-z0-9_.-]+)?\])(?::[0-9]+)?")
+_MAX_DESTINATION_BYTES = 4096
 _FAILURES = frozenset({"network", "throttled", "collector_unavailable", "authentication", "endpoint", "payload_rejected"})
 # The standalone sender also runs on system Python 3.9 before the managed runtime exists.
 _UTC = timezone.utc  # noqa: UP017
 
 
-def _endpoint(url: str) -> str | None:
+def _endpoint(url: str, *, allow_base: bool = False) -> str | None:
     if not url or len(url) > 2048:
         return None
     if any(ord(char) < 33 or ord(char) > 126 or char in "\\?#" for char in url):
@@ -65,10 +70,17 @@ def _endpoint(url: str) -> str | None:
     except ValueError:
         return None
     loopback = parsed.hostname in {"127.0.0.1", "::1", "localhost"}
-    if (not parsed.hostname or parsed.username is not None or parsed.path != "/v1/events"
+    # urllib unquotes the authority before connecting. Only allow that for a standard IPv6 zone.
+    if (not parsed.hostname or not _AUTHORITY.fullmatch(parsed.netloc)
             or (parsed.scheme != "https" and not (parsed.scheme == "http" and loopback))):
         return None
-    return url
+    if parsed.path == _EVENTS_PATH:
+        return url
+    if allow_base and parsed.path in {"", "/"}:
+        endpoint = url.removesuffix("/") + _EVENTS_PATH
+        if len(endpoint) <= 2048:
+            return endpoint
+    return None
 
 
 def configured_token(env: Mapping[str, str]) -> str | None:
@@ -113,16 +125,84 @@ def _saved_consent(directory: Path, adapter: str) -> str | None:
         return "off"
 
 
-def _write_consent(directory: Path, adapter: str, value: str) -> None:
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=f".{adapter}-consent-", dir=directory)
+def _write_private_file(path: Path, content: bytes) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
     temporary = Path(name)
     try:
         with os.fdopen(fd, "wb") as stream:
-            stream.write(value.encode("ascii") + b"\n")
-        os.replace(temporary, directory / f"{adapter}-consent")
+            stream.write(content)
+        os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _write_consent(directory: Path, adapter: str, value: str) -> None:
+    _write_private_file(directory / f"{adapter}-consent", value.encode("ascii") + b"\n")
+
+
+_DestinationSource = Literal["saved", "launch", "default", "invalid"]
+
+
+@dataclass(frozen=True)
+class _Destination:
+    endpoint: str | None
+    source: _DestinationSource
+    token_binding: str | None = None
+    legacy_binding: bool = False
+
+
+def _destination_file(directory: Path, adapter: str) -> Path:
+    return directory / f"{adapter}-destination.json"
+
+
+def _saved_destination(directory: Path, adapter: str) -> _Destination | None:
+    path = _destination_file(directory, adapter)
+    invalid = _Destination(None, "invalid")
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return invalid
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return invalid
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        with os.fdopen(os.open(path, flags), "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return invalid
+            encoded = stream.read(_MAX_DESTINATION_BYTES + 1)
+        if len(encoded) > _MAX_DESTINATION_BYTES:
+            return invalid
+        data = json.loads(encoded)
+        if not isinstance(data, dict) or data.keys() not in ({"url", "token_binding"}, {"url", "token_hash"}):
+            return invalid
+        url = data["url"]
+        legacy = "token_hash" in data
+        binding = data["token_hash" if legacy else "token_binding"]
+        if not isinstance(url, str) or not _endpoint(url):
+            return invalid
+        if binding is not None and (not isinstance(binding, str) or not _TOKEN_DIGEST.fullmatch(binding)):
+            return invalid
+        # An old fingerprint proves token identity, but cannot authorize a destination.
+        return _Destination(url, "saved", None if legacy else binding, legacy_binding=legacy and binding is not None)
+    except (OSError, ValueError, RecursionError):
+        return invalid
+
+
+def _destination(env: Mapping[str, str], directory: Path | None, adapter: str) -> _Destination:
+    if directory is not None and (saved := _saved_destination(directory, adapter)) is not None:
+        return saved
+    configured_url = env.get("TRAJVIZ_OBS_TELEMETRY_URL", "")
+    if configured_url:
+        endpoint = _endpoint(configured_url)
+        return _Destination(endpoint, "launch" if endpoint else "invalid")
+    return _Destination(_LOCAL_ENDPOINT, "default")
+
+
+def _destination_token_binding(token: str, adapter: str, endpoint: str) -> str:
+    message = f"trajviz-obs:destination:v1\0{adapter}\0{endpoint}".encode("ascii")
+    return hmac.new(token.encode("ascii"), message, "sha256").hexdigest()
 
 
 @dataclass(frozen=True)
@@ -132,6 +212,8 @@ class UsageSettings:
     endpoint: str | None
     token: str | None
     credential_configured: bool
+    credential_invalid: bool
+    destination_source: _DestinationSource
 
 
 def usage_settings(env: Mapping[str, str], adapter: str, *, consent: str | None = None) -> UsageSettings:
@@ -143,24 +225,39 @@ def usage_settings(env: Mapping[str, str], adapter: str, *, consent: str | None 
     if consent is None and directory is not None:
         consent = _saved_consent(directory, adapter)
     enabled = consent == "on" or (consent is None and env.get("TRAJVIZ_OBS_TELEMETRY") == "1")
-    configured_url = env.get("TRAJVIZ_OBS_TELEMETRY_URL", "")
-    # A leftover credential without its URL must not be sent to the local default.
-    local_default = consent is not None and not configured_url
-    url = _LOCAL_ENDPOINT if local_default else configured_url
-    endpoint = _endpoint(url)
+    destination = _destination(env, directory, adapter)
+    # A legacy launch opt-in without a destination still needs an explicit URL.
+    endpoint = None if destination.source == "default" and consent is None else destination.endpoint
     configuration = "disabled"
     if enabled:
-        configuration = "ready" if endpoint else "invalid_endpoint" if url else "missing_endpoint"
+        configuration = "ready" if endpoint else "invalid_endpoint" if destination.source == "invalid" else "missing_endpoint"
+    matches_launch = destination.endpoint is not None and destination.endpoint == env.get("TRAJVIZ_OBS_TELEMETRY_URL")
+    requires_token = destination.token_binding is not None or destination.legacy_binding
+    credential_configured = (matches_launch or requires_token) and bool(
+        env.get("TRAJVIZ_OBS_TELEMETRY_TOKEN")
+    )
+    credential_invalid = False
     try:
-        token = None if local_default else configured_token(env)
+        token = configured_token(env) if credential_configured else None
+        if requires_token:
+            # OpenCode's RPC does not identify an administrator who can authorize a new collector.
+            bound = matches_launch or (
+                adapter == "claude-code" and token is not None and endpoint is not None
+                and destination.token_binding is not None and hmac.compare_digest(
+                    destination.token_binding, _destination_token_binding(token, adapter, endpoint)
+                )
+            )
+            if token is None or not bound:
+                raise ValueError("launch credential no longer matches the saved destination")
     except ValueError:
         token = None
+        credential_invalid = True
         if configuration == "ready":
             configuration = "invalid_token"
     if configuration == "ready" and directory is None:
         configuration = "invalid_state_directory"
-    return UsageSettings(configuration, directory, endpoint, token,
-                         not local_default and bool(env.get("TRAJVIZ_OBS_TELEMETRY_TOKEN")))
+    return UsageSettings(configuration, directory, endpoint, token, credential_configured, credential_invalid,
+                         destination.source)
 
 
 def _queue_path(directory: Path, adapter: str, endpoint: str) -> Path:
@@ -203,12 +300,16 @@ def _expire_pending(connection: sqlite3.Connection, cutoff: str, latest: str) ->
     connection.execute("DELETE FROM activation WHERE day < ? OR day > ?", (cutoff, latest))
 
 
-def _record(connection: sqlite3.Connection, event: dict, cutoff: str, directory: Path, adapter: str) -> bool:
+def _record(connection: sqlite3.Connection, event: dict, cutoff: str, directory: Path, adapter: str, *,
+            eligible: Callable[[], bool] | None = None) -> bool:
+    def can_record() -> bool:
+        return eligible() if eligible is not None else _saved_consent(directory, adapter) != "off"
+
     latest = (date.fromisoformat(event["day"]) + timedelta(days=1)).isoformat()
     with connection:
         connection.execute("BEGIN IMMEDIATE")
-        # A consent change must take effect even if this event waited for another writer.
-        if _saved_consent(directory, adapter) == "off":
+        # Consent and destination changes still apply when a write waited for another writer.
+        if not can_record():
             return False
         connection.execute("""
             CREATE TABLE IF NOT EXISTS sender (
@@ -236,7 +337,7 @@ def _record(connection: sqlite3.Connection, event: dict, cutoff: str, directory:
         """, (MAX_PENDING - 1,)).rowcount
         if dropped:
             connection.execute("UPDATE sender_health SET dropped = dropped + ?", (dropped,))
-        if _saved_consent(directory, adapter) == "off":
+        if not can_record():
             connection.rollback()
             return False
     return True
@@ -410,10 +511,22 @@ def _send(endpoint: str, payload: dict, *, token: str | None = None) -> _Deliver
         return _Delivery("retry", "network")
 
 
+def _queue_settings(env: Mapping[str, str], endpoint: str, directory: Path, adapter: str) -> UsageSettings | None:
+    settings = usage_settings(env, adapter)
+    if settings.configuration == "ready" and settings.endpoint == endpoint and settings.directory == directory:
+        return settings
+    return None
+
+
 def queue_usage(endpoint: str, directory: Path, *, adapter: str, surface: str, feature: str,
-                outcome: str, duration_ms: int, version: str) -> bool:
+                outcome: str, duration_ms: int, version: str, env: Mapping[str, str] | None = None) -> bool:
     """Persist a validated event without waiting for the collector."""
-    if _saved_consent(directory, adapter) == "off":
+    def eligible() -> bool:
+        if env is None:
+            return _saved_consent(directory, adapter) != "off"
+        return _queue_settings(env, endpoint, directory, adapter) is not None
+
+    if not eligible():
         return False
     now = datetime.now(_UTC)
     try:
@@ -422,25 +535,32 @@ def queue_usage(endpoint: str, directory: Path, *, adapter: str, surface: str, f
                                 "duration_bucket": duration_bucket(duration_ms), "version": version})
         cutoff = (now.date() - timedelta(days=BACKFILL_DAYS)).isoformat()
         with closing(_open_queue(directory, adapter, endpoint)) as connection:
-            return _record(connection, event, cutoff, directory, adapter)
+            return _record(connection, event, cutoff, directory, adapter, eligible=eligible)
     except (OSError, sqlite3.Error, ValueError):
         return False
 
 
-def flush_usage(endpoint: str, directory: Path, adapter: str, *, token: str | None = None) -> None:
+def flush_usage(endpoint: str, directory: Path, adapter: str, *, token: str | None = None,
+                env: Mapping[str, str] | None = None) -> None:
     """Deliver a bounded number of queued batches if the retry lease is available."""
-    if (token is not None and _TOKEN.fullmatch(token) is None) or _saved_consent(directory, adapter) == "off":
+    def eligible() -> bool:
+        if env is None:
+            return _saved_consent(directory, adapter) != "off"
+        settings = _queue_settings(env, endpoint, directory, adapter)
+        return settings is not None and settings.token == token
+
+    if (token is not None and _TOKEN.fullmatch(token) is None) or not eligible():
         return
     try:
         with closing(_open_queue(directory, adapter, endpoint)) as connection:
             for _ in range(MAX_BATCHES_PER_RUN):
-                if _saved_consent(directory, adapter) == "off":
+                if not eligible():
                     break
                 claim = _claim(connection, adapter, datetime.now(_UTC).timestamp(), token)
                 if claim is None:
                     break
                 lease, payload = claim
-                if _saved_consent(directory, adapter) == "off":
+                if not eligible():
                     with connection:
                         connection.execute("UPDATE sender SET lease = NULL, lease_until = 0 WHERE lease = ?", (lease,))
                     break
@@ -526,28 +646,83 @@ def delivery_status(env: Mapping[str, str], adapter: str) -> dict:
     return _delivery_status(usage_settings(env, adapter), adapter)
 
 
+def _save_destination(env: Mapping[str, str], adapter: str, value: str | None, *, use_launch_token: bool) -> str | None:
+    if use_launch_token and value in {None, "default"}:
+        return "invalid_arguments"
+    if value is None:
+        return None
+    path = _destination_file(state_directory(env), adapter)
+    if value == "default":
+        path.unlink(missing_ok=True)
+        return None
+    endpoint = _endpoint(value, allow_base=True)
+    if endpoint is None:
+        return "invalid_endpoint"
+    token_binding = None
+    if use_launch_token:
+        if adapter == "opencode" and endpoint != _endpoint(env.get("TRAJVIZ_OBS_TELEMETRY_URL", "")):
+            return "token_endpoint_mismatch"
+        try:
+            token = configured_token(env)
+        except ValueError:
+            return "invalid_token"
+        if token is None:
+            return "missing_token"
+        token_binding = _destination_token_binding(token, adapter, endpoint)
+    encoded = json.dumps({"url": endpoint, "token_binding": token_binding}, separators=(",", ":")).encode("ascii")
+    _write_private_file(path, encoded + b"\n")
+    return None
+
+
+def _manage_configuration(arguments: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Read local usage telemetry status or manage its configuration.")
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--status", action="store_true")
+    action.add_argument("--set-consent", choices=("on", "off"))
+    action.add_argument("--destination", action="store_true")
+    action.add_argument("--set-destination")
+    parser.add_argument("--use-launch-token", action="store_true")
+    parser.add_argument("--adapter", required=True, choices=ADAPTERS)
+    args = parser.parse_args(arguments)
+    if args.destination or args.set_destination is not None:
+        try:
+            error = _save_destination(os.environ, args.adapter, args.set_destination,
+                                      use_launch_token=args.use_launch_token)
+        except (OSError, ValueError, RuntimeError):
+            return 1
+        settings = usage_settings(os.environ, args.adapter)
+        status = _delivery_status(settings, args.adapter)
+        status.update({
+            "destination": _LOCAL_ENDPOINT if settings.destination_source == "default" else settings.endpoint,
+            "destination_source": settings.destination_source,
+            "credential_invalid": settings.credential_invalid,
+        })
+        if error is not None:
+            status["destination_error"] = error
+        print(json.dumps(status, allow_nan=False))
+        return 0
+    if args.use_launch_token:
+        parser.error("--use-launch-token requires --set-destination URL")
+    if args.set_consent:
+        candidate = usage_settings(os.environ, args.adapter, consent=args.set_consent)
+        if args.set_consent == "on" and candidate.configuration in {"invalid_endpoint", "invalid_token"}:
+            print(json.dumps(_delivery_status(candidate, args.adapter), allow_nan=False))
+            return 0
+        if candidate.directory is None:
+            return 1
+        try:
+            _write_consent(candidate.directory, args.adapter, args.set_consent)
+        except OSError:
+            return 1
+    print(json.dumps(delivery_status(os.environ, args.adapter), allow_nan=False))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
-    if "--status" in arguments or any(arg == "--set-consent" or arg.startswith("--set-consent=") for arg in arguments):
-        parser = argparse.ArgumentParser(description="Read local usage telemetry status or save consent.")
-        action = parser.add_mutually_exclusive_group(required=True)
-        action.add_argument("--status", action="store_true")
-        action.add_argument("--set-consent", choices=("on", "off"))
-        parser.add_argument("--adapter", required=True, choices=ADAPTERS)
-        args = parser.parse_args(arguments)
-        if args.set_consent:
-            candidate = usage_settings(os.environ, args.adapter, consent=args.set_consent)
-            if args.set_consent == "on" and candidate.configuration in {"invalid_endpoint", "invalid_token"}:
-                print(json.dumps(_delivery_status(candidate, args.adapter), allow_nan=False))
-                return 0
-            if candidate.directory is None:
-                return 1
-            try:
-                _write_consent(candidate.directory, args.adapter, args.set_consent)
-            except OSError:
-                return 1
-        print(json.dumps(delivery_status(os.environ, args.adapter), allow_nan=False))
-        return 0
+    admin = {"--status", "--set-consent", "--destination", "--set-destination"}
+    if any(arg.partition("=")[0] in admin for arg in arguments):
+        return _manage_configuration(arguments)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adapter", required=True, choices=ADAPTERS)
     parser.add_argument("--surface", required=True, choices=SURFACES)
@@ -560,8 +735,8 @@ def main(argv: list[str] | None = None) -> int:
     if settings.configuration != "ready" or settings.directory is None or settings.endpoint is None:
         return 0
     if queue_usage(settings.endpoint, settings.directory, adapter=args.adapter, surface=args.surface, feature=args.feature,
-                   outcome=args.outcome, duration_ms=args.duration_ms, version=args.version):
-        flush_usage(settings.endpoint, settings.directory, args.adapter, token=settings.token)
+                   outcome=args.outcome, duration_ms=args.duration_ms, version=args.version, env=os.environ):
+        flush_usage(settings.endpoint, settings.directory, args.adapter, token=settings.token, env=os.environ)
     return 0
 
 
