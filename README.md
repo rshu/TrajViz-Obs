@@ -137,7 +137,9 @@ Exports and cached analysis contain session data and stay on the host unless sha
 
 ### Usage telemetry
 
-Usage telemetry is off by default. To opt in, set `TRAJVIZ_OBS_TELEMETRY=1` and `TRAJVIZ_OBS_TELEMETRY_URL` in Claude Code’s launch environment or the OpenCode server’s launch environment. Use your collector’s HTTPS `/v1/events` endpoint and set its issued token as `TRAJVIZ_OBS_TELEMETRY_TOKEN`. Local loopback testing supports HTTP. Restart the host and run `/obs telemetry` to check delivery.
+Usage telemetry is off by default. In Claude Code or OpenCode, run `/obs enable_telemetry` to opt in, `/obs disable_telemetry` to stop recording and pause queued uploads, and `/obs telemetry` to check delivery. The choice persists locally and takes precedence over the launch-time opt-in. On a shared OpenCode server, the choice applies to that server.
+
+With no endpoint configured, the enable command uses `http://127.0.0.1:8765/v1/events`. For a remote collector, set `TRAJVIZ_OBS_TELEMETRY_URL` to its HTTPS `/v1/events` endpoint and `TRAJVIZ_OBS_TELEMETRY_TOKEN` to its issued token in Claude Code’s launch environment or the OpenCode server’s launch environment. Reopen any existing dashboards after enabling telemetry to track browser actions.
 
 The sender reports allowlisted feature names, outcomes, coarse timing, and a random installation ID. Prompts, transcripts, paths, and command arguments stay on the host. Collector and HTML reporting development is tracked on `codex/telemetry-service`.
 

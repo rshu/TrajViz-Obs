@@ -85,13 +85,14 @@ describe('Desktop command coordination', () => {
       expect(h.rpc.usageStatus).not.toHaveBeenCalled()
       ui.selectTab(h.origin, 2)
       ui.selectTab(h.origin, 2)
+      await tick()
       await ui.refreshPane(h.origin)
       h.rpc.snapshot.mockRejectedValueOnce(new Error('private snapshot error'))
       await ui.refreshPane(h.origin)
       ui.selectTab(off.origin, 3)
       await ui.refreshPane(off.origin)
       await tick()
-      expect(h.rpc.usageStatus.mock.calls.map(([input]) => input)).toEqual([{}])
+      expect(h.rpc.usageStatus.mock.calls.map(([input]) => input)).toEqual([{}, {}, {}])
       expect(off.rpc.usageInteraction).not.toHaveBeenCalled()
       expect(h.rpc.usageInteraction.mock.calls.map(([{ durationMs, ...event }, options]) => {
         expect(durationMs).toBeGreaterThanOrEqual(0)
@@ -105,7 +106,26 @@ describe('Desktop command coordination', () => {
     } finally { ui.dispose() }
   })
 
-  test('Desktop rechecks server consent after reconnecting with the same client', async () => {
+  test('enabling during a Desktop pane refresh does not report a gesture started while off', async () => {
+    const h = connection(), { ui } = controller()
+    const snapshot = Promise.withResolvers<typeof h.snapshot>()
+    h.rpc.snapshot.mockReturnValueOnce(snapshot.promise)
+    try {
+      const refresh = ui.refreshPane(h.origin)
+      await tick()
+      expect(h.rpc.usageStatus).toHaveBeenCalledTimes(1)
+      expect(h.rpc.snapshot).toHaveBeenCalledTimes(1)
+      h.rpc.usageStatus.mockResolvedValue({ enabled: true })
+      snapshot.resolve(h.snapshot)
+      await refresh
+      await tick()
+      expect(h.rpc.usageInteraction).not.toHaveBeenCalled()
+      await ui.refreshPane(h.origin)
+      expect(h.rpc.usageInteraction).toHaveBeenCalledTimes(1)
+    } finally { ui.dispose() }
+  })
+
+  test('open Desktop panes recheck changed consent on each connected server', async () => {
     const h = connection(), other = connection('other-server'), { ui } = controller()
     try {
       ui.selectTab(h.origin, 1)
@@ -114,14 +134,17 @@ describe('Desktop command coordination', () => {
       expect(h.rpc.usageInteraction).not.toHaveBeenCalled()
 
       h.rpc.usageStatus.mockResolvedValue({ enabled: true })
-      ui.resetInteractionConsent(h.origin.client())
       ui.selectTab(h.origin, 2)
       ui.selectTab(other.origin, 2)
       await tick()
       expect(h.rpc.usageStatus).toHaveBeenCalledTimes(2)
       expect(h.rpc.usageInteraction).toHaveBeenCalledTimes(1)
-      expect(other.rpc.usageStatus).toHaveBeenCalledTimes(1)
+      expect(other.rpc.usageStatus).toHaveBeenCalledTimes(2)
       expect(other.rpc.usageInteraction).not.toHaveBeenCalled()
+      h.rpc.usageStatus.mockResolvedValue({ enabled: false })
+      ui.selectTab(h.origin, 3)
+      await tick()
+      expect(h.rpc.usageInteraction).toHaveBeenCalledTimes(1)
     } finally { ui.dispose() }
   })
 
@@ -486,11 +509,15 @@ describe('Desktop command coordination', () => {
       expect(h.rpc.run.mock.calls[0]?.[0].sessionID).toBe('home')
       await ui.start(h.origin, 'telemetry').done
       expect(h.rpc.run.mock.calls[1]?.[0]).toMatchObject({ sessionID: 'home', args: 'telemetry' })
+      await ui.start(h.origin, 'enable_telemetry').done
+      await ui.start(h.origin, 'disable_telemetry').done
+      expect(h.rpc.run.mock.calls[2]?.[0]).toMatchObject({ sessionID: 'home', args: 'enable_telemetry' })
+      expect(h.rpc.run.mock.calls[3]?.[0]).toMatchObject({ sessionID: 'home', args: 'disable_telemetry' })
       expect(h.rpc.sync).not.toHaveBeenCalled()
       const job = ui.start(h.origin, 'issues')
       await job.done
       expect(ui.jobs.get(job.id)?.text).toContain('Open a session first')
-      expect(h.rpc.run).toHaveBeenCalledTimes(2)
+      expect(h.rpc.run).toHaveBeenCalledTimes(4)
       expect(() => ui.start(h.origin, 'health --unexpected')).toThrow('Unknown option')
     } finally { ui.dispose() }
   })
@@ -616,7 +643,6 @@ describe('built Desktop GUI contract', () => {
       await h.command('watch off')
       await h.command('statusline on')
       await tick()
-      expect(h.a.rpc.usageStatus).toHaveBeenCalledTimes(1)
       expect(h.a.rpc.usageInteraction.mock.calls.map(([{ durationMs, ...event }]) => {
         expect(durationMs).toBeGreaterThanOrEqual(0)
         return event
@@ -644,7 +670,7 @@ describe('built Desktop GUI contract', () => {
   test('the native slash command exposes every backend feature without rewriting its arguments', async () => {
     const h = desktop()
     const commands = [
-      '', 'overview', 'help', 'setup --extras none', 'doctor', 'sessions 20', 'schemas /server/schemas',
+      '', 'overview', 'help', 'setup --extras none', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'sessions 20', 'schemas /server/schemas',
       'view', 'view data_quality --json', 'issues --limit 2 --offset 1', 'health', 'patterns', 'agents', 'context', 'timeline', 'brief',
       'json --with-trajectory --view health --view issues -o "/server/output dir"', 'bundle -o /server/source.zip',
       'compare /server/other.json', 'scorecard /server/other.json --labels current,other', 'labels /server/labels.json',

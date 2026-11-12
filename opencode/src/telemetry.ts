@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process'
+import { lstatSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import manifest from '../package.json' with { type: 'json' }
@@ -9,7 +10,7 @@ import { DELIVERY_STATUS_UNAVAILABLE, deliveryStatusText } from './shared/delive
 export type UsageSurface = 'terminal' | 'desktop' | 'headless' | 'unknown'
 export type UsageOutcome = 'success' | 'error' | 'cancelled' | 'empty' | 'rejected'
 type Usage = { surface: UsageSurface; feature: string; outcome: UsageOutcome; durationMs: number }
-type UsageReporter = ((event: Usage) => void) & { flush(): Promise<void> }
+type UsageReporter = ((event: Usage) => void) & { enabled(): boolean; flush(): Promise<void> }
 const outcomes = new WeakMap<CommandResult, UsageOutcome>()
 const LIMIT = 32
 const MAX_CHILDREN = 4
@@ -25,48 +26,84 @@ export function commandUsageOutcome(result: CommandResult): UsageOutcome {
   return outcomes.get(result) ?? (result.snapshot?.empty ? 'empty' : 'success')
 }
 
-function usageEndpoint(): string | undefined {
-  return process.env.TRAJVIZ_OBS_TELEMETRY === '1' ? process.env.TRAJVIZ_OBS_TELEMETRY_URL || undefined : undefined
+function savedConsent(): 'on' | 'off' | undefined {
+  const env = process.env
+  const override = env.TRAJVIZ_OBS_TELEMETRY_STATE_DIR
+  const local = process.platform === 'win32' ? env.LOCALAPPDATA : undefined
+  const root = local || env.XDG_STATE_HOME || path.join(homedir(), '.local', 'state')
+  const directory = override || path.join(root, 'trajviz-obs', 'telemetry')
+  if (!path.isAbsolute(directory)) return 'off'
+  // Match the helper's adapter-specific marker without starting Python for disabled installs.
+  const marker = path.join(directory, 'opencode-consent')
+  try {
+    const metadata = lstatSync(marker, { throwIfNoEntry: false })
+    if (!metadata) return undefined
+    if (!metadata.isFile() || metadata.size > 3) return 'off'
+    const value = readFileSync(marker, 'utf8')
+    return value === 'on' || value === 'on\n' ? 'on' : 'off'
+  } catch { return 'off' }
+}
+
+function usageEnabled(): boolean {
+  const consent = savedConsent()
+  if (consent) return consent === 'on'
+  return process.env.TRAJVIZ_OBS_TELEMETRY === '1' && Boolean(process.env.TRAJVIZ_OBS_TELEMETRY_URL)
 }
 
 function usageEnvironment(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const name of ['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA', 'XDG_STATE_HOME', 'SystemRoot',
+    'SSL_CERT_FILE', 'SSL_CERT_DIR',
     'TRAJVIZ_OBS_TELEMETRY', 'TRAJVIZ_OBS_TELEMETRY_URL', 'TRAJVIZ_OBS_TELEMETRY_TOKEN', 'TRAJVIZ_OBS_TELEMETRY_STATE_DIR']) {
     if (process.env[name] !== undefined) env[name] = process.env[name]
   }
   return env
 }
 
-/** Read only local delivery metadata. The helper neither installs Python nor sends events. */
-export async function usageDeliveryStatus(runtime: Pick<Runtime, 'bridge' | 'telemetryPython'>, signal: AbortSignal): Promise<string> {
-  const env = usageEnvironment()
-  if (!env.TRAJVIZ_OBS_TELEMETRY_URL) return `Usage telemetry · ${env.TRAJVIZ_OBS_TELEMETRY === '1' ? 'Endpoint missing' : 'Off'}`
+async function usageControl(runtime: Pick<Runtime, 'bridge' | 'telemetryPython'>, signal: AbortSignal,
+  action: string[], unavailable: string, render: (value: unknown) => string): Promise<string> {
   try {
     const python = runtime.telemetryPython()
-    if (!python) return `${DELIVERY_STATUS_UNAVAILABLE} Python could not be located.`
-    const args = ['-I', path.join(runtime.bridge, 'telemetry_client.py'), '--status', '--adapter', 'opencode']
+    if (!python) return `${unavailable} Python could not be located.`
+    const args = ['-I', path.join(runtime.bridge, 'telemetry_client.py'), ...action, '--adapter', 'opencode']
     const stdout = await new Promise<string>((resolve, reject) => {
-      execFile(python, args, { cwd: homedir(), env, signal, timeout: 5_000, maxBuffer: 8_192, windowsHide: true }, (error, stdout) => {
+      execFile(python, args, { cwd: homedir(), env: usageEnvironment(), signal, timeout: 5_000, maxBuffer: 8_192, windowsHide: true }, (error, stdout) => {
         if (error) reject(error)
         else resolve(stdout)
       })
     })
-    return deliveryStatusText(JSON.parse(stdout))
+    return render(JSON.parse(stdout))
   } catch {
-    return DELIVERY_STATUS_UNAVAILABLE
+    return unavailable
   }
 }
 
-/** The dashboard sender applies the same launch opt-in as the OpenCode server. */
+/** Read only local delivery metadata. The helper neither installs Python nor sends events. */
+export async function usageDeliveryStatus(runtime: Pick<Runtime, 'bridge' | 'telemetryPython'>, signal: AbortSignal): Promise<string> {
+  if (!process.env.TRAJVIZ_OBS_TELEMETRY_URL && !savedConsent()) {
+    return `Usage telemetry · ${process.env.TRAJVIZ_OBS_TELEMETRY === '1' ? 'Endpoint missing' : 'Off'}`
+  }
+  return usageControl(runtime, signal, ['--status'], DELIVERY_STATUS_UNAVAILABLE, deliveryStatusText)
+}
+
+export async function setUsageConsent(runtime: Pick<Runtime, 'bridge' | 'telemetryPython'>, signal: AbortSignal, mode: 'on' | 'off'): Promise<string> {
+  const unavailable = 'Usage telemetry · Could not save the preference.'
+  return usageControl(runtime, signal, ['--set-consent', mode], unavailable, value => {
+    const status = deliveryStatusText(value)
+    if (status === DELIVERY_STATUS_UNAVAILABLE) return unavailable
+    const configuration = (value as { configuration: string }).configuration
+    if (mode === 'on' && configuration === 'ready') return 'Usage telemetry · On. Preference saved. Reopen any existing dashboards to track browser actions. Run /obs telemetry for delivery status.'
+    if (mode === 'off' && configuration === 'disabled') return 'Usage telemetry · Off. Preference saved. Queued uploads are paused.'
+    return status
+  })
+}
+
 export function dashboardUsageArgs(): string[] {
-  return usageEndpoint() ? ['--usage-adapter', 'opencode', '--usage-version', manifest.version] : []
+  return usageEnabled() ? ['--usage-adapter', 'opencode', '--usage-version', manifest.version] : []
 }
 
 /** Detached children persist independently, while the SQLite lease allows one uploader. */
-export function createUsageReporter(runtime: Pick<Runtime, 'bridge' | 'telemetryPython'>): UsageReporter | undefined {
-  if (!usageEndpoint()) return undefined
-  const env = usageEnvironment()
+export function createUsageReporter(runtime: Pick<Runtime, 'bridge' | 'telemetryPython'>): UsageReporter {
   const queue: Usage[] = []
   let children = 0
   let scheduled = false
@@ -79,11 +116,13 @@ export function createUsageReporter(runtime: Pick<Runtime, 'bridge' | 'telemetry
   }
   function drain() {
     scheduled = false
+    if (!usageEnabled()) queue.length = 0
     if (!queue.length) { dispatchComplete?.(); return }
     if (children >= MAX_CHILDREN) return
     let python: string | undefined
     try { python = runtime.telemetryPython() } catch { /* No usable interpreter yet. */ }
     if (!python) { dispatchComplete?.(); return }
+    const env = usageEnvironment()
     while (queue.length && children < MAX_CHILDREN) {
       const { surface, feature, outcome, durationMs } = queue.shift()!
       try {
@@ -103,6 +142,7 @@ export function createUsageReporter(runtime: Pick<Runtime, 'bridge' | 'telemetry
     if (!queue.length) dispatchComplete?.()
   }
   function report(event: Usage) {
+    if (!usageEnabled()) return
     if (queue.length === LIMIT) queue.shift()
     queue.push(event)
     schedule()
@@ -117,5 +157,5 @@ export function createUsageReporter(runtime: Pick<Runtime, 'bridge' | 'telemetry
       drain()
     })
   }
-  return Object.assign(report, { flush })
+  return Object.assign(report, { enabled: usageEnabled, flush })
 }

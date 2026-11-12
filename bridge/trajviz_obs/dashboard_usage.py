@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from threading import Lock, Thread
 
-from telemetry_client import configured_endpoint, configured_token, flush_usage, queue_usage, state_directory
+from telemetry_client import flush_usage, queue_usage, usage_settings
 
 _BUTTONS = {
     "dashboard": {
@@ -80,13 +80,13 @@ class DashboardUsage:
 
     @classmethod
     def from_environment(cls, adapter: str | None, version: str | None) -> DashboardUsage | None:
-        # Only the host supplies these hidden arguments after checking launch consent.
-        if adapter is None or version is None or (endpoint := configured_endpoint(os.environ)) is None:
+        # Only the host supplies these hidden arguments after checking consent.
+        if adapter is None or version is None:
             return None
-        try:
-            return cls(endpoint, state_directory(os.environ), adapter, version, token=configured_token(os.environ))
-        except (OSError, ValueError, RuntimeError):
+        settings = usage_settings(os.environ, adapter)
+        if settings.configuration != "ready" or settings.endpoint is None or settings.directory is None:
             return None
+        return cls(settings.endpoint, settings.directory, adapter, version, token=settings.token)
 
     def _enqueue(self, feature: str) -> None:
         if not queue_usage(self.endpoint, self.directory, adapter=self.adapter, surface="browser", feature=feature,

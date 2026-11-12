@@ -75,26 +75,45 @@ describe('OpenCode command adapter', () => {
     } finally { h.cleanup() }
   })
 
+  test('enabling during terminal preflight does not report a command started while off', async () => {
+    const h = host()
+    const resolving = Promise.withResolvers<{ sessionID: string }>()
+    h.rpc.resolve.mockReturnValueOnce(resolving.promise)
+    try {
+      const command = h.command('issues --session missing')
+      await Bun.sleep(0)
+      expect(h.rpc.usageStatus).toHaveBeenCalledTimes(1)
+      h.rpc.usageStatus.mockResolvedValue({ enabled: true })
+      resolving.reject(new Error('Missing session'))
+      await command
+      expect(h.rpc.usageInteraction).not.toHaveBeenCalled()
+    } finally { h.cleanup() }
+  })
+
   test('pane gestures require server consent and skip the snapshot used to render the pane', async () => {
     const off = host(), on = host()
     on.rpc.usageStatus.mockResolvedValue({ enabled: true })
     try {
       await off.command('pane')
       await off.command('pane close')
-      expect(off.rpc.usageStatus.mock.calls[0]?.[0]).toEqual({})
-      expect(off.rpc.usageStatus).toHaveBeenCalledTimes(1)
+      await Bun.sleep(0)
+      expect(off.rpc.usageStatus.mock.calls.map(([input]) => input)).toEqual([{}, {}])
       expect(off.rpc.usageInteraction).not.toHaveBeenCalled()
       off.rpc.usageStatus.mockResolvedValue({ enabled: true })
-      off.nativeEvent('server.connected')
       await off.command('pane')
-      expect(off.rpc.usageStatus).toHaveBeenCalledTimes(2)
+      await Bun.sleep(0)
+      expect(off.rpc.usageStatus).toHaveBeenCalledTimes(3)
+      expect(off.rpc.usageInteraction).toHaveBeenCalledTimes(1)
+      off.rpc.usageStatus.mockResolvedValue({ enabled: false })
+      await off.command('pane close')
+      await Bun.sleep(0)
       expect(off.rpc.usageInteraction).toHaveBeenCalledTimes(1)
       await on.command('pane --session "/private/session.json"')
       await on.command('watch on')
       await on.command('statusline off')
       await on.command('pane close')
+      await Bun.sleep(0)
       expect(on.rpc.run.mock.calls[0]?.[0]).toMatchObject({ args: 'overview --session "/private/session.json"', paneSnapshot: true })
-      expect(on.rpc.usageStatus).toHaveBeenCalledTimes(1)
       expect(on.rpc.usageInteraction.mock.calls.map(([{ durationMs, ...event }]) => {
         expect(durationMs).toBeGreaterThanOrEqual(0)
         return event
@@ -168,9 +187,13 @@ describe('OpenCode command adapter', () => {
       expect(h.rpc.run.mock.calls[0]?.[0].sessionID).toBe('home')
       await h.command('telemetry')
       expect(h.rpc.run.mock.calls[1]?.[0]).toMatchObject({ sessionID: 'home', args: 'telemetry' })
+      await h.command('enable_telemetry')
+      await h.command('disable_telemetry')
+      expect(h.rpc.run.mock.calls[2]?.[0]).toMatchObject({ sessionID: 'home', args: 'enable_telemetry' })
+      expect(h.rpc.run.mock.calls[3]?.[0]).toMatchObject({ sessionID: 'home', args: 'disable_telemetry' })
       expect(h.rpc.sync).toHaveBeenCalledTimes(0)
       await h.command('issues')
-      expect(h.rpc.run).toHaveBeenCalledTimes(2)
+      expect(h.rpc.run).toHaveBeenCalledTimes(4)
       const state = [...h.memory.values()][0] as { jobs: Record<string, { text: string }> }
       expect(Object.values(state.jobs).some(job => job.text.includes('Open a session'))).toBe(true)
     } finally { h.cleanup() }

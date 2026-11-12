@@ -33,7 +33,7 @@ export default Plugin.define({
     const track = <T>(task: Promise<T>): Promise<T> => { tasks.add(task); void task.then(() => tasks.delete(task), () => tasks.delete(task)); return task }
     async function run(input: RunInput, surface: UsageSurface, requestSignal?: AbortSignal) {
       if (jobs.has(input.runID)) throw new Error('This obs command is already running.')
-      const requested = report ? usageFeature(input.args) : undefined
+      const requested = report.enabled() ? usageFeature(input.args) : undefined
       // The client already reports the pane gesture. An overview here only seeds its saved session.
       const feature = input.paneSnapshot && requested === 'overview' ? undefined : requested
       const started = feature ? performance.now() : 0
@@ -65,7 +65,7 @@ export default Plugin.define({
           if (confirmationID && !signal.aborted) {
             if (awaiting.size >= 8) awaiting.delete(awaiting.keys().next().value!)
             awaiting.set(input.runID, { confirmationID, feature, durationMs, surface })
-          } else report?.({ feature, surface: prior?.surface ?? surface, durationMs,
+          } else report({ feature, surface: prior?.surface ?? surface, durationMs,
             outcome: signal.aborted ? 'cancelled' : outcome })
         }
       }
@@ -77,15 +77,15 @@ export default Plugin.define({
       sync: input => track(backend.sync(input.source, input.requestID)),
       resolve: input => track(backend.resolve(input.sessionID, input.selector, input.captureSessionID)),
       snapshot: (input, call) => track(backend.withSources(input.useSynced, () => backend.snapshot(input.sessionID, AbortSignal.any([call.signal,lifetime.signal]), input.selector, input.captureSessionID))),
-      usageStatus: async () => ({ enabled: !!report }),
-      usageInteraction: async input => { report?.(input); return {} },
+      usageStatus: async () => ({ enabled: report.enabled() }),
+      usageInteraction: async input => { report(input); return {} },
       cancel: async input => {
         const job = jobs.get(input.runID)
         job?.abort()
         const plan = cancelModel(backend, input.runID)
         const pending = awaiting.get(input.runID)
         awaiting.delete(input.runID)
-        if (pending && plan) report?.({ feature: pending.feature, surface: pending.surface,
+        if (pending && plan) report({ feature: pending.feature, surface: pending.surface,
           durationMs: pending.durationMs, outcome: 'cancelled' })
         const retained = asyncJobs.cancel(input.runID)
         return { cancelled: Boolean(job) || plan || retained }
@@ -100,7 +100,7 @@ export default Plugin.define({
         input: z.object({ what: z.enum(['brief','issues','health','view']), view: z.string().optional(), options: z.record(z.string(), z.union([z.string(),z.number(),z.boolean()])).optional(), limit: z.number().int().min(1).max(500).default(25) }),
         async execute(input, call) {
           const signal = AbortSignal.any([call.signal, lifetime.signal])
-          const started = report ? performance.now() : 0
+          const started = report.enabled() ? performance.now() : undefined
           let outcome: UsageOutcome = 'error'
           return track(backend.withSources(false, async () => {
             try {
@@ -114,7 +114,7 @@ export default Plugin.define({
               return { content: text }
             } catch (error) { return { content: `obs: ${errorMessage(error)}` } }
             finally {
-              report?.({ feature: 'tool', surface: 'unknown', durationMs: performance.now() - started,
+              if (started !== undefined) report({ feature: 'tool', surface: 'unknown', durationMs: performance.now() - started,
                 outcome: signal.aborted ? 'cancelled' : outcome })
             }
           }))
@@ -134,7 +134,7 @@ export default Plugin.define({
       } catch (error) { if (!lifetime.signal.aborted) console.error('TrajViz event observation stopped:', errorMessage(error)) }
     })()
     tasks.add(observing)
-    report?.({ feature: 'activation', surface: 'unknown', durationMs: 0, outcome: 'success' })
+    report({ feature: 'activation', surface: 'unknown', durationMs: 0, outcome: 'success' })
     return async () => {
       lifetime.abort()
       asyncJobs.close()
@@ -142,7 +142,7 @@ export default Plugin.define({
       cancelModel(backend)
       const closed = backend.close()
       await Promise.allSettled([...tasks, rpc.dispose(), tool.dispose(), closed])
-      await report?.flush()
+      await report.flush()
     }
   },
 })

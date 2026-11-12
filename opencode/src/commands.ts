@@ -8,7 +8,7 @@ import { Runtime, atomicFile, exists } from './runtime.js'
 import { flagValues, parseArgs, passArgs, quoteOption, valueArgv } from './shared/args.js'
 import { pageArguments, parseExtras, validateArguments } from './command-args.js'
 import { runModel } from './llm.js'
-import { usageDeliveryStatus, usageOutcome } from './telemetry.js'
+import { setUsageConsent, usageDeliveryStatus, usageOutcome } from './telemetry.js'
 
 const LONG_TIMEOUT = 600_000
 const EMPTY = 'Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.'
@@ -41,6 +41,7 @@ export const HELP_TEXT = [
   'Setup',
   '  setup [--extras all|none|charts,app] [--source S]    doctor    sessions [1–500]',
   '  telemetry · local usage telemetry delivery status',
+  '  enable_telemetry | disable_telemetry · save usage telemetry preference',
   '  watch [on|off]    statusline [on|off]    cancel · cancel the active obs command',
   '  attribution [--reference-root DIR] [--agent A] [--instance I]',
   '  collect opencode <id|prefix> [PATH|-] · native session and subagents',
@@ -134,6 +135,7 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
 
   if (sub === 'help') return { text: HELP_TEXT }
   if (sub === 'telemetry') return { text: await usageDeliveryStatus(backend.runtime, signal) }
+  if (sub === 'enable_telemetry' || sub === 'disable_telemetry') return { text: await setUsageConsent(backend.runtime, signal, sub === 'enable_telemetry' ? 'on' : 'off') }
   if (sub === 'report') return { text: 'The /obs report command was removed. Use /obs dashboard to inspect the session or /obs dashboard --html PATH to save an offline copy.' }
   if (sub === 'analyze' || sub === 'fixes' || sub === 'label') return runModel(backend, input, signal)
   if (sub === 'watch' || sub === 'statusline' || sub === 'cancel' || (sub === 'pane' && positional[0] === 'close')) return rejected(`Use /obs ${sub}${positional.length ? ` ${positional.join(' ')}` : ''} in the OpenCode terminal UI.`)

@@ -119,7 +119,9 @@ Desktop and the TUI read full history from their connected server. Headless tool
 
 Live captures are limited to 32 MiB and 64 sessions in one family. For larger inputs, export the session and use `--session /path/to/export.json`.
 
-To opt in to usage telemetry, set the collector variables in the OpenCode server’s launch environment and restart the server. Desktop and terminal clients use the environment of the server they connect to. Run `/obs telemetry` to check delivery. [Telemetry setup](../README.md#usage-telemetry)
+Run `/obs enable_telemetry` to opt in or `/obs disable_telemetry` to turn it off in Desktop or the terminal. Both save the preference on the connected OpenCode server, where it takes effect immediately and persists across restarts. Disabling pauses queued uploads. After enabling, reopen any existing dashboards to include browser interactions.
+
+Run `/obs telemetry` to check delivery. With no collector URL configured, enabling uses `http://127.0.0.1:8765/v1/events` on the OpenCode server host. Set a custom collector URL and any required credential in the server’s launch environment. [Telemetry setup](../README.md#usage-telemetry)
 
 ## Development
 

@@ -10,10 +10,10 @@ const FLAGS: Record<string, readonly string[]> = {
   compare: ['anchor-patch', 'fuzzy-commands', 'reverse'], scorecard: ['fuzzy-commands', 'labels', 'no-self'], labels: [],
   fixes: ['limit'], label: [...OUTPUT, 'assistant-only', 'model', 'max-steps', 'taxonomy', 'max-content-chars', 'delay', 'user-phase', 'user-action', 'max-tokens', 'temperature'],
   attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [],
-  setup: ['extras', 'source'], doctor: [], telemetry: [], help: [], cancel: [], report: [],
+  setup: ['extras', 'source'], doctor: [], telemetry: [], enable_telemetry: [], disable_telemetry: [], help: [], cancel: [], report: [],
 }
 const SESSION = ['overview', 'pane', 'brief', 'view', ...Object.keys(FLAGS).filter(k => FLAGS[k] === VIEW), 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution', 'sessions']
-const NO_POSITIONALS = ['overview', 'brief', 'help', 'doctor', 'telemetry', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'cancel', 'report']
+const NO_POSITIONALS = ['overview', 'brief', 'help', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'cancel', 'report']
 
 /** Pure validation shared by local TUI commands and the server. */
 export function validateArguments(args: string, parsed: Parsed = parseArgs(args)): string | undefined {

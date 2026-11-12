@@ -7,12 +7,20 @@ const PYTHON = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef012345678
 const CUSTOM_PYTHON = '/opt/custom-python/bin/python'
 const ENDPOINT = 'http://127.0.0.1:8765/v1/events'
 const TOKEN = 'A'.repeat(43)
+const CONSENT_DIRECTORY = '/usage-state'
+const CONSENT_PATH = `${CONSENT_DIRECTORY}/claude-code-consent`
 const PRIVATE_VALUE = 'PRIVATE-SESSION-PATH-OR-CONTENT'
 const TOOL = 'mcp__trajviz-obs__obs'
 const STATE = JSON.stringify({ revision: 6, python: PYTHON, trajviz: '0.5.0', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.5.0', createdAt: 1 })
 const DONE = { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
 
-function host(on: On, settings: { consent?: string; endpoint?: string; token?: string; settingsEnv?: Record<string, string>; status?: unknown; withoutRuntime?: boolean }, sender?: Promise<void>) {
+type Settings = {
+  consent?: string; endpoint?: string; token?: string; settingsEnv?: Record<string, string>;
+  status?: unknown; withoutRuntime?: boolean; stateDirectory?: string; savedConsent?: 'on' | 'off';
+  waitForSnapshot?: Promise<void>;
+}
+
+function host(on: On, settings: Settings, sender?: Promise<void>) {
   const calls: { argv: string[]; env?: Record<string, string> }[] = []
   const envReads: string[] = []
   const fileReads: string[] = []
@@ -23,7 +31,8 @@ function host(on: On, settings: { consent?: string; endpoint?: string; token?: s
     envReads.push(e.name)
     notify()
     return { value: { TRAJVIZ_OBS_TELEMETRY: settings.consent, TRAJVIZ_OBS_TELEMETRY_URL: settings.endpoint,
-      TRAJVIZ_OBS_TELEMETRY_TOKEN: settings.token, XDG_CACHE_HOME: '/cache' }[e.name] }
+      TRAJVIZ_OBS_TELEMETRY_TOKEN: settings.token, TRAJVIZ_OBS_TELEMETRY_STATE_DIR: settings.stateDirectory,
+      XDG_CACHE_HOME: '/cache' }[e.name] }
   })
   on('command.register', () => ({ value: { command: 'obs' } }))
   on('settings.read', () => {
@@ -41,12 +50,13 @@ function host(on: On, settings: { consent?: string; endpoint?: string; token?: s
   on('ui.toast', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
   on('ui.close', () => ({ value: undefined }))
-  on('fs.stat', () => ({ value: { kind: 'file', size: 1_000, mtimeMs: 10, isLink: false } }))
-  on('fs.exists', (_, e) => ({ value: e.path === PYTHON }))
+  on('fs.stat', (_, e) => ({ value: { kind: 'file', size: e.path === CONSENT_PATH ? (settings.savedConsent?.length ?? 0) + 1 : 1_000, mtimeMs: 10, isLink: false } }))
+  on('fs.exists', (_, e) => ({ value: e.path === PYTHON || e.path === CONSENT_PATH && settings.savedConsent !== undefined }))
   on('fs.read', (_, e) => {
     fileReads.push(e.path)
     if (e.path.endsWith('/.claude-plugin/plugin.json')) return { value: '{"version":"1.2.3"}' }
     if (e.path === `${CACHE}/state.json` && !settings.withoutRuntime) return { value: STATE }
+    if (e.path === CONSENT_PATH && settings.savedConsent) return { value: settings.savedConsent + '\n' }
     return { deny: 'not found' }
   })
   on('process.run', async (_, e) => {
@@ -55,12 +65,20 @@ function host(on: On, settings: { consent?: string; endpoint?: string; token?: s
     }
     if (e.argv[3] === 'snapshot') {
       snapshots++
+      await settings.waitForSnapshot
       return { value: { ...DONE.value, stdout: JSON.stringify(SNAPSHOT) } }
     }
     if (!e.argv[2]?.endsWith('/bridge/telemetry_client.py')) return { deny: 'unexpected process' }
     calls.push({ argv: [...e.argv], env: e.init?.env })
     notify()
-    if (e.argv[3] === '--status') return { value: { ...DONE.value, stdout: JSON.stringify(settings.status) } }
+    if (e.argv[3] === '--set-consent') {
+      settings.savedConsent = e.argv[4] === 'on' ? 'on' : 'off'
+      return { value: { ...DONE.value, stdout: JSON.stringify({ configuration: settings.savedConsent === 'on' ? 'ready' : 'disabled' }) } }
+    }
+    if (e.argv[3] === '--status') {
+      const status = settings.status ?? { configuration: settings.savedConsent === 'on' ? 'ready' : 'disabled' }
+      return { value: { ...DONE.value, stdout: JSON.stringify(status) } }
+    }
     await sender
     return DONE
   })
@@ -93,6 +111,7 @@ test('launch consent requires the exact opt-in and an endpoint before any runtim
   await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
   const help = await $.command.run(command('help'))
   expect(help.text).toContain('Start here:')
+  await world.envRead('TRAJVIZ_OBS_TELEMETRY')
   expect(world.envReads).toContain('TRAJVIZ_OBS_TELEMETRY')
   expect(world.envReads).not.toContain('TRAJVIZ_OBS_TELEMETRY_URL')
 
@@ -151,6 +170,74 @@ test('Claude records cold-start usage and reads status with the configured inter
   expect((await world.call(2)).argv[0]).toBe(CUSTOM_PYTHON)
   expect((await $.command.run(command('telemetry'))).text).toContain('Usage telemetry · On')
   expect(world.calls[2]?.argv).toEqual([CUSTOM_PYTHON, '-I', world.calls[0]?.argv[2], '--status', '--adapter', 'claude-code'])
+})
+
+test('native Claude consent commands persist, take effect immediately, and are never reported as events', async ($, on) => {
+  const settings: Settings = { stateDirectory: CONSENT_DIRECTORY }
+  const world = host(on, settings)
+  const start = { cwd: '/workspace', surface: 'terminal' as const, isInteractive: true }
+  await $.session.start(start)
+  expect((await $.command.run(command('enable_telemetry'))).text).toContain('Usage telemetry · On. Preference saved.')
+  expect(settings.savedConsent).toBe('on')
+  expect(world.calls.map(call => call.argv[3])).toEqual(['--set-consent'])
+  await $.command.run(command('help'))
+  const action = await world.call(2)
+  expect(action.argv.slice(7, 11)).toEqual(['--feature', 'help', '--outcome', 'success'])
+  expect(action.env?.TRAJVIZ_OBS_TELEMETRY).toBe('0')
+  expect((await $.command.run(command('telemetry'))).text).toContain('Usage telemetry · On')
+  await $.session.start(start)
+  expect((await world.call(4)).argv.slice(7, 11)).toEqual(['--feature', 'activation', '--outcome', 'success'])
+
+  settings.consent = '1'
+  settings.endpoint = ENDPOINT
+  expect((await $.command.run(command('disable_telemetry'))).text).toContain('Usage telemetry · Off. Preference saved.')
+  expect(settings.savedConsent).toBe('off')
+  await $.command.run(command('help'))
+  expect((await $.command.run(command('telemetry'))).text).toContain('Usage telemetry · Off')
+  expect(world.calls.map(call => call.argv[3])).toEqual(['--set-consent', '--adapter', '--status', '--adapter', '--set-consent', '--status'])
+})
+
+test('a slow Claude command requires telemetry consent at both invocation and completion', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_700_000_000_000 })
+  const settings: Settings = { stateDirectory: CONSENT_DIRECTORY, savedConsent: 'off' }
+  const world = host(on, settings)
+  await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+  await $.classic.SessionStart({ source: 'startup', transcript_path: '/tmp/session.jsonl', session_id: 'test-session' })
+
+  for (const [index, preference] of ['enable_telemetry', 'disable_telemetry'].entries()) {
+    let finishSnapshot = () => {}
+    settings.waitForSnapshot = new Promise<void>(resolve => { finishSnapshot = resolve })
+    const running = $.command.run(command('overview'))
+    try {
+      await clock.settle()
+      expect(world.snapshots()).toBe(index + 1)
+      expect((await $.command.run(command(preference))).text).toContain('Preference saved.')
+    } finally {
+      finishSnapshot()
+    }
+    expect((await running).text).toContain('obs snapshot')
+    await clock.settle()
+    expect(world.calls.map(call => call.argv[3])).toEqual(Array(index + 1).fill('--set-consent'))
+  }
+
+  await $.command.run(command('enable_telemetry'))
+  expect((await $.command.run(command('overview'))).text).toContain('obs snapshot')
+  expect((await world.call(4)).argv.slice(7, 11)).toEqual(['--feature', 'overview', '--outcome', 'success'])
+})
+
+test('Claude telemetry consent requires a user command and trusted configuration', async ($, on) => {
+  const settings: Settings = { stateDirectory: CONSENT_DIRECTORY }
+  const world = host(on, settings)
+  const sdk = { ...command('enable_telemetry'), origin: { kind: 'sdk' as const } }
+  const plugin = { ...command('disable_telemetry'), origin: { kind: 'plugin' as const, name: 'other-plugin' } }
+  expect((await $.command.run(sdk)).text).toContain('directly in the Claude Code composer')
+  expect((await $.command.run(plugin)).text).toContain('directly in the Claude Code composer')
+  expect((await $.command.run(command('enable_telemetry unexpected'))).text).toContain('Unexpected arguments')
+  expect((await $.command.run(command('disable_telemetry --session saved'))).text).toContain('--session is not supported')
+  settings.settingsEnv = { XDG_STATE_HOME: '/project/private' }
+  expect((await $.command.run(command('enable_telemetry'))).text).toContain('could not be changed')
+  expect(settings.savedConsent).toBeUndefined()
+  expect(world.calls).toEqual([])
 })
 
 test('Claude settings cannot supply the telemetry endpoint', async ($, on) => {
