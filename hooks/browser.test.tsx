@@ -33,7 +33,7 @@ const INSTALLING_APP = "obs: installing TrajViz's app extra (the dashboards, dow
 const DECLINED = "TrajViz's app extra is not installed (the dashboards need it); /obs setup --extras app installs it."
 
 const stateJson = (extras: string[]): string =>
-  JSON.stringify({ revision: 6, python: VENV_PY, trajviz: '0.5.0', extras, source: 'agent-trajviz==0.5.0', createdAt: 1 })
+  JSON.stringify({ revision: 6, python: VENV_PY, trajviz: '0.5.1', extras, source: 'agent-trajviz==0.5.1', createdAt: 1 })
 
 type RunAnswer = { exitCode: number; stdout: string; stderr?: string }
 
@@ -151,7 +151,7 @@ function host(on: On, world: World = {}): Host {
     spawned.push({ argv: [...e.argv], cwd: e.cwd })
     if (e.argv.some(a => a.endsWith('/bridge/bootstrap.py'))) {
       const req = JSON.parse(e.argv[e.argv.indexOf('--request') + 1] as string)
-      const state = { revision: 6, python: VENV_PY, pythonOption: req.pythonOption, trajviz: '0.5.0', extras: [...new Set(['llm', 'charts', 'zstd', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
+      const state = { revision: 6, python: VENV_PY, pythonOption: req.pythonOption, trajviz: '0.5.1', extras: [...new Set(['llm', 'charts', 'zstd', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
       files[STATE_PATH] = JSON.stringify(state)
       timeline.push('pip')
       yield { stream: 'stderr' as const, text: 'Installed\n' }
@@ -219,7 +219,7 @@ test('dashboard asks, announces and installs the app extra, starts the bridge ch
   expect(asked).toEqual([ASK_APP])
   expect(rows).toEqual([INSTALLING_APP])
   expect(timeline).toEqual(['ask', 'row', 'pip', 'child', 'open'])
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.5.0', extras: ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app'] })
+  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.5.1', extras: ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app'] })
   expect(children(spawned)).toEqual([['dashboard', '--transcript', DERIVED, '--window', '1000000', '--port', '7777']])
   expect(spawned[1]?.argv.slice(0, 2)).toEqual([VENV_PY, '-I'])
   expect(spawned[1]?.argv[2]).toMatch(/\/bridge\/trajviz_obs_cli\.py$/)
@@ -577,7 +577,7 @@ test('the app install is declined by Not now or a dismissed ask, and not asked o
   expect(asked).toHaveLength(2)
   expect(rows).toEqual([INSTALLING_APP])
   expect(timeline).toEqual(['ask', 'ask', 'row', 'pip', 'child', 'open'])
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.5.0', extras: ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app'] })
+  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.5.1', extras: ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app'] })
   expect(children(spawned)).toEqual([['dashboard', '--transcript', DERIVED, '--window', '1000000']])
   await $.session.end(END)
 })
@@ -606,7 +606,7 @@ test('converge asks, announces and installs the app extra once, and takes the da
   expect(asked).toEqual([ASK_APP])
   expect(rows).toEqual([INSTALLING_APP])
   expect(timeline).toEqual(['ask', 'row', 'pip', 'child', 'open'])
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.5.0', extras: ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app'] })
+  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.5.1', extras: ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app'] })
   expect(children(spawned)).toEqual([['converge', '--data-root', PROJECT_DIR]])
   expect(out.text).toBe(`Converge dashboard at ${URL} over ${PROJECT_DIR}; opened in the browser. /obs converge stop ends it.`)
   expect(ran.filter(r => r[0] === 'open')).toEqual([['open', URL]])

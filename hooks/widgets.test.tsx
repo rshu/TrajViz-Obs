@@ -163,6 +163,22 @@ test('pane metrics keep fixed columns across pane widths and preserve every prim
   }
 })
 
+test('summary and pane show TrajViz wall-clock formatting alongside per-step timing', async ($, on) => {
+  const snap = { ...SNAPSHOT, timing: { ...SNAPSHOT.timing, wall_clock_s: 1_225_440, wall_clock_fmt: '14d 4h' } }
+  on('ui.render', { component: 'Pane', requestId: 'widgets-probe' }, ($, e) => {
+    const els = $.ui.resolve(e)
+    const { Box } = els
+    return <Box flexDirection="column">
+      {KpiRow({ els, snap, columns: 80, summary: true })}
+      {PaneMetrics({ els, snap, columns: 80 })}
+    </Box>
+  })
+  const ui = await $.ui.mount({ ...pane(80), surface: 'terminal' })
+  expect(await ui.findAll({ type: 'Text', text: /^14d 4h$/ })).toHaveLength(2)
+  expect(await ui.findAll({ type: 'Text', text: /p95 31s/ })).toHaveLength(2)
+  await ui.unmount()
+})
+
 test('pane metrics reduce inline rows and wrap large values without dropping unknown cost', async ($, on) => {
   let compact = true
   let usage: typeof USAGE | undefined = USAGE

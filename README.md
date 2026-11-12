@@ -56,7 +56,7 @@ In the dashboard, start with **Overview → Summary** for health and issues. Cli
 
 Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path>` to a session command. Run `/obs` without a selector to return to the current session.
 
-Both plugins use TrajViz **0.5.0** and expose all **36 views**. `/obs view data_quality` explains missing or partial evidence. Measured zeros appear as zero, and unavailable measurements appear as unknown.
+Both plugins use TrajViz **0.5.1** and expose all **36 views**. `/obs view data_quality` explains missing or partial evidence. Measured zeros appear as zero, and unavailable measurements appear as unknown.
 
 Watch refreshes an open pane after turns. `/obs statusline on` pins a summary under the prompt. Use `/obs watch off` and `/obs statusline off` to stop automatic refreshes.
 
@@ -91,9 +91,9 @@ Demos use real, controlled coding sessions. Terminal images are rendered from re
 
 ![OpenCode Desktop pane in light mode with session metrics, health, token usage, and step timing](assets/demo-opencode-desktop-light.png)
 
-**Browser dashboard: session summary (TrajViz 0.4.2)**
+**Browser dashboard: session summary (TrajViz 0.5.1)**
 
-![TrajViz 0.4.2 dashboard in light mode with session health, label coverage, and issue evidence](assets/demo-dashboard-light.jpg)
+![TrajViz 0.5.1 dashboard in light mode with session health, label coverage, and Analyze issue with AI](assets/demo-dashboard-light.png)
 
 ## Configure
 
@@ -133,9 +133,11 @@ The **Attribution workspace** opens saved results, evidence graphs, and reports.
 
 Overview, diagnostic views, and exports run locally without model calls. `/obs analyze`, `/obs fixes`, and `/obs label` send redacted prompts to a model and may incur usage charges. They show a call plan first; interactive sessions ask before more than four calls. Labeling defaults to at most 50 steps.
 
-The dashboard's AI analysis panel has its own **Settings**, independently of `llm`; environment values provide defaults. Keys stay in the current dashboard session, and remembered details exclude keys. Choose **Analyze trajectory** to start, or ask a question; opening the panel makes no model call. **Test API key** sends a small request without trajectory data.
+In the live `/obs dashboard`, go to **Overview → Summary → Issues** and choose **Analyze issue with AI** on a finding to send a focused question to the analysis panel. Saved HTML exports are for offline review.
 
-Exports and cached analysis contain session data and stay on the host unless shared. Plugin dashboards bind to `127.0.0.1` and stop on request or plugin unload. For an authenticated remote dashboard, use the standalone TrajViz CLI with `TRAJVIZ_AUTH` and upload an exported trajectory. [Standalone dashboard options](https://github.com/rshu/TrajViz/tree/v0.5.0#dashboard-and-cli)
+The dashboard's AI analysis panel has its own **Settings**, independently of `llm`. Environment values provide defaults. Keys stay in the current dashboard session, and remembered details exclude keys. Choose **Analyze trajectory** for a full review or enter your own question. Opening the panel makes no model call. **Test API key** sends a small request without trajectory data.
+
+Exports and cached analysis contain session data and stay on the host unless shared. Plugin dashboards bind to `127.0.0.1` and stop on request or plugin unload. For an authenticated remote dashboard, use the standalone TrajViz CLI with `TRAJVIZ_AUTH` and upload an exported trajectory. [Standalone dashboard options](https://github.com/rshu/TrajViz/tree/v0.5.1#dashboard-and-cli)
 
 ### Usage telemetry
 

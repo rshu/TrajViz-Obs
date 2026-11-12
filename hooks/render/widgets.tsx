@@ -97,7 +97,7 @@ function kpis(snap: Snapshot, usage?: Snapshot['engine_usage']): Kpi[] {
     { label: 'Tokens', value: fmtCompact(tokens.total), sub: `${fmtCompact(tokens.input)} fresh · ${fmtCompact(tokens.cache_read)} cache · ${fmtCompact(tokens.output)} out` },
     { label: cacheHealth ? 'Cache Efficiency' : 'Cache read', value: cacheHealth ? cacheHealth.status === 'unavailable' ? 'unavailable' : cacheHealth.label : fmtPct(cacheEfficiency(tokens)), sub: `${fmtCompact(tokens.cache_write)} written` },
     { label: 'Tools', value: fmtInt(tools.calls), sub: `${fmtPct(tools.success_rate)} ok · ${failureSummary(tools.failed, tools.unknown)}` },
-    { label: 'Wall clock', value: fmtSecs(timing.wall_clock_s), sub: `avg ${fmtSecs(timing.avg_step_s)} · p95 ${fmtSecs(timing.p95_step_s)}` },
+    { label: 'Wall clock', value: timing.wall_clock_fmt ?? fmtSecs(timing.wall_clock_s), sub: `avg ${fmtSecs(timing.avg_step_s)} · p95 ${fmtSecs(timing.p95_step_s)}` },
   ]
   if (usage?.cost) out.push({ label: 'Cost', value: `$${usage.cost.usd.toFixed(2)}` })
   const live = usage?.context?.percent
