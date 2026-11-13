@@ -52,11 +52,9 @@ After the session's first assistant response:
 | Label steps by phase and action | `/obs label --max-steps 20` |
 | List all commands and options | `/obs help` |
 
-In the dashboard, start with **Overview → Summary** for health, issues, and issue JSON export. Use **Chart guide** to learn how to read the charts. Click a token bar for its step breakdown or a duration bar to open that step in **Workflow**. The execution timeline can compress long idle gaps or show their full duration with **True wall-clock**. In **Deep Dive**, click a step number in any hotspot or Per-Message Diagnostics table to open it in **Workflow**. The selected session and its cached labels load automatically. Close the server with `/obs dashboard stop`.
-
 Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path>` to a session command. Run `/obs` without a selector to return to the current session.
 
-Both plugins use TrajViz **0.5.1** and expose all **36 views**. `/obs view data_quality` explains missing or partial evidence. Measured zeros appear as zero, and unavailable measurements appear as unknown.
+Both plugins use TrajViz **0.5.1** and expose all **36 views**. `/obs view data_quality` explains missing or partial evidence. The dashboard distinguishes recorded zeros from missing or partial data.
 
 Watch refreshes an open pane after turns. `/obs statusline on` pins a summary under the prompt. Use `/obs watch off` and `/obs statusline off` to stop automatic refreshes.
 
@@ -71,9 +69,17 @@ Saved OTLP captures can contain several sessions. List them with `/obs sessions 
 
 </details>
 
+### Browser dashboard
+
+- **Overview → Summary** shows health, issues, and issue JSON export. Open **Chart guide** for examples. Click a token bar for its breakdown or a duration bar to jump to the step. Use **True wall-clock** below the execution timeline to include idle time.
+- **Overview → Deep Dive** shows timing, token, efficiency, tool, and model metrics. Click a step number in the latency, token-load, lowest cache-read, context-growth, or Per-Message Diagnostics tables to open it in **Workflow**.
+- **Workflow** offers **Cards** for scanning and **Expanded** for full step content.
+
+The selected session and cached labels load automatically. Run `/obs dashboard stop` when done. In OpenCode, use the stop command shown when the dashboard starts to target a saved session.
+
 ## Demo
 
-Demos use real, controlled coding sessions. Terminal images are rendered from recorded output.
+Terminal images are rendered from recorded output. The dashboard Summary uses a demo fixture with a ranked issue. The other images use controlled coding sessions.
 
 **Claude Code: overview and live pane**
 
@@ -91,9 +97,13 @@ Demos use real, controlled coding sessions. Terminal images are rendered from re
 
 ![OpenCode Desktop pane in light mode with session metrics, health, token usage, and step timing](assets/demo-opencode-desktop-light.png)
 
-**Browser dashboard: session summary (TrajViz 0.5.1)**
+**Browser dashboard: Summary**
 
-![TrajViz 0.5.1 dashboard in light mode with session health, label coverage, and Analyze issue with AI](assets/demo-dashboard-light.png)
+![Summary in light mode with the Chart guide link, session health, and an Analyze issue with AI button](assets/demo-dashboard-light.png)
+
+**Browser dashboard: Deep Dive**
+
+![Deep Dive in light mode with metric cards and step links in the latency hotspot table](assets/demo-dashboard-deep-dive-light.png)
 
 ## Configure
 
