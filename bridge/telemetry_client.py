@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -30,13 +30,16 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from telemetry_protocol import (
     ADAPTERS,
+    AGENT_VERSION_SCHEMA,
     BACKFILL_DAYS,
     FEATURES,
     MAX_BATCH,
     OUTCOMES,
+    SCHEMA_HEADER,
     SCHEMA_VERSION,
     SURFACES,
     duration_bucket,
+    valid_agent_version,
     validate_event,
     validate_payload,
 )
@@ -292,6 +295,18 @@ def _ensure_health(connection: sqlite3.Connection) -> None:
     connection.execute("INSERT OR IGNORE INTO sender_health (singleton, batch_limit) VALUES (1, ?)", (MAX_BATCH,))
 
 
+def _ensure_protocol(connection: sqlite3.Connection) -> None:
+    # Legacy senders still insert and decode v1 pending rows using the original table shape.
+    connection.execute("CREATE TABLE IF NOT EXISTS event_agent_version (id TEXT PRIMARY KEY, version TEXT NOT NULL)")
+    connection.execute("CREATE TABLE IF NOT EXISTS collector_schema (version INTEGER PRIMARY KEY)")
+    connection.execute("""
+        CREATE TRIGGER IF NOT EXISTS delete_agent_version AFTER DELETE ON pending
+        BEGIN
+            DELETE FROM event_agent_version WHERE id = OLD.id;
+        END
+    """)
+
+
 def _expire_pending(connection: sqlite3.Connection, cutoff: str, latest: str) -> None:
     # A corrected clock can leave queued dates the collector will reject.
     expired = connection.execute("DELETE FROM pending WHERE day < ? OR day > ?", (cutoff, latest)).rowcount
@@ -301,7 +316,7 @@ def _expire_pending(connection: sqlite3.Connection, cutoff: str, latest: str) ->
 
 
 def _record(connection: sqlite3.Connection, event: dict, cutoff: str, directory: Path, adapter: str, *,
-            eligible: Callable[[], bool] | None = None) -> bool:
+            eligible: Callable[[], bool] | None = None, agent_version: str | None = None) -> bool:
     def can_record() -> bool:
         return eligible() if eligible is not None else _saved_consent(directory, adapter) != "off"
 
@@ -323,6 +338,7 @@ def _record(connection: sqlite3.Connection, event: dict, cutoff: str, directory:
         connection.execute("CREATE TABLE IF NOT EXISTS pending (id TEXT UNIQUE, day TEXT NOT NULL, body TEXT NOT NULL)")
         connection.execute("INSERT OR IGNORE INTO sender (singleton, installation_id) VALUES (1, ?)", (uuid4().hex,))
         _ensure_health(connection)
+        _ensure_protocol(connection)
         _expire_pending(connection, cutoff, latest)
         if event["feature"] == "activation":
             recorded = connection.execute("INSERT OR IGNORE INTO activation (day) VALUES (?)", (event["day"],))
@@ -330,6 +346,8 @@ def _record(connection: sqlite3.Connection, event: dict, cutoff: str, directory:
                 return True
         connection.execute("INSERT INTO pending VALUES (?, ?, ?)",
                            (event["id"], event["day"], json.dumps(event, separators=(",", ":"))))
+        if valid_agent_version(agent_version):
+            connection.execute("INSERT INTO event_agent_version VALUES (?, ?)", (event["id"], agent_version))
         dropped = connection.execute("""
             DELETE FROM pending WHERE rowid < (
                 SELECT rowid FROM pending ORDER BY rowid DESC LIMIT 1 OFFSET ?
@@ -347,11 +365,14 @@ def _credential_fingerprint(token: str | None) -> str:
     return hashlib.sha256(token.encode("ascii")).hexdigest() if token else ""
 
 
-def _pending_events(connection: sqlite3.Connection, limit: int, now: float) -> list[dict]:
+def _pending_events(connection: sqlite3.Connection, limit: int, now: float, schema_version: int) -> list[dict]:
     events = []
     malformed = []
-    with closing(connection.execute("SELECT id, body FROM pending ORDER BY rowid LIMIT ?", (MAX_PENDING,))) as rows:
-        for event_id, body in rows:
+    with closing(connection.execute("""
+        SELECT pending.id, body, version FROM pending LEFT JOIN event_agent_version USING (id)
+        ORDER BY pending.rowid LIMIT ?
+    """, (MAX_PENDING,))) as rows:
+        for event_id, body, agent_version in rows:
             try:
                 event = validate_event(json.loads(body))
             except (ValueError, TypeError, RecursionError):
@@ -360,6 +381,8 @@ def _pending_events(connection: sqlite3.Connection, limit: int, now: float) -> l
             if event["id"] != event_id:
                 malformed.append((event_id,))
                 continue
+            if schema_version == AGENT_VERSION_SCHEMA and valid_agent_version(agent_version):
+                event["agent_version"] = agent_version
             events.append(event)
             if len(events) >= limit:
                 break
@@ -387,14 +410,17 @@ def _claim(connection: sqlite3.Connection, adapter: str, now: float, token: str 
         """, (now, now, _credential_fingerprint(token))).fetchone()
         if state is None:
             return None
+        _ensure_protocol(connection)
+        supported = connection.execute("SELECT 1 FROM collector_schema WHERE version = ?", (AGENT_VERSION_SCHEMA,)).fetchone()
+        schema_version = AGENT_VERSION_SCHEMA if supported else SCHEMA_VERSION
         # A process may resume a queued flush days after the event was recorded.
         today = datetime.fromtimestamp(now, _UTC).date()
         _expire_pending(connection, (today - timedelta(days=BACKFILL_DAYS)).isoformat(),
                         (today + timedelta(days=1)).isoformat())
-        events = _pending_events(connection, max(1, min(state[1], MAX_BATCH)), now)
+        events = _pending_events(connection, max(1, min(state[1], MAX_BATCH)), now, schema_version)
         if not events:
             return None
-        payload = validate_payload({"schema_version": SCHEMA_VERSION, "adapter": adapter,
+        payload = validate_payload({"schema_version": schema_version, "adapter": adapter,
                                     "installation_id": state[0], "events": events})
         lease = uuid4().hex
         connection.execute("UPDATE sender SET lease = ?, lease_until = ?", (lease, now + LEASE_SECONDS))
@@ -407,6 +433,7 @@ class _Delivery:
     failure: str | None = None
     http_status: int | None = None
     retry_after: float | None = None
+    supports_agent_version: bool = False
 
 
 def _retry_delay(failures: int, hint: float | None) -> float:
@@ -418,7 +445,7 @@ def _retry_delay(failures: int, hint: float | None) -> float:
 
 
 def _finish(connection: sqlite3.Connection, lease: str, payload: dict, delivery: _Delivery, now: float,
-            token: str | None = None) -> None:
+            token: str | None = None, *, downgraded: bool = False) -> None:
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         state = connection.execute("""
@@ -432,7 +459,11 @@ def _finish(connection: sqlite3.Connection, lease: str, payload: dict, delivery:
         retry_at = 0.0
         rejected = 0
         events = payload["events"]
+        if downgraded:
+            connection.execute("DELETE FROM collector_schema WHERE version = ?", (AGENT_VERSION_SCHEMA,))
         if delivery.kind == "accepted":
+            if delivery.supports_agent_version and not downgraded:
+                connection.execute("INSERT OR IGNORE INTO collector_schema VALUES (?)", (AGENT_VERSION_SCHEMA,))
             connection.executemany("DELETE FROM pending WHERE id = ?", [(event["id"],) for event in events])
             batch_limit = min(MAX_BATCH, batch_limit * 2)
             failures = 0
@@ -503,12 +534,16 @@ def _send(endpoint: str, payload: dict, *, token: str | None = None) -> _Deliver
                                      headers=headers, method="POST")
     try:
         with opener.open(request, timeout=NETWORK_TIMEOUT) as response:
-            return _http_result(response.status, response.headers.get("Retry-After"))
+            status, headers = response.status, response.headers
     except urllib.error.HTTPError as error:
         with error:
-            return _http_result(error.code, error.headers.get("Retry-After") if error.headers else None)
+            status, headers = error.code, error.headers
     except (OSError, http.client.HTTPException):
         return _Delivery("retry", "network")
+    delivery = _http_result(status, headers.get("Retry-After") if headers else None)
+    if headers and headers.get(SCHEMA_HEADER, "").strip() == str(AGENT_VERSION_SCHEMA):
+        return replace(delivery, supports_agent_version=True)
+    return delivery
 
 
 def _queue_settings(env: Mapping[str, str], endpoint: str, directory: Path, adapter: str) -> UsageSettings | None:
@@ -519,7 +554,8 @@ def _queue_settings(env: Mapping[str, str], endpoint: str, directory: Path, adap
 
 
 def queue_usage(endpoint: str, directory: Path, *, adapter: str, surface: str, feature: str,
-                outcome: str, duration_ms: int, version: str, env: Mapping[str, str] | None = None) -> bool:
+                outcome: str, duration_ms: int, version: str, agent_version: str | None = None,
+                env: Mapping[str, str] | None = None) -> bool:
     """Persist a validated event without waiting for the collector."""
     def eligible() -> bool:
         if env is None:
@@ -535,7 +571,7 @@ def queue_usage(endpoint: str, directory: Path, *, adapter: str, surface: str, f
                                 "duration_bucket": duration_bucket(duration_ms), "version": version})
         cutoff = (now.date() - timedelta(days=BACKFILL_DAYS)).isoformat()
         with closing(_open_queue(directory, adapter, endpoint)) as connection:
-            return _record(connection, event, cutoff, directory, adapter, eligible=eligible)
+            return _record(connection, event, cutoff, directory, adapter, eligible=eligible, agent_version=agent_version)
     except (OSError, sqlite3.Error, ValueError):
         return False
 
@@ -560,13 +596,24 @@ def flush_usage(endpoint: str, directory: Path, adapter: str, *, token: str | No
                 if claim is None:
                     break
                 lease, payload = claim
-                if not eligible():
+                delivery = _send(endpoint, payload, token=token) if eligible() else None
+                downgraded = (delivery is not None and payload["schema_version"] == AGENT_VERSION_SCHEMA
+                              and delivery.http_status in (400, 422) and not delivery.supports_agent_version)
+                if downgraded:
+                    # A legacy collector at this URL can still accept the same IDs and base fields.
+                    payload["schema_version"] = SCHEMA_VERSION
+                    for event in payload["events"]:
+                        event.pop("agent_version", None)
+                    delivery = _send(endpoint, payload, token=token) if eligible() else None
+                if delivery is None:
                     with connection:
+                        if downgraded:
+                            connection.execute("DELETE FROM collector_schema WHERE version = ? AND EXISTS "
+                                               "(SELECT 1 FROM sender WHERE lease = ?)", (AGENT_VERSION_SCHEMA, lease))
                         connection.execute("UPDATE sender SET lease = NULL, lease_until = 0 WHERE lease = ?", (lease,))
                     break
-                delivery = _send(endpoint, payload, token=token)
-                _finish(connection, lease, payload, delivery, datetime.now(_UTC).timestamp(), token)
-                if delivery.kind in ("retry", "blocked"):
+                _finish(connection, lease, payload, delivery, datetime.now(_UTC).timestamp(), token, downgraded=downgraded)
+                if downgraded or delivery.kind in ("retry", "blocked"):
                     break
     except (OSError, sqlite3.Error, ValueError):
         # Telemetry is optional. An unavailable endpoint or queue never changes a plugin command.
@@ -730,12 +777,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--outcome", required=True, choices=OUTCOMES)
     parser.add_argument("--duration-ms", required=True, type=int)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--agent-version")
     args = parser.parse_args(arguments)
     settings = usage_settings(os.environ, args.adapter)
     if settings.configuration != "ready" or settings.directory is None or settings.endpoint is None:
         return 0
     if queue_usage(settings.endpoint, settings.directory, adapter=args.adapter, surface=args.surface, feature=args.feature,
-                   outcome=args.outcome, duration_ms=args.duration_ms, version=args.version, env=os.environ):
+                   outcome=args.outcome, duration_ms=args.duration_ms, version=args.version,
+                   agent_version=args.agent_version, env=os.environ):
         flush_usage(settings.endpoint, settings.directory, args.adapter, token=settings.token, env=os.environ)
     return 0
 

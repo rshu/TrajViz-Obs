@@ -157,7 +157,11 @@ Run `/obs telemetry_destination` to see the collector. Change it during a sessio
 
 For an authenticated collector, supply its token as `TRAJVIZ_OBS_TELEMETRY_TOKEN` in the host’s launch environment. In Claude Code, append `--use-launch-token` to associate the token with a new destination. In OpenCode, the server sends its launch token only to the exact endpoint configured in `TRAJVIZ_OBS_TELEMETRY_URL`. To change that endpoint, update the server’s launch environment, restart the server, and run `/obs telemetry_destination default` if a saved destination overrides it. Remote collectors require HTTPS. For local HTTP on a custom port, use a URL such as `http://127.0.0.1:8765`. Reopen dashboards that were started before telemetry was enabled to track browser actions.
 
-The sender reports allowlisted feature names, outcomes, coarse timing, and a random installation ID. Prompts, transcripts, paths, and command arguments stay on the host. Collector and HTML reporting development is tracked on `codex/telemetry-service`.
+The sender reports allowlisted feature names, outcomes, coarse timing, the plugin version, and a random installation ID. Compatible collectors also receive the Claude Code engine or OpenCode server version when available. Prompts, transcripts, paths, and command arguments stay on the host.
+
+An active installation is an installation ID with at least one recorded event during the reporting period. The ID belongs to one adapter, local telemetry state directory, and collector endpoint. An activation is recorded at most once per UTC day per ID. Clients connected to a shared OpenCode server share its installation ID.
+
+The collector can optionally count distinct source IP addresses for events uploaded on their UTC event date. It stores a keyed digest of the connecting address seen by the collector, consistent within the database, and retains no raw IP address for this metric. Proxies, shared networks, and changing IP addresses affect the counts. Legacy clients still count toward active installations, with agent version and source-IP counts unavailable for their events. Collector and HTML reporting development is tracked on `codex/telemetry-service`.
 
 ## Troubleshooting and limits
 

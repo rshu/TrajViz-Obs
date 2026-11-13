@@ -9,6 +9,7 @@ import sqlite3
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from dataclasses import replace
 from datetime import datetime, timedelta
 from email.message import Message
 from email.utils import format_datetime
@@ -18,7 +19,7 @@ from uuid import uuid4
 import pytest
 
 import telemetry_client as client
-from telemetry_protocol import DURATION_BUCKETS, duration_bucket, validate_payload
+from telemetry_protocol import DURATION_BUCKETS, SCHEMA_HEADER, duration_bucket, validate_payload
 from trajviz_obs.dashboard_usage import DashboardUsage
 
 ENDPOINT = "http://127.0.0.1:18752/v1/events"
@@ -672,6 +673,18 @@ def test_sender_uses_bearer_header_and_keeps_retry_hint(monkeypatch):
     assert TOKEN.encode() not in request.data
 
 
+def test_sender_recognizes_a_protocol_aware_rejection(monkeypatch):
+    headers = Message()
+    headers[SCHEMA_HEADER.lower()] = "2"
+
+    class Opener:
+        def open(self, request, **_kwargs):
+            raise urllib.error.HTTPError(request.full_url, 422, "rejected", headers, None)
+
+    monkeypatch.setattr(client.urllib.request, "build_opener", lambda *_: Opener())
+    assert client._send(ENDPOINT, {}).supports_agent_version
+
+
 @pytest.mark.parametrize("error", [TimeoutError(), http.client.BadStatusLine("invalid status line")])
 def test_sender_treats_timeout_and_malformed_http_as_retryable(monkeypatch, error):
     class Opener:
@@ -777,6 +790,80 @@ def test_status_reads_legacy_queue_without_migrating_it(opted_in, monkeypatch):
         assert database.execute("SELECT installation_id FROM sender").fetchone()[0] == installation
         assert database.execute("SELECT count(*) FROM pending").fetchone()[0] == 2
         assert database.execute("SELECT rejected FROM sender_health").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("adapter", ["claude-code", "opencode"])
+def test_collector_negotiation_preserves_legacy_queue_and_adds_host_version(opted_in, monkeypatch, adapter):
+    sent = []
+
+    def send(_endpoint, batch, *, token):
+        sent.append(validate_payload(batch))
+        return replace(ACCEPTED, supports_agent_version=True)
+
+    monkeypatch.setattr(client, "_send", send)
+    assert client.main([*ARGV, "--adapter", adapter, "--agent-version", "2.2.5"]) == 0
+    assert sent[0]["schema_version"] == 1
+    first, = sent[0]["events"]
+    assert "agent_version" not in first
+    queue, = opted_in.glob("client-v1-*.sqlite3")
+    legacy = {**first, "id": uuid4().hex}
+    with closing(sqlite3.connect(queue)) as database, database:
+        # An older plugin can still write and read its original three-column event rows.
+        database.execute("INSERT INTO pending VALUES (?, ?, ?)", (legacy["id"], legacy["day"], json.dumps(legacy)))
+    assert client.queue_usage(ENDPOINT, opted_in, adapter=adapter, surface="terminal", feature="help",
+                              outcome="success", duration_ms=350, version="0.3.8", agent_version="2.2.5")
+    with closing(sqlite3.connect(queue)) as database:
+        assert all("agent_version" not in json.loads(body) for body, in database.execute("SELECT body FROM pending"))
+    assert client.main([*ARGV, "--adapter", adapter, "--agent-version", "private-build"]) == 0
+    second = sent[1]
+    assert second["schema_version"] == 2 and second["installation_id"] == sent[0]["installation_id"]
+    assert [event.get("agent_version") for event in second["events"]] == [None, "2.2.5", None]
+    assert {event["version"] for event in second["events"]} == {"0.3.8"}
+    with closing(sqlite3.connect(queue)) as database:
+        assert database.execute("SELECT count(*) FROM pending").fetchone() == (0,)
+        assert database.execute("SELECT count(*) FROM event_agent_version").fetchone() == (0,)
+
+
+def test_downgrade_retries_same_events_without_host_version(opted_in, monkeypatch):
+    sent = []
+    collector_version = 2
+
+    def send(_endpoint, batch, *, token):
+        sent.append(json.loads(json.dumps(batch)))
+        if batch["schema_version"] > collector_version:
+            return client._http_result(422)
+        return replace(ACCEPTED, supports_agent_version=collector_version == 2)
+
+    monkeypatch.setattr(client, "_send", send)
+    assert client.main([*ARGV, "--agent-version", "2.1.280"]) == 0
+    collector_version = 1
+    assert client.main([*ARGV, "--agent-version", "2.1.280"]) == 0
+    assert client.main([*ARGV, "--agent-version", "2.1.280"]) == 0
+    assert [batch["schema_version"] for batch in sent] == [1, 2, 1, 1]
+    assert sent[1]["events"] == [{**sent[2]["events"][0], "agent_version": "2.1.280"}]
+    status = client.delivery_status(client.os.environ, "claude-code")
+    assert status["queued"] == 0 and status["rejected"] == 0
+
+
+def test_downgrade_checks_consent_again_before_retrying(opted_in, monkeypatch):
+    versions = []
+
+    def send(_endpoint, batch, *, token):
+        versions.append(batch["schema_version"])
+        if batch["schema_version"] == 2:
+            client._write_consent(opted_in, "claude-code", "off")
+            return client._http_result(400)
+        return replace(ACCEPTED, supports_agent_version=True)
+
+    monkeypatch.setattr(client, "_send", send)
+    assert client.main(ARGV) == 0
+    assert client.main(ARGV) == 0
+    status = client.delivery_status(client.os.environ, "claude-code")
+    assert versions == [1, 2] and status["queued"] == 1
+    assert status["configuration"] == "disabled"
+    client._write_consent(opted_in, "claude-code", "on")
+    client.flush_usage(ENDPOINT, opted_in, "claude-code", env=client.os.environ)
+    assert versions == [1, 2, 1]
 
 
 def test_status_handles_incomplete_health_schema_without_mutating_queue(opted_in, monkeypatch, capsys):
@@ -923,7 +1010,7 @@ def test_dashboard_persists_actions_while_delivery_is_stalled(opted_in, monkeypa
         return client._Delivery("retry", "network")
 
     monkeypatch.setattr(client, "_send", stalled_send)
-    dashboard = DashboardUsage.from_environment("claude-code", "0.3.8")
+    dashboard = DashboardUsage.from_environment("claude-code", "0.3.8", "2.1.280")
     assert dashboard is not None
     dashboard._enqueue("dashboard.render")
     try:
@@ -932,6 +1019,7 @@ def test_dashboard_persists_actions_while_delivery_is_stalled(opted_in, monkeypa
         queue, = opted_in.glob("client-*.sqlite3")
         with closing(sqlite3.connect(queue)) as database:
             assert database.execute("SELECT count(*) FROM pending").fetchone() == (2,)
+            assert database.execute("SELECT version FROM event_agent_version").fetchall() == [("2.1.280",)] * 2
     finally:
         release.set()
 
@@ -942,6 +1030,14 @@ def test_protocol_accepts_only_fixed_fields_and_duration_buckets():
              "outcome": "success", "duration_bucket": "lt_100ms", "version": "0.3.8"}
     batch = {"schema_version": 1, "adapter": "claude-code", "installation_id": uuid4().hex, "events": [event]}
     assert validate_payload(batch) is batch
+    assert validate_payload({**batch, "schema_version": 2})["events"] == [event]
+    release = {**event, "agent_version": "2.2.5-beta.2"}
+    assert validate_payload({**batch, "schema_version": 2, "events": [release]})["events"] == [release]
+    with pytest.raises(ValueError):
+        validate_payload({**batch, "events": [release]})
+    for value in ("2.2.5\n", "2.2.5-private", "99999.1.0", None, 42):
+        with pytest.raises(ValueError):
+            validate_payload({**batch, "schema_version": 2, "events": [{**event, "agent_version": value}]})
     for invalid in ({**event, "args": "private string"}, {**event, "feature": "private-string"},
                     {**event, "day": "2026-02-31"}, {**event, "version": "private version"}):
         with pytest.raises(ValueError):

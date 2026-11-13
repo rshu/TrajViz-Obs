@@ -6,6 +6,7 @@ import manifest from '../package.json' with { type: 'json' }
 import type { Runtime } from './runtime.js'
 import type { CommandResult } from './rpc.js'
 import { DELIVERY_STATUS_UNAVAILABLE, deliveryStatusText, destinationStatusText } from './shared/delivery-status.js'
+import { TELEMETRY_WORKER_TIMEOUT_MS, telemetryAgentVersion } from './shared/telemetry-version.js'
 import { userStateRoot } from './user-state.js'
 
 export type UsageSurface = 'terminal' | 'desktop' | 'headless' | 'unknown'
@@ -114,12 +115,17 @@ export async function usageDestination(runtime: Pick<Runtime, 'bridge' | 'teleme
   return usageControl(runtime, signal, action, unavailable, value => destinationStatusText(value, operation))
 }
 
-export function dashboardUsageArgs(): string[] {
-  return usageEnabled() ? ['--usage-adapter', 'opencode', '--usage-version', manifest.version] : []
+export function dashboardUsageArgs(hostVersion?: string): string[] {
+  if (!usageEnabled()) return []
+  const args = ['--usage-adapter', 'opencode', '--usage-version', manifest.version]
+  const agentVersion = telemetryAgentVersion(hostVersion)
+  if (agentVersion) args.push('--usage-agent-version', agentVersion)
+  return args
 }
 
 /** Detached children persist independently, while the SQLite lease allows one uploader. */
-export function createUsageReporter(runtime: Pick<Runtime, 'bridge' | 'telemetryPython'>): UsageReporter {
+export function createUsageReporter(runtime: Pick<Runtime, 'bridge' | 'telemetryPython'>, hostVersion?: string): UsageReporter {
+  const agentVersion = telemetryAgentVersion(hostVersion)
   const queue: Usage[] = []
   let children = 0
   let scheduled = false
@@ -145,10 +151,11 @@ export function createUsageReporter(runtime: Pick<Runtime, 'bridge' | 'telemetry
         const argv = ['-I', path.join(runtime.bridge, 'telemetry_client.py'), '--adapter', 'opencode',
           '--surface', surface, '--feature', feature, '--outcome', outcome, '--duration-ms',
           String(Math.max(0, Math.round(durationMs))), '--version', manifest.version]
+        if (agentVersion) argv.push('--agent-version', agentVersion)
         const child = spawn(python, argv, { cwd: homedir(), env, detached: process.platform !== 'win32',
           windowsHide: true, stdio: 'ignore' })
         children++
-        const timer = setTimeout(() => child.kill(), 10_000)
+        const timer = setTimeout(() => child.kill(), TELEMETRY_WORKER_TIMEOUT_MS)
         timer.unref()
         child.on('error', () => {})
         child.once('close', () => { clearTimeout(timer); children--; schedule() })

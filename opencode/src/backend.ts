@@ -216,7 +216,7 @@ export class Backend {
     // children unchanged. An explicit reopen must reload those companions.
     const revision = inspected ? inspected.compound ? randomUUID() : hash(inspected.bytes!) : ''
     const labelRevision = labelsAt >= 0 ? hash(await readFile(argv[labelsAt + 1]!, 'utf8')) : ''
-    const usageArgs = dashboardUsageArgs()
+    const usageArgs = dashboardUsageArgs(this.ctx.app?.version)
     const signature = JSON.stringify([argv, revision, labelRevision, usageArgs])
     const live = this.servers.get(key)
     if (live?.signature === signature && live.child.exitCode === null && live.child.signalCode === null) return live

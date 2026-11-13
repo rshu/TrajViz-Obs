@@ -7,6 +7,8 @@ from datetime import date
 from typing import Any
 
 SCHEMA_VERSION = 1
+AGENT_VERSION_SCHEMA = 2
+SCHEMA_HEADER = "TrajViz-Obs-Telemetry-Schema"
 MAX_BATCH = 32
 MAX_BODY = 16 * 1024
 BACKFILL_DAYS = 7
@@ -32,6 +34,7 @@ _UUID4 = re.compile(r"[0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15}")
 _VERSION = re.compile(r"(?:0|[1-9][0-9]{0,3})(?:\.(?:0|[1-9][0-9]{0,3})){2}(?:-(?:alpha|beta|rc)\.[0-9]{1,3})?")
 _DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _EVENT_FIELDS = {"id", "day", "surface", "feature", "outcome", "duration_bucket", "version"}
+_AGENT_VERSION_EVENT_FIELDS = _EVENT_FIELDS | {"agent_version"}
 _PAYLOAD_FIELDS = {"schema_version", "adapter", "installation_id", "events"}
 
 
@@ -46,9 +49,16 @@ def _matches(pattern: re.Pattern[str], value: Any) -> bool:
     return isinstance(value, str) and pattern.fullmatch(value) is not None
 
 
-def validate_event(event: Any) -> dict:
-    if not isinstance(event, dict) or set(event) != _EVENT_FIELDS:
+def valid_agent_version(value: Any) -> bool:
+    return _matches(_VERSION, value)
+
+
+def validate_event(event: Any, *, schema_version: int = SCHEMA_VERSION) -> dict:
+    allowed_fields = (_EVENT_FIELDS, _AGENT_VERSION_EVENT_FIELDS) if schema_version == AGENT_VERSION_SCHEMA else (_EVENT_FIELDS,)
+    if not isinstance(event, dict) or set(event) not in allowed_fields:
         raise ValueError("invalid event fields")
+    if "agent_version" in event and not valid_agent_version(event["agent_version"]):
+        raise ValueError("invalid agent version")
     if not _matches(_UUID4, event["id"]) or not _matches(_DAY, event["day"]):
         raise ValueError("invalid event identifier or day")
     date.fromisoformat(event["day"])
@@ -69,14 +79,15 @@ def validate_event(event: Any) -> dict:
 def validate_payload(payload: Any) -> dict:
     if not isinstance(payload, dict) or set(payload) != _PAYLOAD_FIELDS:
         raise ValueError("invalid batch fields")
-    if type(payload["schema_version"]) is not int or payload["schema_version"] != SCHEMA_VERSION:
+    schema_version = payload["schema_version"]
+    if type(schema_version) is not int or schema_version not in (SCHEMA_VERSION, AGENT_VERSION_SCHEMA):
         raise ValueError("unsupported schema version")
     if payload["adapter"] not in ADAPTERS or not _matches(_UUID4, payload["installation_id"]):
         raise ValueError("invalid adapter or installation identifier")
     events = payload["events"]
     if not isinstance(events, list) or not 1 <= len(events) <= MAX_BATCH:
         raise ValueError("invalid event batch size")
-    ids = {validate_event(event)["id"] for event in events}
+    ids = {validate_event(event, schema_version=schema_version)["id"] for event in events}
     if len(ids) != len(events):
         raise ValueError("duplicate identifier within batch")
     return payload
