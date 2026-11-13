@@ -88,19 +88,108 @@ def _loaded_run(block, path, session_id=None):
     return next(value for value in values.values() if isinstance(value, tv.Trajectory))
 
 
+@pytest.mark.parametrize(("tokens", "expected"), [
+    ({"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+     ("0", "0", "0", "0", "0", "0")),
+    ({"input": 0, "output": 0, "reasoning": 34, "cache": {"read": 0, "write": 0}},
+     ("0", "0", "34", "0", "0", "0 (0.0%)")),
+    ({"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 34}},
+     ("0", "0", "0", "0", "34", "0 (0.0%)")),
+    ({"input": 4}, ("4", "N/A", "N/A", "N/A", "N/A", "4")),
+])
+def test_deep_dive_renders_recorded_token_components_and_tool_denominator(tmp_path, tokens, expected):
+    source = tmp_path / "usage.json"
+    source.write_text(json.dumps({
+        "source_format": "opencode_v2", "schema_version": 1, "session": {"id": "usage"},
+        "messages": [{"type": "assistant", "id": "assistant", "model": {"id": "Fresh input"},
+                      "tokens": tokens, "time": {"created": 1_790_000_000_000, "completed": 1_790_000_001_000},
+                      "content": [{"type": "text", "text": "Checked."}]}],
+    }))
+    app = build_preloaded_insight(str(source))
+    loader = next(entry for entry in app.fns.values() if entry.api_name == "_do_load")
+    outputs = loader.fn(str(source), False, "")
+    metrics = next(value for value in outputs.values() if isinstance(value, str) and value.startswith("### Timing"))
+
+    for label, value in zip(("Input", "Output", "Reasoning", "Cache read", "Cache write", "Fresh input"), expected, strict=True):
+        assert re.search(rf">{label}</span></span><span[^>]*>{re.escape(value)}</span>", metrics), label
+    assert re.search(r">Tok/tool call</span></span><span[^>]*>N/A</span>", metrics)
+    assert re.search(r">Fresh input</span><span[^>]*>1</span>", metrics)  # The literal model ID.
+    assert "### Tokens" in metrics and "### Efficiency" in metrics and "**Model breakdown**" in metrics
+
+
+def test_deep_dive_keeps_step_links_and_distinguishes_missing_from_zero(tmp_path):
+    from agent_trajviz.insight.report import _mixed_md_to_html
+
+    source = tmp_path / "opencode.json"
+    base = 1_790_000_000_000
+
+    def assistant(id_, **evidence):
+        return {"type": "assistant", "id": id_, "content": [{"type": "text", "text": "Checked."}], **evidence}
+
+    source.write_text(json.dumps({
+        "source_format": "opencode_v2", "schema_version": 1, "session": {"id": "deep-dive"},
+        "messages": [
+            {"type": "user", "id": "prompt", "time": {"created": base}, "text": "Review the tests."},
+            assistant("timed", time={"created": base + 100, "completed": base + 1_000}),
+            assistant("zero", time={"created": base + 1_100, "completed": base + 2_000},
+                      tokens={"total": 0, "input": 0, "output": 0, "cache": {"read": 0, "write": 0}}),
+            assistant("untimed", tokens={"total": 40, "input": 30, "output": 10}),
+        ],
+    }))
+    app = build_preloaded_insight(str(source))
+    loader = next(entry for entry in app.fns.values() if entry.api_name == "_do_load")
+    values = loader.fn(str(source), False, "")
+    hotspots, per_message = [values[block] for block in loader.outputs
+                            if "diagnostics-data-table" in (block.elem_classes or [])]
+
+    latency, token = hotspots.split("**Top token-load steps**")
+    assert "**Top latency steps**" in latency
+    assert re.search(r"#tv-step-1[^\n]+0\.90 \| N/A \|", latency)
+    assert re.search(r"#tv-step-2[^\n]+0\.90 \| 0 \|", latency)
+    assert re.search(r"#tv-step-3[^\n]+40 \| 0 \| N/A \|", token)
+    assert "#tv-step-0" not in token and " | None | " not in hotspots
+    assert "**Lowest cache read steps**\n\n*No cache-read shares could be ranked.*" in token
+    assert "**Top context-growth steps**\n\n*No positive context growth" in token
+    assert re.findall(r"#tv-step-([0-9]+)", per_message) == ["0", "1", "2", "3"]
+    metrics = next(value for value in values.values() if isinstance(value, str) and value.startswith("### Timing"))
+    assert "Requires complete assistant token and timing records." in metrics
+    assert "Partial coverage: 1/3 recorded" in metrics
+    html = _mixed_md_to_html(per_message)
+    assert "<td>0</td>" in html and "#tv-step-" not in html
+
+
+def test_deep_dive_does_not_deny_observed_cache_reads_without_a_total(tmp_path):
+    source = tmp_path / "partial-claude.jsonl"
+    source.write_text(json.dumps({
+        "type": "assistant", "sessionId": "partial", "uuid": "assistant", "timestamp": "2026-10-28T01:00:01Z",
+        "message": {"id": "reply", "role": "assistant", "model": "claude-test",
+                    "content": [{"type": "text", "text": "Checked."}],
+                    "usage": {"input_tokens": 12, "output_tokens": 5, "cache_read_input_tokens": 50}},
+    }) + "\n")
+    app = build_preloaded_insight(str(source))
+    loader = _loader(app)
+    values = loader.fn(str(source), False, "")
+    hotspots = next(value for value in values.values() if isinstance(value, str)
+                    and value.startswith("### Message Hotspots"))
+    metrics = next(value for value in values.values() if isinstance(value, str) and value.startswith("### Timing"))
+    assert re.search(r">Cache read</span></span><span[^>]*>50</span>", metrics)
+    assert re.search(r">Total tokens</span></span><span[^>]*>N/A</span>", metrics)
+    assert "**Lowest cache read steps**\n\n*No cache-read shares could be ranked.*" in hotspots
+
+
 def test_token_explanations_distinguish_missing_cache_counters_from_zero(tmp_path):
     source = tmp_path / "opencode.json"
     base = 1_790_000_000_000
-    usage = {"total": 50, "input": 45, "output": 5}
+    usage = {"total": 50, "input": 45, "output": 5, "reasoning": 0}
     source.write_text(json.dumps({
         "source_format": "opencode_v2", "schema_version": 1,
         "session": {"id": "tokens", "time": {"created": base, "updated": base + 3000}},
         "messages": [{
-            "id": f"message-{index}", "type": "assistant", "agent": "build",
+            "id": f"message-{index}", "type": "assistant", "agent": "build", "model": {"id": "<demo-model>"},
             "content": [{"type": "text", "text": "Recorded reply"}],
             "time": {"created": base + index * 1000, "completed": base + (index + 1) * 1000},
             "tokens": tokens,
-        } for index, tokens in enumerate([usage, {**usage, "reasoning": 0, "cache": {"read": 0, "write": 0}}])],
+        } for index, tokens in enumerate([{**usage, "cache": {"read": 0, "write": 0}}, usage])],
     }))
     app = build_preloaded_insight(str(source))
     outputs = _loader(app).fn(str(source), False, "")
@@ -113,10 +202,16 @@ def test_token_explanations_distinguish_missing_cache_counters_from_zero(tmp_pat
     summary = markup("token-summary-wrap")
     assert "0% cache hit" not in summary and "Largest step" in summary
     details = markup("token-step-explain")
-    partial, complete = details.split("data-step='1'", 1)
+    complete, partial = details.split("data-step='1'", 1)
     assert "Available token counts" in partial and "Some token counts are unavailable" in partial
-    assert "Total 50" in partial and "No prefix cache hits" not in partial
-    assert "No prefix cache hits" in complete
+    assert "&lt;demo-model&gt;" in partial and "tvGotoWorkflowStep(1)" in partial
+    assert "Open step in Workflow" in partial and "No prefix cache hits" not in partial
+    assert "Total" in partial and "</th><td>50</td>" in partial
+    assert "Reasoning" in partial and "</th><td>0</td>" in partial
+    assert "Cache read" in partial and "Unavailable" in partial
+    assert "No prefix cache hits" in complete and "Fresh Input" in complete
+    assert "Other input ≈ 45 tok" in complete and "System prompt and tool definitions ≈" not in complete
+    assert "How the estimates are calculated" in details and "provider’s count" in details
 
 
 @pytest.fixture

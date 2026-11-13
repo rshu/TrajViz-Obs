@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, get_type_hints
 
 from .attribution_ui import public_translation_head
 from .compat import attribution_message, write_dashboard_report
+from .dashboard_metrics import METRIC_TRANSLATIONS
+from .dashboard_timeline import TIMELINE_TRANSLATIONS, timeline_builder
 from .errors import BridgeError
 from .native_quality import _clone_native_function
 
@@ -29,6 +31,15 @@ _EMPTY_CHART = {
 }
 _GANTT_STEP = re.compile(r"^<b>Step (\d+)</b> ")
 _GANTT_TOKEN_COUNT = re.compile(r"(?<=<br>)-?[\d,]+ tokens$")
+_DEEP_DIVE_TRANSLATIONS = {
+    "Top context-growth steps": "上下文增长最多的步骤",
+    "Context Growth": "上下文增长",
+    "Own Completion": "本步生成",
+    "New Content": "新增内容",
+    "No cache-read shares could be ranked.": "没有可排序的缓存读取占比。",
+    "No positive context growth could be measured between consecutive calls.": "未能测得相邻调用间的上下文增长。",
+    "Open Workflow step {n}": "在工作流中查看第 {n} 步",
+}
 
 _CSS = """
 .obs-dashboard .main { width: 100% !important; min-width: 0 !important; max-width: 1440px !important;
@@ -52,6 +63,17 @@ _CSS = """
 .obs-dashboard .obs-guide-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px; margin-top: 12px; }
 .obs-dashboard .obs-guide p { font-size: 13px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
+.obs-dashboard .obs-guide-charts { font-size: 12px; color: var(--ov-accent, #1d4ed8); text-decoration: underline; }
+.obs-dashboard #obs-summary-chart-guide { scroll-margin-top: 76px; }
+.obs-dashboard #obs-summary-chart-guide button.section-guide-trigger {
+  padding: 0; border: 0; border-bottom: 1px dotted currentColor; background: transparent; font-family: inherit;
+}
+.obs-dashboard #obs-summary-chart-guide button.section-guide-trigger:focus-visible {
+  outline: 2px solid var(--ov-accent, #1d4ed8); outline-offset: 2px;
+}
+.obs-dashboard #obs-summary-chart-guide .section-guide-tip.obs-guide-dismissed .section-guide-pop {
+  display: none;
+}
 .obs-dashboard .obs-guide strong { display: block; margin-bottom: 3px; }
 .obs-dashboard .obs-model-note { font-size: 12px !important; margin-top: 12px !important;
   color: var(--ov-muted, #475569); }
@@ -85,11 +107,14 @@ _CSS = """
 .obs-dashboard .obs-chart > .js-plotly-plot { min-width: 0; width: 100%; }
 .obs-dashboard .obs-chart:has(> .empty) { display: none !important; }
 .obs-dashboard .obs-chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 640px), 1fr)); }
+.obs-dashboard .obs-summary-charts { grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); }
 .obs-dashboard .token-step-explain { min-width: 0; overflow-wrap: anywhere; }
+.obs-dashboard .tv-token-step-detail { scroll-margin-top: 64px; }
 .obs-dashboard .obs-markdown { min-width: 0 !important; max-width: 100%; overflow-x: auto; }
 .obs-dashboard .obs-markdown table { width: max-content; min-width: 100%; }
 .obs-dashboard .obs-markdown th, .obs-dashboard .obs-markdown td { max-width: 360px; overflow-wrap: break-word; }
 .obs-dashboard .obs-markdown > div > div > div { max-width: 100%; overflow-wrap: anywhere; }
+.obs-dashboard .obs-metric-text { font-size: max(1em, 11px); }
 .obs-dashboard .cvg-report { min-width: 0; max-width: 100%; overflow-x: auto; }
 .obs-dashboard .obs-chart:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .obs-dashboard .insight-step-link:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
@@ -169,7 +194,7 @@ _DARK = """document.documentElement.style.colorScheme = 'dark';
   document.documentElement.classList.add('dark', 'tv-theme-dark');
   document.body?.classList.add('dark');"""
 
-_JS = "() => {\n  " + _LIGHT + """
+_JS = "() => {\n  " + _LIGHT + r"""
   const root = document.querySelector('.gradio-container');
   if (!root || root.dataset.obsLayoutBound) return [];
   root.dataset.obsLayoutBound = 'true';
@@ -179,14 +204,66 @@ _JS = "() => {\n  " + _LIGHT + """
   let queued = false;
   let sourceSettled = false;
   let measuredTabs = null;
+  let tokenPanel = null;
+  let guideTip = null;
+  const guideSelector = '#obs-summary-chart-guide .section-guide-tip';
+  const reopenGuide = tip => tip.classList.remove('obs-guide-dismissed');
+  const tokenSelection = new MutationObserver(records => {
+    // TrajViz toggles the selected step's display when a token bar is clicked.
+    const detail = records.find(({target}) => target.matches('.tv-token-step-detail')
+      && target.getClientRects().length)?.target;
+    if (!detail) return;
+    const {top, bottom} = detail.getBoundingClientRect();
+    if (bottom <= 56 || top >= window.innerHeight - 64) detail.scrollIntoView({block: 'start'});
+  });
   const resize = new ResizeObserver(entries => {
     for (const {target, contentRect} of entries) {
       target.classList.toggle('obs-content-medium', contentRect.width < 1000);
       target.classList.toggle('obs-content-narrow', contentRect.width < 600);
     }
   });
+  root.addEventListener('click', event => {
+    const trigger = event.target.closest?.(guideSelector + ' button');
+    if (trigger) {
+      reopenGuide(trigger.parentElement);
+      trigger.focus({preventScroll: true});
+      return;
+    }
+    const link = event.target.closest?.('.obs-guide-charts');
+    if (!link || !window.tvClickMainTab || event.defaultPrevented || event.button !== 0
+        || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    event.preventDefault();
+    window.tvClickMainTab('Overview');
+    const start = performance.now();
+    let selectedSummary = false;
+    const showGuide = () => {
+      const summary = root.querySelector('.overview-section-radio input[value="Summary"]');
+      if (summary && !summary.checked && !selectedSummary) {
+        selectedSummary = true;
+        summary.click();
+      }
+      const guide = root.querySelector('#obs-summary-chart-guide');
+      const tip = guide?.querySelector('.section-guide-tip');
+      const trigger = tip?.querySelector('button');
+      if (trigger?.getClientRects().length) {
+        guide.scrollIntoView({block: 'start'});
+        reopenGuide(tip);
+        trigger.focus({preventScroll: true});
+      } else if (performance.now() - start < 3000) {
+        requestAnimationFrame(showGuide);
+      }
+    };
+    requestAnimationFrame(showGuide);
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    const tip = root.querySelector(guideSelector);
+    if (tip?.querySelector('.section-guide-pop')?.getClientRects().length) {
+      tip.classList.add('obs-guide-dismissed');
+    }
+  });
   root.addEventListener('keydown', event => {
-    const step = event.target.closest?.('.insight-step-link');
+    const step = event.target.closest?.('.insight-step-link:not(a[href])');
     if (step && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
       step.click();
@@ -195,6 +272,18 @@ _JS = "() => {\n  " + _LIGHT + """
   function polish() {
     queued = false;
     const tabs = root.querySelector('.obs-main-tabs');
+    const tip = root.querySelector(guideSelector);
+    if (tip && tip !== guideTip) {
+      tip.addEventListener('pointerenter', () => reopenGuide(tip));
+      tip.addEventListener('focusin', () => reopenGuide(tip));
+      guideTip = tip;
+    }
+    const panel = root.querySelector('.token-step-explain');
+    if (panel !== tokenPanel) {
+      tokenSelection.disconnect();
+      if (panel) tokenSelection.observe(panel, {subtree: true, attributeFilter: ['style']});
+      tokenPanel = panel;
+    }
     // Gradio moves narrow-screen tabs into a dropdown without role="tab".
     // Keep upstream step links, chart clicks, and history navigation working.
     if (typeof window.tvClickMainTab === 'function' && !window.tvClickMainTab.obsOverflowAware) {
@@ -240,10 +329,59 @@ _JS = "() => {\n  " + _LIGHT + """
       const button = root.querySelector('.obs-source-controls > button');
       if (button?.classList.contains('open')) button.click();
     }
+    root.querySelectorAll('.obs-timeline-axis label').forEach(label => {
+      const choice = {skip_idle: 'Compress idle gaps (default)', wallclock: 'True wall-clock'};
+      const key = choice[label.querySelector('input[type=radio]')?.value];
+      const caption = label.querySelector('span');
+      if (key && caption && caption.getAttribute('data-tv-i18n') !== key) caption.setAttribute('data-tv-i18n', key);
+    });
+    root.querySelectorAll('.diagnostics-data-table p > :is(strong, em)').forEach(caption => {
+      const key = caption.textContent.trim();
+      if (!caption.hasAttribute('data-tv-i18n') && Object.hasOwn(window.__tvTranslations || {}, key)) {
+        caption.setAttribute('data-tv-i18n', key);
+      }
+    });
+    root.querySelectorAll('.obs-metric-text, .tv-owned-markdown p > strong').forEach(caption => {
+      if (caption.hasAttribute('data-tv-i18n')) return;
+      const value = caption.textContent.trim();
+      const coverage = value.match(/^Partial coverage: ([0-9]+)\/([0-9]+) recorded$/);
+      if (coverage) {
+        caption.setAttribute('data-tv-i18n-args', JSON.stringify({observed: coverage[1], total: coverage[2]}));
+        caption.setAttribute('data-tv-i18n', 'Partial coverage: {observed}/{total} recorded');
+      } else if (Object.hasOwn(window.__tvTranslations || {}, value)) {
+        caption.setAttribute('data-tv-i18n', value);
+      }
+      if (value !== 'Tool calls') return;
+      const suffix = caption.nextSibling;
+      const match = suffix?.nodeType === 3 && suffix.textContent.trim().match(
+        /^\(([0-9]+) total, (?:([0-9.]+)% success|success rate unavailable(?:, ([0-9]+)\/[0-9]+ outcomes recorded)?)\)$/
+      );
+      if (!match) return;
+      const [, count, rate, observed] = match;
+      const text = document.createElement('span');
+      text.textContent = suffix.textContent.trim();
+      text.dataset.tvI18nArgs = JSON.stringify({count, rate, observed});
+      text.dataset.tvI18n = rate ? '({count} total, {rate}% success)' : observed
+        ? '({count} total, success rate unavailable, {observed}/{count} outcomes recorded)'
+        : '({count} total, success rate unavailable)';
+      suffix.replaceWith(document.createTextNode(' '), text);
+    });
     root.querySelectorAll('.insight-step-link').forEach(step => {
+      if (step.matches('a[href]')) {
+        const number = step.getAttribute('href').match(/^#tv-step-([0-9]+)$/)?.[1];
+        if (number && !step.hasAttribute('data-tv-i18n')) {
+          step.setAttribute('aria-label', `Open Workflow step ${number}`);
+          step.setAttribute('data-tv-i18n-attr', 'aria-label');
+          step.setAttribute('data-tv-i18n-args', JSON.stringify({n: number}));
+          step.setAttribute('data-tv-i18n', 'Open Workflow step {n}');
+        }
+        return;
+      }
       step.setAttribute('tabindex', '0');
       step.setAttribute('role', 'button');
-      step.setAttribute('aria-label', `Inspect step ${step.textContent.trim()} in Workflow`);
+      if (!step.closest('.token-step-explain')) {
+        step.setAttribute('aria-label', `Inspect step ${step.textContent.trim()} in Workflow`);
+      }
     });
     root.querySelectorAll('.obs-chart').forEach(el => {
       el.setAttribute('tabindex', '0');
@@ -278,7 +416,8 @@ _JS = "() => {\n  " + _LIGHT + """
 
 _GUIDE = {
     "insight": """<section class="obs-guide" aria-label="Dashboard guide">
-<div class="obs-guide-header"><h1>TrajViz Obs</h1><p>Session health, evidence, and comparisons.</p></div>
+<div class="obs-guide-header"><h1>TrajViz Obs</h1><p>Session health, evidence, and comparisons.</p>
+<a class="obs-guide-charts" href="#obs-summary-chart-guide"><span data-tv-i18n="" data-tv-i18n-en="Chart guide" data-tv-i18n-zh="图表说明">Chart guide</span></a></div>
 <details><summary>How to use this dashboard</summary><div class="obs-guide-grid">
 <p><strong>1 · Overview</strong>Review health and issues in Summary. Choose <b>Analyze issue with AI</b> on a finding to discuss it in the sidebar. Find context growth in Deep Dive.</p>
 <p><strong>2 · Workflow</strong>Follow individual steps and switch to Expanded for full evidence. Click an issue’s step number to jump to its evidence.</p>
@@ -307,7 +446,9 @@ def presentation(kind: str, upstream: dict[str, Any]) -> dict[str, Any]:
     native_css = (upstream.get("css") or "").replace("@media (prefers-color-scheme: dark)", "@media not all")
     result = {**upstream, "css": f'{native_css}\n{css}'}
     if kind == "insight" and isinstance(result.get("head"), str):
-        result["head"] = public_translation_head(result["head"])
+        result["head"] = public_translation_head(result["head"], extra={
+            **TIMELINE_TRANSLATIONS, **_DEEP_DIVE_TRANSLATIONS, **METRIC_TRANSLATIONS,
+        })
     return result
 
 
@@ -320,6 +461,7 @@ def configure_insight(app: gr.Blocks, *, dark: bool = False, inline_plotly: bool
 
     if dark:
         _set_dark_theme(app)
+    _repair_workflow_jump(app)
     _bound_expanded_workflow(app)
     _scope_overview_issues(app)
     _scope_gantt_hover(app)
@@ -375,7 +517,9 @@ def _scope_overview_issues(app: gr.Blocks) -> None:
 
 
 def _scope_gantt_hover(app: gr.Blocks) -> None:
-    """Preserve native timing and disclose missing tokens in Gantt hover text."""
+    """Use prompt-aware timing and disclose missing tokens in Gantt hover text."""
+    from agent_trajviz.insight.ui.shared import safe_callback
+
     from .native_quality import dashboard_token_total_observed
 
     loaders = [entry for entry in app.fns.values() if getattr(entry.fn, "__name__", "") == "_do_load"]
@@ -389,6 +533,13 @@ def _scope_gantt_hover(app: gr.Blocks) -> None:
             or slots.get("state_steps") not in loader.outputs or axis.outputs != [slots["gantt_chart"]]):
         raise BridgeError("dashboard_incompatible", "TrajViz's Execution Timeline outputs changed.")
     chart, steps_state = slots["gantt_chart"], slots["state_steps"]
+    radio = slots["gantt_axis_mode"]
+    radio.elem_classes = [*(radio.elem_classes or []), "obs-timeline-axis"]
+    radio.choices = [("Compress idle gaps (default)" if value == "skip_idle" else label, value)
+                     for label, value in radio.choices]
+    build = safe_callback("Execution Timeline")(_replace_native_binding(
+        inspect.unwrap(original_axis), "build_execution_gantt_chart", timeline_builder(),
+    ))
 
     def mark_missing(fig, steps):
         missing = {step["index"] for step in (steps or []) if not dashboard_token_total_observed(step)}
@@ -402,7 +553,7 @@ def _scope_gantt_hover(app: gr.Blocks) -> None:
             return label
 
         for trace in fig.data:
-            if trace.type == "bar" and trace.hovertext is not None:
+            if trace.type == "bar" and isinstance(trace.hovertext, (list, tuple)):
                 trace.hovertext = tuple(hover_label(label) for label in trace.hovertext)
         return fig
 
@@ -414,7 +565,7 @@ def _scope_gantt_hover(app: gr.Blocks) -> None:
 
     @functools.wraps(original_axis)
     def change_axis(axis_mode, steps, dark):
-        return mark_missing(original_axis(axis_mode, steps, dark), steps)
+        return mark_missing(build(axis_mode, steps, dark), steps)
 
     load.__annotations__ = get_type_hints(original_load)  # Retain Gradio's typed request injection.
     loader.fn = load
@@ -486,6 +637,24 @@ def _set_dark_theme(app: gr.Blocks) -> None:
     callback.fn = lambda _dark=False: True
 
 
+def _repair_workflow_jump(app: gr.Blocks) -> None:
+    """Let the native jump reset a search or filters that hid the target."""
+    callback = next((entry for entry in app.fns.values() if "window.tvGotoWorkflowStep = function" in (entry.js or "")), None)
+    if callback is None:
+        raise BridgeError("dashboard_incompatible", "TrajViz's Workflow navigation script changed.")
+    before = """&& document.querySelector('.wf-card')
+                                    && elapsed > 400)"""
+    reset = "if (reset) reset.click();"
+    if callback.js.count(before) != 1 or callback.js.count(reset) != 1:
+        raise BridgeError("dashboard_incompatible", "TrajViz's Workflow jump filter reset changed.")
+    callback.js = callback.js.replace(before, """&& document.getElementById('wf-filter-bar')
+                                    && elapsed > 400)""").replace(reset, """if (reset) {
+                                    const search = document.querySelector('.wf-toolbar-search textarea, .wf-toolbar-search input');
+                                    if (search?.value) window.tvSetGradioText('.wf-toolbar-search', '');
+                                    reset.click();
+                                }""")
+
+
 def decorate_dashboard(app: gr.Blocks, kind: str, *, dark: bool = False) -> gr.Blocks:
     """Wrap a native dashboard while preserving all its components and events."""
     import gradio as gr
@@ -519,6 +688,8 @@ def decorate_dashboard(app: gr.Blocks, kind: str, *, dark: bool = False) -> gr.B
             _responsive_plot(block)
         if isinstance(block, gr.Row) and sum(isinstance(child, gr.Plot) for child in block.children) > 1:
             block.elem_classes = [*(block.elem_classes or []), "obs-chart-row"]
+            if {child.elem_id for child in block.children} >= {"token-chart", "duration-chart"}:
+                block.elem_classes.append("obs-summary-charts")
         if isinstance(block, gr.Row) and any(isinstance(child, gr.Plot) for child in block.children):
             for child in block.children:
                 if isinstance(child, gr.Column) and not child.children:
@@ -670,6 +841,18 @@ def _focus_overview(page: gr.Blocks) -> None:
                    None) if content else None
     if summary is None:
         return
+    chart_guide = next((child for child in summary.children if isinstance(child, gr.HTML)
+                        and "section-guide-tip" in str(child.value)), None)
+    if chart_guide is not None:
+        chart_guide.elem_id = "obs-summary-chart-guide"
+        chart_guide.value = chart_guide.value.replace(
+            "<div class='section-guide-tip' tabindex='0'><span class='section-guide-trigger'>",
+            "<div class='section-guide-tip'><button type='button' class='section-guide-trigger' "
+            "aria-describedby='obs-summary-chart-help'>", 1,
+        ).replace(
+            "</span><div class='section-guide-pop' role='tooltip'>",
+            "</button><div class='section-guide-pop' role='tooltip' id='obs-summary-chart-help'>", 1,
+        )
     cards = [child for child in page.children if "overview-kpi-strip" in (child.elem_classes or [])]
     warnings = [child for child in page.children if isinstance(child, gr.Column) and any(
         "label-status-badge" in (part.elem_classes or []) for part in child.children)]
@@ -681,27 +864,3 @@ def _focus_overview(page: gr.Blocks) -> None:
     for column in warnings:
         column.elem_classes = [*(column.elem_classes or []), "obs-summary-status"]
     summary.children[:0] = [*cards, *warnings, *findings]
-    _focus_summary_charts(summary)
-
-
-def _focus_summary_charts(summary: gr.Column) -> None:
-    """Put each new chart control beside the content it affects, even when stacked."""
-    import gradio as gr
-
-    children = summary.children
-    token_explanation = next((child for child in children if "token-step-explain" in (child.elem_classes or [])), None)
-    token_row = next((child for child in children if isinstance(child, gr.Row)
-                      and any(plot.elem_id == "token-chart" for plot in child.children)), None)
-    if token_explanation is not None and token_row is not None:
-        duration = next((plot for plot in token_row.children if plot.elem_id == "duration-chart"), None)
-        if duration is not None:
-            token_row.children[token_row.children.index(duration)] = token_explanation
-            children[children.index(token_explanation)] = duration
-    gantt_row = next((child for child in children if isinstance(child, gr.Row)
-                     and any(plot.elem_id == "gantt-chart" for plot in child.children)), None)
-    gantt_control = next((child for child in children
-                          if any(isinstance(control, gr.Radio) and control.label == "Timeline axis"
-                                 for control in getattr(child, "children", []))), None)
-    if gantt_control is not None and gantt_row is not None:
-        children.remove(gantt_control)
-        children.insert(children.index(gantt_row), gantt_control)

@@ -299,12 +299,18 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     require(len(re.findall(r"class='tv-token-step-detail' data-step=", explanations)) == 11,
             "Token usage did not supply a decomposition for each step")
     require(any("token-summary-line" in str(value) for value in loaded.values()), "Missing Token Usage summary")
-    require(any("Top context-growth steps" in str(value) for value in loaded.values()), "Missing context-growth hotspots")
+    hotspots = next(value for value in loaded.values() if isinstance(value, str) and "### Message Hotspots" in value)
+    growth = hotspots.split("**Top context-growth steps**", 1)[-1]
+    require("| Step | Context Growth |" in growth and "#tv-step-9" in growth,
+            "The known context-growth hotspot omitted its Workflow step link")
+    messages = next(value for value in loaded.values() if isinstance(value, str) and "### Per-Message Diagnostics" in value)
+    require(set(re.findall(r"#tv-step-(\d+)", messages)) == set(details),
+            "Per-Message Diagnostics did not link every Workflow step in the fixture")
     full_json = json.loads(app.get_output(loaded, label="Full trajectory JSON"))
     require(full_json.get("metadata", {}).get("session_id") == fixtures["session_id"], "Raw Data belongs to another source")
     ledger["checks"].extend(["exact-path page preload", "1M context override", "sibling subagent merge", "Overview native chart set",
                              "Raw Data", "Workflow detail payload", "two-agent compressed and wall-clock Gantt",
-                             "token breakdown and summary", "context-growth hotspots"])
+                             "token breakdown and summary", "context-growth and per-message step links"])
 
     import httpx
 

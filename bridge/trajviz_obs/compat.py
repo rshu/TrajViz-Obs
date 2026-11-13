@@ -45,7 +45,7 @@ from agent_trajviz import LoadError, Trajectory
 
 from .errors import BridgeError
 from .native_quality import _clone_native_function, project_analysis, project_brief, project_view  # noqa: F401
-from .native_records import normalize_native_records
+from .native_records import claude_usage_gaps, normalize_native_records
 
 #: The installed TrajViz version.
 TRAJVIZ_VERSION: str = agent_trajviz.__version__
@@ -153,7 +153,7 @@ def _install_dsh_input_tracking() -> None:
 
 
 def _install_native_record_filter() -> None:
-    """Normalize at the shared native conversion seam, including dashboard uploads and ZIPs."""
+    """Preserve source evidence at the shared native conversion seam, including uploads and ZIPs."""
     check_supported()
     from agent_trajviz.insight import loaders
 
@@ -168,6 +168,29 @@ def _install_native_record_filter() -> None:
     if not required <= parameters.keys():
         raise BridgeError("unsupported_trajviz", "TrajViz's native Claude Code converter changed; "
                           "update the plugin before analyzing this session.")
+
+    # The converter selects the last usage dictionary for each merged response.
+    # Keep its selection and numeric representation, and carry only evidence flags.
+    extract_usage = original.__globals__.get("_cc_extract_usage")
+    build_step = original.__globals__.get("_cc_build_step")
+    if not (callable(extract_usage) and callable(build_step)
+            and {"_cc_extract_usage", "_cc_build_step"} <= set(original.__code__.co_names)):
+        raise BridgeError("unsupported_trajviz", "TrajViz's native Claude Code usage conversion changed; "
+                          "update the plugin before analyzing this session.")
+
+    def observed_usage(usage):
+        return {**extract_usage(usage), "_trajviz_obs_usage_gaps": claude_usage_gaps(usage)}
+
+    def observed_step(parts, **kwargs):
+        step = build_step(parts, **kwargs)
+        if step.get("role") == "assistant":
+            gaps = (kwargs.get("usage") or {}).get("_trajviz_obs_usage_gaps", [])
+            step["_metrics_unavailable_fields"] = list(dict.fromkeys([*step["_metrics_unavailable_fields"], *gaps]))
+        return step
+
+    native_convert = _clone_native_function(original, {
+        "_cc_extract_usage": observed_usage, "_cc_build_step": observed_step,
+    })
 
     @functools.wraps(original)
     def convert(events, *, source_path=None, child_event_lists=None, child_warnings=None):
@@ -184,8 +207,8 @@ def _install_native_record_filter() -> None:
             records, child_ignored = normalize_native_records(records)
             ignored += child_ignored
             children[agent] = {**bundle, "events": records} if isinstance(bundle, dict) else records
-        result = original(parent, source_path=source_path, child_event_lists=children,
-                          child_warnings=child_warnings)
+        result = native_convert(parent, source_path=source_path, child_event_lists=children,
+                                child_warnings=child_warnings)
         if ignored:
             result["_trajviz_obs_ignored_ui_records"] = ignored
         return result
@@ -363,14 +386,46 @@ def _dashboard_overview_presenter():
     from agent_trajviz.insight import formatting
     from agent_trajviz.insight.presenters import overview
 
+    from .dashboard_metrics import format_deep_dive_metrics
     from .native_quality import project_hotspots
 
-    render_hotspots = _clone_native_function(formatting._build_hotspots_md, {"hotspots": project_hotspots})
-    return _clone_native_function(overview.build_overview_outputs, {"_build_hotspots_md": render_hotspots})
+    def rank_hotspots(rows, *, steps=None):
+        # A user message's default zero is not a model token-load measurement.
+        ranked_rows = [{**row, "tokens_total": None} if row["role"] == "user" and row["tokens_total"] == 0 else row
+                       for row in rows]
+        return project_hotspots(ranked_rows, steps=steps)
+
+    native_hotspots = _clone_native_function(formatting._build_hotspots_md, {"hotspots": rank_hotspots})
+
+    def render_hotspots(rows, *, steps=None):
+        markdown = native_hotspots(rows, steps=steps)
+        # The native latency/token tables stringify missing secondary values.
+        markdown = re.sub(r"(?<=\| )None(?= \|)", "N/A", markdown)
+        before_growth, growth_heading, growth = markdown.partition("\n\n**Top context-growth steps**")
+        if "**Lowest cache read steps**" not in before_growth:
+            before_growth += "\n\n**Lowest cache read steps**\n\n*No cache-read shares could be ranked.*"
+        if not growth_heading:
+            growth_heading = "\n\n**Top context-growth steps**"
+            growth = "\n\n*No positive context growth could be measured between consecutive calls.*"
+        return before_growth + growth_heading + growth
+
+    def render_per_message(rows):
+        return re.sub(r"(?m)^\| ([0-9]+) \|", lambda match: f"| {formatting._step_link_md(int(match[1]))} |",
+                      formatting._build_per_message_md(rows))
+
+    @functools.wraps(overview.build_overview_outputs)
+    def build(session, **options):
+        native = _clone_native_function(overview.build_overview_outputs, {
+            "_build_hotspots_md": render_hotspots, "_build_per_message_md": render_per_message,
+            "format_performance_md": lambda metrics, clock: format_deep_dive_metrics(metrics, clock, session.message_rows),
+        })
+        return native(session, **options)
+
+    return build
 
 
 def write_dashboard_report(writer, source, *, dest, dark, inline_plotly):
-    """Use the same hotspot presentation in the downloadable and live dashboard."""
+    """Use the same Deep Dive presentation in the downloadable and live dashboard."""
     from agent_trajviz.insight import report
 
     render = _clone_native_function(report.build_report_html, {"build_overview_outputs": _dashboard_overview_presenter()})
@@ -380,9 +435,10 @@ def write_dashboard_report(writer, source, *, dest, dark, inline_plotly):
 
 def _dashboard_load_packer():
     """Apply evidence-aware presenters only to this app's initial and upload loads."""
-    from agent_trajviz.insight.presenters import workflow
+    from agent_trajviz.insight.presenters import overview, workflow
     from agent_trajviz.insight.ui import load
 
+    from .dashboard_timeline import timeline_builder
     from .dashboard_tokens import token_presenters
     from .native_quality import dashboard_field_observed
 
@@ -399,6 +455,9 @@ def _dashboard_load_packer():
         "workflow_tab": clone(load.workflow_tab.pack_load, {"build_workflow_outputs": workflow_outputs}),
         "overview_tab": clone(load.overview_tab.pack_load, {
             "build_overview_outputs": _dashboard_overview_presenter(),
+            "build_chart_outputs": clone(overview.build_chart_outputs, {
+                "build_execution_gantt_chart": timeline_builder(),
+            }),
             **token_presenters(clone),
         }),
     }
