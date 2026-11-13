@@ -75,7 +75,7 @@ function host(on: On, snapshots: unknown[], bridge: Record<string, unknown> = {}
   return { runs, rows, calls, opens }
 }
 
-const obs = ($: { command: { run: (args: never) => Promise<{ text?: string }> } }, args = ''): Promise<string> =>
+const obs = ($: { command: { run: (args: never) => Promise<{ text?: string }> } }, args = 'overview'): Promise<string> =>
   $.command.run({ command: 'obs', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never).then(r => r.text ?? '')
 
 /** The CommandOutput row of `/obs` carrying `text`, as the surface mounts it. */

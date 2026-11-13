@@ -1,5 +1,6 @@
 import type { CommandPresentation, CommandRunResult, EngineInterface, HookFailure, PluginOptions } from 'claude-code'
 import { BOOLEAN_FLAGS, parseArgs, selectionError, suggest, TELEMETRY_DESTINATION_USAGE, type Parsed } from '../lib/args'
+import { readFlags } from '../lib/state'
 import { commandFeature, markOutcome, reportTelemetry, setTelemetryConsent, telemetryConsentAtStart, telemetryDestination, telemetryStatus, type OutcomeTracker } from '../lib/telemetry'
 import { browser } from './browser'
 import { compare } from './compare'
@@ -51,6 +52,10 @@ const NO_POSITIONALS = ['overview', 'help', 'doctor', 'telemetry', 'enable_telem
 const SESSION_COMMANDS = ['overview', 'pane', 'view', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution', 'sessions']
 
 export async function dispatch($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
+  // Keep the shared parser's text default for OpenCode and for callers without a pane.
+  if (ctx.args.trim() === '' && ctx.personRequested && (await readFlags($)).isInteractive) {
+    ctx = { ...ctx, parsed: { ...ctx.parsed, sub: 'pane' } }
+  }
   const feature = commandFeature(ctx.parsed)
   if (!feature) return route($, ctx)
   const started = Date.now()

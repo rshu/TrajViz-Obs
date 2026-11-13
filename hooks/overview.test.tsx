@@ -6,7 +6,6 @@ import { BUSY_STALE_MS, captureSnapshot, mintId, parseSnapshotId, provenanceLine
 import { claimRefresh, releaseRefresh } from './lib/state'
 import { rememberTranscript, selectSession } from './lib/session'
 import { errorRow } from './commands/overview'
-import { maybeOpenPane } from './commands/pane'
 import { SNAPSHOT } from './testdata/snapshot'
 import { sha256 } from './lib/identity'
 
@@ -83,10 +82,10 @@ function refreshStore(on: On, initial: RefreshState) {
 const obs = ($: { command: { run: (args: never) => Promise<{ text?: string; context?: readonly string[] }> } }, args: string) =>
   $.command.run({ command: 'obs', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
 
-test('/obs returns provenance + text and a context note', async ($, on) => {
+test('/obs overview returns provenance + text and a context note', async ($, on) => {
   const { ran } = host(on, { bridge: { snapshot: json(SNAPSHOT) } })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  const out = await obs($, '')
+  const out = await obs($, 'overview')
   const lines = out.text!.split('\n')
   expect(lines[0]).toMatch(/^obs snapshot 1 · \d\d:\d\d:\d\d · 311 assistant steps · window 1,000,000/)
   expect(lines[0]).toContain('skipped sub-agent log agent-9f3c.jsonl')
@@ -106,7 +105,7 @@ test('/obs returns provenance + text and a context note', async ($, on) => {
 test('empty session row text', async ($, on) => {
   host(on, { bridge: { snapshot: json(EMPTY) } })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  const out = await obs($, '')
+  const out = await obs($, 'overview')
   expect(out.text).toBe('Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.')
   expect(out.context).toBeUndefined()
 })
@@ -117,7 +116,7 @@ test('busy guard', async ($, on) => {
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   store.value = HELD
   store.version++
-  expect((await obs($, '')).text).toBe('An analysis is already running; try again in a moment.')
+  expect((await obs($, 'overview')).text).toBe('An analysis is already running; try again in a moment.')
   expect(ran).toEqual([])
 })
 
@@ -126,7 +125,7 @@ test('a freshly loaded environment releases the unloaded environment\'s abandone
   const store = refreshStore(on, HELD)
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   expect(store.value.busy).toBe(false)
-  expect((await obs($, '')).text).toMatch(/^obs snapshot 1 · /)
+  expect((await obs($, 'overview')).text).toMatch(/^obs snapshot 1 · /)
 })
 
 test('duplicate session start in one live environment preserves its active refresh claim', async ($, on) => {
@@ -136,10 +135,10 @@ test('duplicate session start in one live environment preserves its active refre
   store.value = HELD
   store.version++
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  expect((await obs($, '')).text).toBe('An analysis is already running; try again in a moment.')
+  expect((await obs($, 'overview')).text).toBe('An analysis is already running; try again in a moment.')
   store.value = { ...HELD, busy: false, busySince: 0 }
   store.version++
-  expect((await obs($, '')).text).toMatch(/^obs snapshot 1 · /)
+  expect((await obs($, 'overview')).text).toMatch(/^obs snapshot 1 · /)
 })
 
 test('a stale busy is reclaimed', async ($, on) => {
@@ -153,24 +152,24 @@ test('a stale busy is reclaimed', async ($, on) => {
     return { value: { value: { ...HELD, busySince: NOW - BUSY_STALE_MS }, version: 0 } }
   })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  expect((await obs($, '')).text!.split('\n')[0]).toMatch(/^obs snapshot 1 · /)
+  expect((await obs($, 'overview')).text!.split('\n')[0]).toMatch(/^obs snapshot 1 · /)
   expect(ran.map(r => r[3])).toEqual(['snapshot'])
   // Released at the end: the next run claims it as usual.
-  expect((await obs($, '')).text!.split('\n')[0]).toMatch(/^obs snapshot 2 · /)
+  expect((await obs($, 'overview')).text!.split('\n')[0]).toMatch(/^obs snapshot 2 · /)
 })
 
 test('no transcript on the current session: the spec row, not the bridge message', async ($, on) => {
   // The current session has no transcript anywhere: the spec's row, not the bridge's message.
   const { ran } = host(on, { transcript: false, bridge: { resolve: { exitCode: 1, stdout: '{"error": {"code": "not_found", "message": "no session abc"}}' } } })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  expect((await obs($, '')).text).toBe('No transcript for this session yet. Send one prompt, then run /obs.')
+  expect((await obs($, 'overview')).text).toBe('No transcript for this session yet. Send one prompt, then run /obs.')
   expect(ran.map(r => r[3])).toEqual(['resolve'])
 })
 
 test('load error verbatim with its path', async ($, on) => {
   host(on, { bridge: { snapshot: { exitCode: 1, stdout: `{"error": {"code": "load_error", "message": "line 12: bad record", "path": "${DERIVED}"}}` } } })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  expect((await obs($, '')).text).toBe(`line 12: bad record (${DERIVED})`)
+  expect((await obs($, 'overview')).text).toBe(`line 12: bad record (${DERIVED})`)
 })
 
 test('--session resolves through the bridge and snapshots as kind other', async ($, on) => {
@@ -199,7 +198,7 @@ for (const imported of [false, true]) test(`a fresh ${imported ? 'imported' : 'c
     snapshot: json({ ...SNAPSHOT, artifacts: { ...SNAPSHOT.artifacts, dir: null }, transcript: { ...SNAPSHOT.transcript, path, session_id: id } }),
   } })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  const out = await obs($, imported ? '--session /saved/trajectory.jsonl' : '')
+  const out = await obs($, imported ? '--session /saved/trajectory.jsonl' : 'overview')
   const call = ran.find(argv => argv[3] === 'snapshot')!
   const artifacts = call[call.indexOf('--artifacts') + 1]!
   expect(out.context![0]).toContain(`go under ${artifacts} (`)
@@ -230,21 +229,21 @@ test('a host that withholds process answers one line (environment built)', async
   withholdProcess(on)
   host(on, { bridge: { snapshot: json(SNAPSHOT) } })
   await $.session.start({ cwd: CWD, surface: 'desktop', isInteractive: true })
-  expect((await obs($, '')).text).toBe("This session's host runs no commands, so /obs cannot compute here; run it from a terminal session.")
+  expect((await obs($, 'overview')).text).toBe("This session's host runs no commands, so /obs cannot compute here; run it from a terminal session.")
 })
 
 test('a host that withholds process answers one line (no environment yet)', async ($, on) => {
   withholdProcess(on)
   host(on, { env: false })
   await $.session.start({ cwd: CWD, surface: 'desktop', isInteractive: true })
-  expect((await obs($, '')).text).toBe("This session's host runs no commands, so /obs cannot compute here; run it from a terminal session.")
+  expect((await obs($, 'overview')).text).toBe("This session's host runs no commands, so /obs cannot compute here; run it from a terminal session.")
 })
 
 test('no python and no uv: the NoPythonError message is the row', async ($, on) => {
   const { ran } = host(on, { env: false })
   on('fs.write', () => ({ value: undefined }))
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  const out = await obs($, '')
+  const out = await obs($, 'overview')
   expect(out.text).toContain('No Python 3.11+ found to set TrajViz up with.')
   expect(out.text).toContain('uv (not found)')
   expect(ran.every(r => r[1] === '--version')).toBe(true)
@@ -252,7 +251,7 @@ test('no python and no uv: the NoPythonError message is the row', async ($, on) 
 
 // --- the library, over a fake `$` with state in memory ---
 
-type Fake = { $: EngineInterface; state: Map<string, { value: unknown; version: number }>; ran: string[][]; clock: { now: number }; opens: unknown[] }
+type Fake = { $: EngineInterface; state: Map<string, { value: unknown; version: number }>; ran: string[][]; clock: { now: number } }
 
 const stateKey = (ref: StateAddress): string => (ref.id === undefined ? ref.key : `${ref.key}/${ref.id}`)
 
@@ -262,7 +261,6 @@ function fake(world: { state?: Record<string, unknown>; bridge?: Record<string, 
   const clock = { now: world.now ?? 0 }
   for (const [k, v] of Object.entries(world.state ?? {})) state.set(k, { value: v, version: 1 })
   const ran: string[][] = []
-  const opens: unknown[] = []
   const answers = bridgeOf(world.bridge ?? {})
   const $ = {
     plugin: { name: 'trajviz-obs', root: '/plugin' },
@@ -279,10 +277,6 @@ function fake(world: { state?: Record<string, unknown>; bridge?: Record<string, 
     ui: {
       status: async () => undefined,
       toast: async () => undefined,
-      open: async (args: unknown) => {
-        opens.push(args)
-        return { isPlaced: true }
-      },
     },
     state: {
       get: async (ref: StateAddress) => {
@@ -306,10 +300,10 @@ function fake(world: { state?: Record<string, unknown>; bridge?: Record<string, 
       },
     },
   }
-  return { $: $ as unknown as EngineInterface, state, ran, clock, opens }
+  return { $: $ as unknown as EngineInterface, state, ran, clock }
 }
 
-const CTX = { args: '', parsed: { sub: 'overview', positional: [], flags: {}, passthrough: [] }, options: {} }
+const CTX = { args: 'overview', parsed: { sub: 'overview', positional: [], flags: {}, passthrough: [] }, options: {} }
 
 test('ids continue and prune to five', async () => {
   const w = fake()
@@ -458,14 +452,4 @@ test('errorRow maps a withheld process, a setup failure and a plain bridge error
   expect(errorRow(new Error('obs setup: uv exited with 1: no network'))).toBe('obs setup: uv exited with 1: no network')
   expect(errorRow(new BridgeError('run_failed', 'obs snapshot: the bridge could not run: spawn ENOENT'))).toBe('obs snapshot: the bridge could not run: spawn ENOENT')
   expect(errorRow(new BridgeError('not_found', 'no session zzz'), 'zzz')).toBe('no session zzz')
-})
-
-test('the pane opens unasked only beside a fullscreen transcript of 140 columns or more', async () => {
-  const w = fake()
-  expect(await maybeOpenPane(w.$, { ...CTX, presentation: { isFullscreen: false, columns: 160 } })).toBe(false)
-  expect(await maybeOpenPane(w.$, { ...CTX, presentation: { isFullscreen: true, columns: 139 } })).toBe(false)
-  expect(await maybeOpenPane(w.$, { ...CTX })).toBe(false)
-  expect(w.opens).toEqual([])
-  expect(await maybeOpenPane(w.$, { ...CTX, presentation: { isFullscreen: true, columns: 140 } })).toBe(true)
-  expect(w.opens).toEqual([{ id: 'obs', title: 'obs', columns: 56 }])
 })

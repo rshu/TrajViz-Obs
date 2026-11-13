@@ -7,7 +7,7 @@
 [![OpenCode plugin version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frshu%2FTrajViz-Obs%2Fmain%2Fopencode%2Fpackage.json&query=%24.version&label=OpenCode%20plugin&prefix=v&color=blue)](https://github.com/rshu/TrajViz-Obs/blob/main/opencode/package.json)
 [![License](https://img.shields.io/github/license/rshu/TrajViz-Obs)](LICENSE)
 
-Visualize and diagnose Claude Code and OpenCode 2 sessions with [TrajViz](https://github.com/rshu/TrajViz). Use `/obs` for a quick health check and `/obs dashboard` to inspect steps, tools, subagents, and context use.
+Visualize and diagnose Claude Code and OpenCode 2 sessions with [TrajViz](https://github.com/rshu/TrajViz). Use `/obs` to check session health and `/obs dashboard` to inspect steps, tools, subagents, and context use.
 
 ## Install
 
@@ -41,11 +41,13 @@ After the session's first assistant response:
 /obs dashboard
 ```
 
+In Claude Code, `/obs` opens the live pane and keeps the prompt focused. It docks beside a fullscreen transcript and opens above the prompt in the main-screen layout. Run `/obs pane` to focus it, then use **1–7** to switch tabs. Run `/obs overview` to print the summary in the transcript. OpenCode’s `/obs` opens its summary.
+
 | Task | Command |
 | --- | --- |
 | Inspect diagnostics | `/obs issues`, `/obs agents`, `/obs view` |
 | Inspect recorded workflow evidence | `/obs attribution` |
-| Open a live pane | `/obs pane`; close with `/obs pane close` |
+| Open or focus the live pane | `/obs pane`; close with `/obs pane close` |
 | Export data | `/obs json`, `/obs bundle`, `/obs dashboard --html session.html` |
 | Compare runs | `/obs compare <session-id>`, `/obs converge` |
 | Ask for analysis or fixes | `/obs analyze [question]`, `/obs fixes` |
@@ -81,9 +83,9 @@ The selected session and cached labels load automatically. Run `/obs dashboard s
 
 Terminal images are rendered from recorded output. The dashboard Summary uses a demo fixture with a ranked issue. The other images use controlled coding sessions.
 
-**Claude Code: overview and live pane**
+**Claude Code: live pane**
 
-![Claude Code overview and live pane in light mode](assets/demo-terminal-light.png)
+![Claude Code live pane beside the conversation in light mode](assets/demo-terminal-light.png)
 
 **OpenCode 2 terminal: live overview**
 

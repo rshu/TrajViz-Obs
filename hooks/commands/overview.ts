@@ -6,7 +6,6 @@ import { captureSnapshot, isEmpty, provenanceLine } from '../lib/snapshot'
 import { markOutcome, type OutcomeTracker } from '../lib/telemetry'
 import { syncStatusLine } from '../lib/watch'
 import type { CommandContext } from './index'
-import { maybeOpenPane } from './pane'
 
 /**
  * The rows of the spec's "Error and degraded states" table that `/obs`
@@ -71,7 +70,7 @@ export function observedError(tracker: OutcomeTracker | undefined, e: unknown, s
   return markOutcome(tracker, 'error', text)
 }
 
-/** `/obs [overview] [--session …]`: the snapshot's text under its provenance line, and the note for the model. */
+/** `/obs overview [--session …]`: the snapshot's text under its provenance line, and the note for the model. */
 export async function overview($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
   const spec = sessionSpec(ctx)
   let snap
@@ -86,6 +85,5 @@ export async function overview($: EngineInterface, ctx: CommandContext): Promise
   if (isEmpty(snap)) return { text: markOutcome(ctx.telemetry, 'empty', EMPTY_TEXT) }
   const at = new Date(snap.generated_at)
   const text = `${provenanceLine(id, snap, Number.isNaN(at.getTime()) ? new Date() : at)}\n${snap.text}`
-  await maybeOpenPane($, ctx)
   return { text, context: [contextNote(snap.artifacts.dir ?? await artifactsDir($, snap.transcript.session_id, snap.transcript.capture_session_id, spec ? snap.transcript.path : undefined))] }
 }

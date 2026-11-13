@@ -394,6 +394,21 @@ test('graceful exit is bounded when telemetry cannot finish', async ($, on) => {
   }
 })
 
+test('bare interactive /obs records a pane action and explicit overview records an overview', async ($, on) => {
+  mock.clock(on, { now: 1_700_000_000_000 })
+  const world = host(on, { consent: '1', endpoint: ENDPOINT })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+  await world.call(1)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: '/tmp/usage.jsonl', session_id: 'test-session' })
+
+  expect((await $.command.run(command(''))).text).toBeUndefined()
+  expect((await world.call(2)).argv.slice(7, 11)).toEqual(['--feature', 'pane', '--outcome', 'success'])
+  expect((await $.command.run(command('overview'))).text).toContain('obs snapshot')
+  expect((await world.call(3)).argv.slice(7, 11)).toEqual(['--feature', 'overview', '--outcome', 'success'])
+  expect(world.snapshots()).toBe(2)
+})
+
 test('native pane controls record explicit actions using fixed features', async ($, on) => {
   const clock = mock.clock(on, { now: 1_700_000_000_000 })
   const world = host(on, { consent: '1', endpoint: ENDPOINT })
