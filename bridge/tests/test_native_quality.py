@@ -164,6 +164,56 @@ def test_measured_native_zero_remains_zero(native_run):
     assert "tokens_total: 0" in project_brief(run)
 
 
+def test_native_duration_aggregates_skip_reversed_intervals_but_keep_measured_zero(native_run):
+    _, run = native_run([message(str(completed), usage(), completed=completed)
+                         for completed in (0, 99, 100, 2100)])
+    assert run.metrics["total_duration"] == 1.9
+    projected = project_analysis(run)
+    metrics = projected.metrics
+    assert metrics["total_duration"] == 2.0
+    assert metrics["avg_duration"] == metrics["median_duration"] == 1.0
+    assert metrics["p95_duration"] == metrics["max_duration"] == 2.0
+    assert metrics["wall_clock"] == run.metrics["wall_clock"] == 2.0
+    assert metrics["tokens_per_second"] is None
+    assert projected.data_quality["fields"]["duration"]["observed"] == 2
+    assert [row["duration"] for row in projected.message_rows] == [None, None, 0.0, 2.0]
+
+    # Legacy or imported steps may have durations without calendar stamps.
+    untimestamped = replace(run, steps=[{**step, "time_created_ms": None, "time_completed_ms": None}
+                                       for step in run.steps], raw={})
+    assert untimestamped.metrics["wall_clock"] == 1.9
+    assert project_analysis(untimestamped).metrics["wall_clock"] == 2.0
+
+
+def test_duration_aggregation_keeps_native_rounding_and_percentile_for_valid_records(native_run):
+    _, run = native_run([message(str(completed), usage(), completed=completed)
+                         for completed in (100, 1000, 2100)])
+    metrics = project_analysis(run).metrics
+    for key in ("total_duration", "avg_duration", "median_duration", "p95_duration", "max_duration",
+                "wall_clock", "tokens_per_second", "median_tokens_per_second", "model_breakdown"):
+        assert metrics[key] == run.metrics[key]
+
+
+def test_model_breakdown_counts_assistant_work_instead_of_prompt_or_checkpoint_metadata(native_run):
+    def compaction(mid, model, tokens=None):
+        return {"type": "compaction", "id": mid, "model": {"id": model}, "status": "completed",
+                "summary": "Controlled summary", **({"tokens": tokens} if tokens is not None else {})}
+
+    _, run = native_run([
+        {"type": "user", "id": "prompt", "text": "Question", "model": {"id": "first"}},
+        {"type": "skill", "id": "skill", "name": "demo", "model": {"id": "second"}},
+        {**message("observed", usage()), "model": {"id": "first"}},
+        {**message("unmetered"), "model": {"id": "second"}},
+        {**message("synthetic"), "model": {"id": "<synthetic>"}},
+        compaction("checkpoint", "second"),
+    ])
+    assert run.metrics["model_breakdown"] == {"first": 2, "second": 3, "<synthetic>": 1}
+    assert project_analysis(run).metrics["model_breakdown"] == {"first": 1, "second": 1}
+
+    _, compacted = native_run([message(tokens=usage()), compaction("generated", "compactor", usage(0, 0, 0, 0, 0))])
+    assert project_analysis(compacted).metrics["model_breakdown"] == {"controlled": 1, "compactor": 1}
+
+
 def test_compaction_usage_keeps_real_totals_without_changing_assistant_throughput_population(native_run):
     compact = {"id": "compact", "type": "compaction", "status": "completed", "reason": "manual",
                "summary": "Controlled summary", "tokens": usage(1, 1, 0, 0, 0), "time": {"created": BASE + 1200}}

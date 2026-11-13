@@ -21,7 +21,8 @@ def native_run(path: Path, session_id: str, *, regression: bool = False, shell_r
     def assistant(content: list[dict], stop: str) -> None:
         event('assistant', {'role': 'assistant', 'id': f'msg-{len(records)}', 'model': 'claude-test',
                             'content': content, 'stop_reason': stop,
-                            'usage': {'input_tokens': 5, 'output_tokens': 10}})
+                            'usage': {'input_tokens': 5, 'output_tokens': 10, 'cache_read_input_tokens': 0,
+                                      'cache_creation_input_tokens': 0}})
 
     def tool(name: str, inputs: dict, *, failed: bool = False) -> None:
         tid = f'tool-{len(records)}'

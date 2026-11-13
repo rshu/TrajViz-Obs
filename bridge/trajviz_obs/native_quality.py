@@ -14,7 +14,7 @@ import math
 import statistics
 import types
 import weakref
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import fields as dataclass_fields
 from dataclasses import replace
 from datetime import datetime
@@ -45,7 +45,11 @@ def _number(value):
 
 def _observed(step, field):
     if field == "duration":
-        return _number(step.get("duration")) and step["duration"] >= 0
+        duration = step.get("duration")
+        start, end = step.get("time_created_ms"), step.get("time_completed_ms")
+        # A short reversed interval can round to -0.0 in the native parser.
+        return (_number(duration) and duration >= 0
+                and not (_number(start) and _number(end) and end < start))
     key = field.removeprefix("tokens.")
     value = (step.get("tokens") or {}).get(key)
     return (TOKEN_LABELS[key] not in step.get("_metrics_unavailable_fields", []) and _number(value)
@@ -161,17 +165,32 @@ def _complete(quality, *fields):
     return all(quality["fields"][field]["status"] == "observed" for field in fields)
 
 
-def _project_metrics(metrics, quality):
+def _observed_token_totals(native_totals, quality, steps):
+    """Keep native totals and subtract contributions explicitly marked unavailable."""
+    from agent_trajviz.insight.parser import usable_token_count
+    from agent_trajviz.insight.telemetry_quality import field_observed, is_otel_step
+
+    totals = {key: native_totals[key] if quality["fields"][f"tokens.{key}"]["observed"] else None
+              for key in TOKEN_LABELS}
+    for step in steps:
+        unavailable = step.get("_metrics_unavailable_fields", ())
+        if unavailable and not (is_otel_step(step) and step["_otel"].get("kind") != "model_request"):
+            for key, label in TOKEN_LABELS.items():
+                if totals[key] is not None and label in unavailable and field_observed(step, f"tokens.{key}"):
+                    totals[key] -= usable_token_count(step["tokens"].get(key)) or 0
+    return totals
+
+
+def _project_metrics(metrics, quality, steps):
     result = copy.deepcopy(metrics)
     result.update(data_quality=quality, metric_coverage={field: row["status"] for field, row in quality["fields"].items()})
-    for key in TOKEN_LABELS:
-        if not quality["fields"][f"tokens.{key}"]["observed"]:
-            result["tokens"][key] = None
-    direct = {"input_tokens": "input", "output_tokens": "output", "cache_read_tokens": "cache_read",
-              "non_cache_tokens": "input"}
+    totals = _observed_token_totals(metrics["tokens"], quality, steps)
+    result["tokens"] = totals
+    direct = {"input_tokens": "input", "output_tokens": "output", "cache_read_tokens": "cache_read"}
     for key, token in direct.items():
-        if not quality["fields"][f"tokens.{token}"]["observed"]:
-            result[key] = None
+        result[key] = totals[token]
+    if totals["input"] is None:
+        result["non_cache_tokens"] = None
     dependencies = {
         "avg_cache_ratio": ("tokens.total", "tokens.cache_read"),
         "non_cache_ratio": ("tokens.total", "tokens.input"), "output_input_ratio": ("tokens.input", "tokens.output"),
@@ -183,9 +202,6 @@ def _project_metrics(metrics, quality):
     for key, fields in dependencies.items():
         if not _complete(quality, *fields):
             result[key] = None
-    if not quality["fields"]["duration"]["observed"]:
-        for key in ("total_duration", "avg_duration", "median_duration", "p95_duration", "max_duration"):
-            result[key] = None
     if not _complete(quality, "tool_outcomes"):
         result["tool_observed_failures"] = metrics.get("tool_fail", 0)
         result["tool_observed_successes"] = metrics.get("tool_success", 0)
@@ -194,6 +210,31 @@ def _project_metrics(metrics, quality):
             result[key] = None
     result["reasoning_tokens_reported"] = bool(quality["fields"]["tokens.reasoning"]["observed"])
     return result
+
+
+def _duration_metrics(steps):
+    from agent_trajviz.insight.metrics import _percentile
+
+    durations = [step["duration"] for step in steps if _observed(step, "duration")]
+    if not durations:
+        return dict.fromkeys(("total_duration", "avg_duration", "median_duration", "p95_duration", "max_duration"))
+    total = sum(durations)
+    return {
+        "total_duration": round(total, 2),
+        "avg_duration": round(total / len(durations), 2),
+        "median_duration": round(statistics.median(durations), 2),
+        "p95_duration": round(_percentile(durations, 0.95), 2),
+        "max_duration": round(max(durations), 2),
+    }
+
+
+def _model_breakdown(steps):
+    # Prompt and skill records can inherit the selected model without calling it.
+    return dict(Counter(
+        step["model_id"] for step in _usage_steps(steps)
+        if step.get("model_id") and step["model_id"] != "<synthetic>"
+        and (step.get("role") == "assistant" or any(_observed(step, field) for field in _TOKEN_FIELDS))
+    ))
 
 
 def _generation_metrics(steps):
@@ -261,14 +302,25 @@ class _Projection:
 
     @cached_property
     def metrics(self):
-        result = _project_metrics(self._original.metrics, self.data_quality)
+        result = _project_metrics(self._original.metrics, self.data_quality, self.steps)
+        result.update(_duration_metrics(self.steps))
+        result["model_breakdown"] = _model_breakdown(self.steps)
         result.update(_generation_metrics(self.steps))
         rates = [row["tokens_per_sec"] for row in self.message_rows
                  if row["role"] == "assistant" and row["tokens_per_sec"] is not None]
         result["median_tokens_per_second"] = round(statistics.median(rates), 1) if rates else None
         if not result["total_duration"]:
             result["tokens_per_second"] = None
-        result["wall_clock"] = _native_wall_clock(result.get("wall_clock"), self.steps, self._original.raw)
+        raw = self._original.raw
+        elapsed = result["wall_clock"]
+        if result["total_duration"] != self._original.metrics["total_duration"]:
+            from agent_trajviz.insight.metrics import session_wall_clock_seconds
+
+            # The native fallback sums step durations when calendar evidence is absent.
+            elapsed = session_wall_clock_seconds(self.steps, raw.get("timing"))
+            if elapsed is None:
+                elapsed = result["total_duration"]
+        result["wall_clock"] = _native_wall_clock(elapsed, self.steps, raw)
         return result
 
     @cached_property
@@ -320,12 +372,15 @@ class _Projection:
         for row in rows:
             if origins is not None:
                 row["spawned_by_step"] = origins.get(row["agent_id"])
-            quality = _coverage(grouped[row["agent_id"]])
+            steps = grouped[row["agent_id"]]
+            quality = _coverage(steps)
             row["data_quality"] = quality
-            for key, token in {"total_tokens": "total", "input_tokens": "input", "output_tokens": "output",
-                "reasoning_tokens": "reasoning", "cache_read_tokens": "cache_read", "cache_write_tokens": "cache_write"}.items():
-                if not quality["fields"][f"tokens.{token}"]["observed"]:
-                    row[key] = None
+            token_fields = {"total_tokens": "total", "input_tokens": "input", "output_tokens": "output",
+                            "reasoning_tokens": "reasoning", "cache_read_tokens": "cache_read",
+                            "cache_write_tokens": "cache_write"}
+            totals = _observed_token_totals({token: row[key] for key, token in token_fields.items()}, quality, steps)
+            for key, token in token_fields.items():
+                row[key] = totals[token]
             if not quality["fields"]["duration"]["observed"]:
                 row["total_duration_s"] = None
             if not _complete(quality, "tokens.total", "tokens.cache_read"):

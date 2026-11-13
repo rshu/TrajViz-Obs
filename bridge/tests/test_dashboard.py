@@ -88,6 +88,35 @@ def _loaded_run(block, path, session_id=None):
     return next(value for value in values.values() if isinstance(value, tv.Trajectory))
 
 
+@pytest.mark.parametrize(("tokens", "expected"), [
+    ({"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+     ("0", "0", "0", "0", "0", "0")),
+    ({"input": 0, "output": 0, "reasoning": 34, "cache": {"read": 0, "write": 0}},
+     ("0", "0", "34", "0", "0", "0 (0.0%)")),
+    ({"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 34}},
+     ("0", "0", "0", "0", "34", "0 (0.0%)")),
+    ({"input": 4}, ("4", "N/A", "N/A", "N/A", "N/A", "4")),
+])
+def test_deep_dive_renders_recorded_token_components_and_tool_denominator(tmp_path, tokens, expected):
+    source = tmp_path / "usage.json"
+    source.write_text(json.dumps({
+        "source_format": "opencode_v2", "schema_version": 1, "session": {"id": "usage"},
+        "messages": [{"type": "assistant", "id": "assistant", "model": {"id": "Fresh input"},
+                      "tokens": tokens, "time": {"created": 1_790_000_000_000, "completed": 1_790_000_001_000},
+                      "content": [{"type": "text", "text": "Checked."}]}],
+    }))
+    app = build_preloaded_insight(str(source))
+    loader = next(entry for entry in app.fns.values() if entry.api_name == "_do_load")
+    outputs = loader.fn(str(source), False, "")
+    metrics = next(value for value in outputs.values() if isinstance(value, str) and value.startswith("### Timing"))
+
+    for label, value in zip(("Input", "Output", "Reasoning", "Cache read", "Cache write", "Fresh input"), expected, strict=True):
+        assert re.search(rf">{label}</span></span><span[^>]*>{re.escape(value)}</span>", metrics), label
+    assert re.search(r">Tok/tool call</span></span><span[^>]*>N/A</span>", metrics)
+    assert re.search(r">Fresh input</span><span[^>]*>1</span>", metrics)  # The literal model ID.
+    assert "### Tokens" in metrics and "### Efficiency" in metrics and "**Model breakdown**" in metrics
+
+
 def test_deep_dive_keeps_step_links_and_distinguishes_missing_from_zero(tmp_path):
     from agent_trajviz.insight.report import _mixed_md_to_html
 
@@ -122,6 +151,9 @@ def test_deep_dive_keeps_step_links_and_distinguishes_missing_from_zero(tmp_path
     assert "**Lowest cache read steps**\n\n*No positive cache reads were recorded.*" in token
     assert "**Top context-growth steps**\n\n*No positive context growth" in token
     assert re.findall(r"#tv-step-([0-9]+)", per_message) == ["0", "1", "2", "3"]
+    metrics = next(value for value in values.values() if isinstance(value, str) and value.startswith("### Timing"))
+    assert "Requires complete token and timing records." in metrics
+    assert "Partial coverage: 1/3 recorded" in metrics
     html = _mixed_md_to_html(per_message)
     assert "<td>0</td>" in html and "#tv-step-" not in html
 

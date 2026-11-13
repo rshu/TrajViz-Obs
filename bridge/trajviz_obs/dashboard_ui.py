@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, get_type_hints
 
 from .attribution_ui import public_translation_head
 from .compat import attribution_message, write_dashboard_report
+from .dashboard_metrics import METRIC_TRANSLATIONS
 from .dashboard_timeline import TIMELINE_TRANSLATIONS, timeline_builder
 from .errors import BridgeError
 from .native_quality import _clone_native_function
@@ -104,6 +105,7 @@ _CSS = """
 .obs-dashboard .obs-markdown table { width: max-content; min-width: 100%; }
 .obs-dashboard .obs-markdown th, .obs-dashboard .obs-markdown td { max-width: 360px; overflow-wrap: break-word; }
 .obs-dashboard .obs-markdown > div > div > div { max-width: 100%; overflow-wrap: anywhere; }
+.obs-dashboard .obs-metric-text { font-size: max(1em, 11px); }
 .obs-dashboard .cvg-report { min-width: 0; max-width: 100%; overflow-x: auto; }
 .obs-dashboard .obs-chart:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .obs-dashboard .insight-step-link:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
@@ -183,7 +185,7 @@ _DARK = """document.documentElement.style.colorScheme = 'dark';
   document.documentElement.classList.add('dark', 'tv-theme-dark');
   document.body?.classList.add('dark');"""
 
-_JS = "() => {\n  " + _LIGHT + """
+_JS = "() => {\n  " + _LIGHT + r"""
   const root = document.querySelector('.gradio-container');
   if (!root || root.dataset.obsLayoutBound) return [];
   root.dataset.obsLayoutBound = 'true';
@@ -305,6 +307,31 @@ _JS = "() => {\n  " + _LIGHT + """
         caption.setAttribute('data-tv-i18n', key);
       }
     });
+    root.querySelectorAll('.obs-metric-text, .tv-owned-markdown p > strong').forEach(caption => {
+      if (caption.hasAttribute('data-tv-i18n')) return;
+      const value = caption.textContent.trim();
+      const coverage = value.match(/^Partial coverage: ([0-9]+)\/([0-9]+) recorded$/);
+      if (coverage) {
+        caption.setAttribute('data-tv-i18n-args', JSON.stringify({observed: coverage[1], total: coverage[2]}));
+        caption.setAttribute('data-tv-i18n', 'Partial coverage: {observed}/{total} recorded');
+      } else if (Object.hasOwn(window.__tvTranslations || {}, value)) {
+        caption.setAttribute('data-tv-i18n', value);
+      }
+      if (value !== 'Tool calls') return;
+      const suffix = caption.nextSibling;
+      const match = suffix?.nodeType === 3 && suffix.textContent.trim().match(
+        /^\(([0-9]+) total, (?:([0-9.]+)% success|success rate unavailable(?:, ([0-9]+)\/[0-9]+ outcomes recorded)?)\)$/
+      );
+      if (!match) return;
+      const [, count, rate, observed] = match;
+      const text = document.createElement('span');
+      text.textContent = suffix.textContent.trim();
+      text.dataset.tvI18nArgs = JSON.stringify({count, rate, observed});
+      text.dataset.tvI18n = rate ? '({count} total, {rate}% success)' : observed
+        ? '({count} total, success rate unavailable, {observed}/{count} outcomes recorded)'
+        : '({count} total, success rate unavailable)';
+      suffix.replaceWith(document.createTextNode(' '), text);
+    });
     root.querySelectorAll('.insight-step-link').forEach(step => {
       if (step.matches('a[href]')) {
         const number = step.getAttribute('href').match(/^#tv-step-([0-9]+)$/)?.[1];
@@ -385,7 +412,9 @@ def presentation(kind: str, upstream: dict[str, Any]) -> dict[str, Any]:
     native_css = (upstream.get("css") or "").replace("@media (prefers-color-scheme: dark)", "@media not all")
     result = {**upstream, "css": f'{native_css}\n{css}'}
     if kind == "insight" and isinstance(result.get("head"), str):
-        result["head"] = public_translation_head(result["head"], extra={**TIMELINE_TRANSLATIONS, **_DEEP_DIVE_TRANSLATIONS})
+        result["head"] = public_translation_head(result["head"], extra={
+            **TIMELINE_TRANSLATIONS, **_DEEP_DIVE_TRANSLATIONS, **METRIC_TRANSLATIONS,
+        })
     return result
 
 

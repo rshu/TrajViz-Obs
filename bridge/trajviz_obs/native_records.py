@@ -2,10 +2,32 @@
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Any
 
 _LOCAL_PREFIXES = ("<local-command-caveat>", "<local-command-stdout>", "<local-command-stderr>")
 _OBS_PREFIXES = ("TrajViz artifacts for this session go under ", "The whole TrajViz view ")
+_CLAUDE_USAGE_FIELDS = {
+    "input": "input_tokens", "output": "output_tokens",
+    "cache_read": "cache_read_input_tokens", "cache_write": "cache_creation_input_tokens",
+}
+
+
+def claude_usage_gaps(usage: Any) -> list[str]:
+    """Identify fields unavailable in TrajViz's selected provider usage snapshot."""
+    from .native_quality import TOKEN_LABELS
+
+    def count(value):
+        if type(value) is int:
+            return value >= 0
+        return type(value) is float and isfinite(value) and value >= 0 and value.is_integer()
+
+    usage = usage if isinstance(usage, dict) else {}
+    missing = [TOKEN_LABELS[key] for key, native in _CLAUDE_USAGE_FIELDS.items() if not count(usage.get(native))]
+    # Claude's total is computed from all four provider counters.
+    if missing:
+        missing.append(TOKEN_LABELS["total"])
+    return missing
 
 
 def text_content(content: Any) -> str:
