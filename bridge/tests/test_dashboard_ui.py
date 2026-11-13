@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import pytest
 from agent_trajviz import dashboard
 
-from trajviz_obs.dashboard_ui import _JS, decorate_dashboard, presentation
+from trajviz_obs.dashboard_ui import _JS, _repair_workflow_jump, decorate_dashboard, presentation
 
 
 @pytest.mark.parametrize("kind", ["insight", "converge"])
@@ -335,3 +335,50 @@ window.tvPushTabReturnPoint('Overview');
 assert.equal(nativeReturnPoints, 1);
 """
     subprocess.run([node, "-e", script, json.dumps(_JS)], check=True, capture_output=True, text=True, timeout=10)
+
+
+def test_workflow_jump_clears_a_search_with_no_matching_cards():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required to execute the dashboard browser script")
+    app = dashboard.insight_app()
+    _repair_workflow_jump(app)
+    script = next(entry.js for entry in app.fns.values() if "window.tvGotoWorkflowStep = function" in (entry.js or ""))
+    jump = script[script.index("window.tvGotoWorkflowStep = function"):script.index("if (!window.__tvHistoryBound)")]
+    harness = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const scheduled = [];
+const search = {value: 'impossible query'};
+const target = {};
+const calls = [];
+let filtered = true;
+let now = 0;
+const reset = {click: () => { calls.push('reset'); filtered = false; }};
+const window = {
+  tvActiveMainTab: () => 'Overview', tvPushTabReturnPoint() {}, tvClickMainTab() {},
+  tvWorkflowStepUrl: idx => '#step-' + idx, location: {hash: ''},
+  tvFocusWorkflowCard: card => calls.push(card),
+  tvSetGradioText: (selector, value) => {
+    assert.equal(selector, '.wf-toolbar-search');
+    search.value = value;
+  },
+};
+const document = {
+  getElementById: id => id === 'wf-filter-bar' ? {} : id === 'wf-card-7' && !filtered && !search.value ? target : null,
+  querySelector: selector => selector.includes('reset-filters') ? reset : selector.includes('wf-toolbar-search') ? search : null,
+};
+vm.runInNewContext(JSON.parse(process.argv[1]), {
+  window, document, history: {pushState() {}}, Date: {now: () => now},
+  setTimeout: callback => scheduled.push(callback),
+});
+window.tvGotoWorkflowStep(7);
+scheduled.shift()();
+assert.deepEqual(calls, []);
+now = 401;
+scheduled.shift()();
+scheduled.shift()();
+assert.equal(search.value, '');
+assert.deepEqual(calls, ['reset', target]);
+"""
+    subprocess.run([node, "-e", harness, json.dumps(jump)], check=True, capture_output=True, text=True, timeout=10)

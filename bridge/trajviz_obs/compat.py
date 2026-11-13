@@ -365,8 +365,33 @@ def _dashboard_overview_presenter():
 
     from .native_quality import project_hotspots
 
-    render_hotspots = _clone_native_function(formatting._build_hotspots_md, {"hotspots": project_hotspots})
-    return _clone_native_function(overview.build_overview_outputs, {"_build_hotspots_md": render_hotspots})
+    def rank_hotspots(rows, *, steps=None):
+        # A user message's default zero is not a model token-load measurement.
+        ranked_rows = [{**row, "tokens_total": None} if row["role"] == "user" and row["tokens_total"] == 0 else row
+                       for row in rows]
+        return project_hotspots(ranked_rows, steps=steps)
+
+    native_hotspots = _clone_native_function(formatting._build_hotspots_md, {"hotspots": rank_hotspots})
+
+    def render_hotspots(rows, *, steps=None):
+        markdown = native_hotspots(rows, steps=steps)
+        # The native latency/token tables stringify missing secondary values.
+        markdown = re.sub(r"(?<=\| )None(?= \|)", "N/A", markdown)
+        before_growth, growth_heading, growth = markdown.partition("\n\n**Top context-growth steps**")
+        if "**Lowest cache read steps**" not in before_growth:
+            before_growth += "\n\n**Lowest cache read steps**\n\n*No positive cache reads were recorded.*"
+        if not growth_heading:
+            growth_heading = "\n\n**Top context-growth steps**"
+            growth = "\n\n*No positive context growth could be measured between consecutive calls.*"
+        return before_growth + growth_heading + growth
+
+    def render_per_message(rows):
+        return re.sub(r"(?m)^\| ([0-9]+) \|", lambda match: f"| {formatting._step_link_md(int(match[1]))} |",
+                      formatting._build_per_message_md(rows))
+
+    return _clone_native_function(overview.build_overview_outputs, {
+        "_build_hotspots_md": render_hotspots, "_build_per_message_md": render_per_message,
+    })
 
 
 def write_dashboard_report(writer, source, *, dest, dark, inline_plotly):

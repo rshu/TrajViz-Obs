@@ -88,6 +88,44 @@ def _loaded_run(block, path, session_id=None):
     return next(value for value in values.values() if isinstance(value, tv.Trajectory))
 
 
+def test_deep_dive_keeps_step_links_and_distinguishes_missing_from_zero(tmp_path):
+    from agent_trajviz.insight.report import _mixed_md_to_html
+
+    source = tmp_path / "opencode.json"
+    base = 1_790_000_000_000
+
+    def assistant(id_, **evidence):
+        return {"type": "assistant", "id": id_, "content": [{"type": "text", "text": "Checked."}], **evidence}
+
+    source.write_text(json.dumps({
+        "source_format": "opencode_v2", "schema_version": 1, "session": {"id": "deep-dive"},
+        "messages": [
+            {"type": "user", "id": "prompt", "time": {"created": base}, "text": "Review the tests."},
+            assistant("timed", time={"created": base + 100, "completed": base + 1_000}),
+            assistant("zero", time={"created": base + 1_100, "completed": base + 2_000},
+                      tokens={"total": 0, "input": 0, "output": 0, "cache": {"read": 0, "write": 0}}),
+            assistant("untimed", tokens={"total": 40, "input": 30, "output": 10}),
+        ],
+    }))
+    app = build_preloaded_insight(str(source))
+    loader = next(entry for entry in app.fns.values() if entry.api_name == "_do_load")
+    values = loader.fn(str(source), False, "")
+    hotspots, per_message = [values[block] for block in loader.outputs
+                            if "diagnostics-data-table" in (block.elem_classes or [])]
+
+    latency, token = hotspots.split("**Top token-load steps**")
+    assert "**Top latency steps**" in latency
+    assert re.search(r"#tv-step-1[^\n]+0\.90 \| N/A \|", latency)
+    assert re.search(r"#tv-step-2[^\n]+0\.90 \| 0 \|", latency)
+    assert re.search(r"#tv-step-3[^\n]+40 \| 0 \| N/A \|", token)
+    assert "#tv-step-0" not in token and " | None | " not in hotspots
+    assert "**Lowest cache read steps**\n\n*No positive cache reads were recorded.*" in token
+    assert "**Top context-growth steps**\n\n*No positive context growth" in token
+    assert re.findall(r"#tv-step-([0-9]+)", per_message) == ["0", "1", "2", "3"]
+    html = _mixed_md_to_html(per_message)
+    assert "<td>0</td>" in html and "#tv-step-" not in html
+
+
 def test_token_explanations_distinguish_missing_cache_counters_from_zero(tmp_path):
     source = tmp_path / "opencode.json"
     base = 1_790_000_000_000

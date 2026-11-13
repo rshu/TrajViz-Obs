@@ -30,6 +30,15 @@ _EMPTY_CHART = {
 }
 _GANTT_STEP = re.compile(r"^<b>Step (\d+)</b> ")
 _GANTT_TOKEN_COUNT = re.compile(r"(?<=<br>)-?[\d,]+ tokens$")
+_DEEP_DIVE_TRANSLATIONS = {
+    "Top context-growth steps": "上下文增长最多的步骤",
+    "Context Growth": "上下文增长",
+    "Own Completion": "本步生成",
+    "New Content": "新增内容",
+    "No positive cache reads were recorded.": "未记录到非零缓存读取。",
+    "No positive context growth could be measured between consecutive calls.": "未能测得相邻调用间的上下文增长。",
+    "Open Workflow step {n}": "在工作流中查看第 {n} 步",
+}
 
 _CSS = """
 .obs-dashboard .main { width: 100% !important; min-width: 0 !important; max-width: 1440px !important;
@@ -224,7 +233,7 @@ _JS = "() => {\n  " + _LIGHT + """
     requestAnimationFrame(showGuide);
   });
   root.addEventListener('keydown', event => {
-    const step = event.target.closest?.('.insight-step-link');
+    const step = event.target.closest?.('.insight-step-link:not(a[href])');
     if (step && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
       step.click();
@@ -290,7 +299,23 @@ _JS = "() => {\n  " + _LIGHT + """
       const caption = label.querySelector('span');
       if (key && caption && caption.getAttribute('data-tv-i18n') !== key) caption.setAttribute('data-tv-i18n', key);
     });
+    root.querySelectorAll('.diagnostics-data-table p > :is(strong, em)').forEach(caption => {
+      const key = caption.textContent.trim();
+      if (!caption.hasAttribute('data-tv-i18n') && Object.hasOwn(window.__tvTranslations || {}, key)) {
+        caption.setAttribute('data-tv-i18n', key);
+      }
+    });
     root.querySelectorAll('.insight-step-link').forEach(step => {
+      if (step.matches('a[href]')) {
+        const number = step.getAttribute('href').match(/^#tv-step-([0-9]+)$/)?.[1];
+        if (number && !step.hasAttribute('data-tv-i18n')) {
+          step.setAttribute('aria-label', `Open Workflow step ${number}`);
+          step.setAttribute('data-tv-i18n-attr', 'aria-label');
+          step.setAttribute('data-tv-i18n-args', JSON.stringify({n: number}));
+          step.setAttribute('data-tv-i18n', 'Open Workflow step {n}');
+        }
+        return;
+      }
       step.setAttribute('tabindex', '0');
       step.setAttribute('role', 'button');
       if (!step.closest('.token-step-explain')) {
@@ -360,7 +385,7 @@ def presentation(kind: str, upstream: dict[str, Any]) -> dict[str, Any]:
     native_css = (upstream.get("css") or "").replace("@media (prefers-color-scheme: dark)", "@media not all")
     result = {**upstream, "css": f'{native_css}\n{css}'}
     if kind == "insight" and isinstance(result.get("head"), str):
-        result["head"] = public_translation_head(result["head"], extra=TIMELINE_TRANSLATIONS)
+        result["head"] = public_translation_head(result["head"], extra={**TIMELINE_TRANSLATIONS, **_DEEP_DIVE_TRANSLATIONS})
     return result
 
 
@@ -373,6 +398,7 @@ def configure_insight(app: gr.Blocks, *, dark: bool = False, inline_plotly: bool
 
     if dark:
         _set_dark_theme(app)
+    _repair_workflow_jump(app)
     _bound_expanded_workflow(app)
     _scope_overview_issues(app)
     _scope_gantt_hover(app)
@@ -546,6 +572,24 @@ def _set_dark_theme(app: gr.Blocks) -> None:
         callback.js = callback.js.replace(before, after)
     callback.outputs[0].value = True
     callback.fn = lambda _dark=False: True
+
+
+def _repair_workflow_jump(app: gr.Blocks) -> None:
+    """Let the native jump reset a search or filters that hid the target."""
+    callback = next((entry for entry in app.fns.values() if "window.tvGotoWorkflowStep = function" in (entry.js or "")), None)
+    if callback is None:
+        raise BridgeError("dashboard_incompatible", "TrajViz's Workflow navigation script changed.")
+    before = """&& document.querySelector('.wf-card')
+                                    && elapsed > 400)"""
+    reset = "if (reset) reset.click();"
+    if callback.js.count(before) != 1 or callback.js.count(reset) != 1:
+        raise BridgeError("dashboard_incompatible", "TrajViz's Workflow jump filter reset changed.")
+    callback.js = callback.js.replace(before, """&& document.getElementById('wf-filter-bar')
+                                    && elapsed > 400)""").replace(reset, """if (reset) {
+                                    const search = document.querySelector('.wf-toolbar-search textarea, .wf-toolbar-search input');
+                                    if (search?.value) window.tvSetGradioText('.wf-toolbar-search', '');
+                                    reset.click();
+                                }""")
 
 
 def decorate_dashboard(app: gr.Blocks, kind: str, *, dark: bool = False) -> gr.Blocks:
