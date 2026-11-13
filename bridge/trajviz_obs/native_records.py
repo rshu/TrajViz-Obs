@@ -48,12 +48,20 @@ def local_command_text(text: str, *, is_meta: bool, confirmed_command: bool = Fa
             or (confirmed_command and command_wrapper(text)))
 
 
-def normalize_native_records(events: list, *, _depth: int = 0, _inherited_meta: bool = False) -> tuple[list, int]:
-    """Neutralize display-only text without removing source positions or tool results.
+def _resume_sentinel(record: dict, message: Any) -> bool:
+    """Recognize Claude's display-only assistant placeholder on resume."""
+    return (record.get("type") == "assistant" and record.get("isApiErrorMessage") is False
+            and isinstance(message, dict) and message.get("role") == "assistant"
+            and message.get("model") == "<synthetic>" and message.get("stop_reason") == "stop_sequence"
+            and message.get("content") == [{"type": "text", "text": "No response requested."}])
 
-    Empty user messages are already skipped by TrajViz's native converter. Retaining their records
-    preserves original raw indices, timestamps, parent links and the loader's byte-based identity.
-    The returned count covers changed user records, including inline child-progress messages.
+
+def normalize_native_records(events: list, *, _depth: int = 0, _inherited_meta: bool = False) -> tuple[list, int]:
+    """Exclude display records from steps and elapsed time while keeping their source positions.
+
+    Empty user messages are skipped by the native converter. Keep UUIDs and parent links, and keep
+    timestamps on mixed messages that still contain tool results or model input. An explicit None
+    also prevents the converter from inheriting the outer timestamp for nested progress messages.
     """
     confirmed = {value for r in events if isinstance(r, dict) and (value := local_command_parent(r)) is not None}
     caveats = {value for r in events if isinstance(r, dict) and (value := local_caveat_id(r)) is not None}
@@ -67,6 +75,14 @@ def normalize_native_records(events: list, *, _depth: int = 0, _inherited_meta: 
             continue
         record = original
         message = record.get("message")
+        if record.get("type") == "system" and record.get("subtype") == "local_command":
+            normalized.append({**record, "timestamp": None})
+            count += 1
+            continue
+        if _resume_sentinel(record, message):
+            normalized.append({**record, "type": None, "timestamp": None})
+            count += 1
+            continue
         is_meta = record.get("isMeta") is True or (record.get("isMeta") is not False and _inherited_meta)
         if (record.get("type") == "user" and isinstance(message, dict)
                 and message.get("role", "user") == "user"):
@@ -80,6 +96,8 @@ def normalize_native_records(events: list, *, _depth: int = 0, _inherited_meta: 
                         confirmed_command=isinstance(record.get("uuid"), str) and record["uuid"] in confirmed))]
                 if len(kept) != len(blocks):
                     record = {**record, "message": {**message, "content": kept}}
+                    if not kept:
+                        record["timestamp"] = None
                     count += 1
         data = record.get("data")
         nested = data.get("message") if isinstance(data, dict) else None
@@ -92,6 +110,8 @@ def normalize_native_records(events: list, *, _depth: int = 0, _inherited_meta: 
             if ignored:
                 cleaned = children[0]["message"] if bare else children[0]
                 record = {**record, "data": {**data, "message": cleaned}}
+                if bare and "timestamp" in children[0]:
+                    record["timestamp"] = children[0]["timestamp"]
                 count += ignored
         normalized.append(record)
     return normalized, count

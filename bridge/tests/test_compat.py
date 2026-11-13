@@ -94,7 +94,7 @@ def test_native_local_command_filter_preserves_source_identity_and_tools(native_
             for item in (path, child_path):
                 archive.write(item, item.relative_to(path.parent))
     run = load_run(str(source))
-    assert run.raw["_trajviz_obs_ignored_ui_records"] == 8
+    assert run.raw["_trajviz_obs_ignored_ui_records"] == 10
     assert not any("Display only" in s["text_preview"] or "<command-message>" in s["text_preview"]
                    or "TrajViz artifacts" in s["text_preview"] for s in run.steps)
     for text in ("<request>", "<system-reminder>", "<task-notification>",
@@ -114,6 +114,71 @@ def test_native_local_command_filter_preserves_source_identity_and_tools(native_
     assert load_run(str(exported)).to_dict(include_raw=True) == run.to_dict(include_raw=True)
     # Native dashboard and Converge loads use the same process-wide converter.
     assert tv.load(str(source)).steps == run.steps
+
+
+def test_native_resume_and_local_commands_do_not_extend_work_clock(tmp_path):
+    from trajviz_obs.native_records import normalize_native_records
+
+    def event(kind, index, content, *, subtype=None, model="claude-test", **fields):
+        row = {"type": kind, "uuid": f"row-{index}", "parentUuid": f"row-{index - 1}", "sessionId": "resume",
+               "timestamp": f"2026-10-28T01:00:{index:02d}Z", **fields}
+        if kind == "system":
+            return {**row, "subtype": subtype, "content": content}
+        row["message"] = {"role": kind, "content": content}
+        if kind == "assistant":
+            row["message"].update(id=f"message-{index}", model=model, stop_reason="stop_sequence",
+                                  usage={"input_tokens": 0, "output_tokens": 0})
+        return row
+
+    command = "<command-name>/obs</command-name><command-message>obs</command-message>"
+    sentinel = [{"type": "text", "text": "No response requested."}]
+    tool = {"type": "tool_use", "id": "tool-call", "name": "Bash", "input": {"command": "pytest -q"}}
+    result = {"type": "tool_result", "tool_use_id": "tool-call", "content": "passed"}
+    note = {"type": "text", "text": "TrajViz artifacts for this session go under /tmp/session"}
+    events = [
+        event("user", 0, "<local-command-caveat>Display only</local-command-caveat>", isMeta=True),
+        event("user", 1, command),
+        event("system", 2, "opening status", subtype="local_command"),
+        event("user", 3, "Run the tests."),
+        event("assistant", 4, [tool]),
+        event("user", 5, [note, result], isMeta=True),
+        event("assistant", 6, sentinel),
+        event("assistant", 7, sentinel, model="<synthetic>", isApiErrorMessage=True),
+        event("user", 8, "[Request interrupted by user]"),
+        event("system", 9, "Checkpoint", subtype="compact_boundary", compactMetadata={"trigger": "manual"}),
+        event("system", 10, "", subtype="turn_duration", durationMs=6_000),
+        event("assistant", 40, sentinel, model="<synthetic>", isApiErrorMessage=False),
+        event("user", 41, "<local-command-caveat>Display only</local-command-caveat>", isMeta=True),
+        event("user", 42, command),
+        event("system", 43, "dashboard opened", subtype="local_command", parentUuid="row-42"),
+        event("system", 44, "dashboard stopped", subtype="local_command", parentUuid="row-42"),
+        event("user", 45, note["text"], isMeta=True),
+    ]
+    normalized, ignored = normalize_native_records(events)
+    assert ignored == 10
+    assert [(row["uuid"], row["parentUuid"]) for row in normalized] == [
+        (row["uuid"], row["parentUuid"]) for row in events]
+    assert [i for i, row in enumerate(normalized) if row["timestamp"] is None] == [0, 1, 2, 11, 12, 13, 14, 15, 16]
+    assert normalized[5]["message"]["content"] == [result]
+    assert normalized[6:11] == events[6:11]
+
+    transcript = tmp_path / "resume.jsonl"
+    transcript.write_text("".join(json.dumps(row) + "\n" for row in events))
+    digest = hashlib.sha256(transcript.read_bytes()).hexdigest()
+    run = load_run(str(transcript), current=True)
+    assert run.view("summary").data["wall_clock_s"] == 7
+    assert run.raw["timing"]["finished_at"] == events[10]["timestamp"]
+    assert run.raw["_claude_code_turn_durations"][0]["duration_ms"] == 6000
+    assert run.raw["_claude_code_control_events"][0]["kind"] == "request_interrupted"
+    assert [step["raw_index"] for step in run.steps] == [3, 4, 6, 7, 9]
+    assert [step["model_id"] for step in run.steps if step["role"] == "assistant"] == [
+        "claude-test", "claude-test", "<synthetic>"]
+    assert run.steps[1]["tool_calls"][0]["output"] == "passed"
+    assert hashlib.sha256(transcript.read_bytes()).hexdigest() == digest == run.sha256
+
+    export = tmp_path / "trajectory.json"
+    export.write_text(json.dumps(run.to_dict(include_raw=True)))
+    assert load_run(str(export)).to_dict(include_raw=True) == run.to_dict(include_raw=True)
 
 
 def test_native_filter_handles_inline_progress_without_erasing_other_meta():
