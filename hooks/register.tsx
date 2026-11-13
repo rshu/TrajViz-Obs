@@ -61,7 +61,7 @@ export const register: Register = (on, options) => {
   // The obs tool, answered here: the model's call never reaches a server.
   on('tool.call', { tool: 'mcp__trajviz-obs__obs' }, ($, e) => serveTool($, options, e))
 
-  // The overview card: `/obs`'s output row drawn from the snapshot its
+  // The overview card: the text output row drawn from the snapshot its
   // provenance line names (never the latest). An error row carries no id,
   // and a pruned member is gone: both leave the row to the engine.
   on('ui.render', { component: 'CommandOutput', props: { command: 'obs' } }, async ($, e, next) => {

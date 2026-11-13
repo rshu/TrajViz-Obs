@@ -487,7 +487,7 @@ test('the action keys refresh, toggle watch, and run dashboard', async ($, on) =
   expect(h.runs).toEqual(['dashboard'])
   await ui.unmount()
   // The refresh's snapshot took id 2: the next `/obs` is 3.
-  expect(await obs($)).toMatch(/^obs snapshot 3 · /)
+  expect(await obs($, 'overview')).toMatch(/^obs snapshot 3 · /)
 })
 
 test('a running dashboard is named beside its key', async ($, on) => {
@@ -584,14 +584,48 @@ test('/obs pane --session refreshes an existing pane and its refresh keeps the s
   expect(h.bridgeCalls.filter(c => c[0] === 'resolve').map(c => c.slice(-2))).toEqual([['--session', '/outside/my run.jsonl'], ['--session', '/outside/my run.jsonl']])
 })
 
-test('/obs opens the pane unasked only beside a wide fullscreen transcript', async ($, on) => {
-  const h = host(on, [SNAPSHOT])
+test('bare /obs opens a pane without a transcript row in inline and fullscreen layouts', async ($, on) => {
+  const h = host(on, [SNAPSHOT, SECOND])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  await obs($, '', MAIN)
-  await obs($, '', { isFullscreen: true, columns: 139 })
-  expect(h.opens).toEqual([])
-  await obs($, '', { isFullscreen: true, columns: 140 })
-  expect(h.opens).toEqual([{ id: 'obs', title: 'obs', columns: 56 }])
+  for (const presentation of [MAIN, { isFullscreen: true, columns: 115 }]) {
+    const result = await $.command.run({ command: 'obs', args: '  ', origin: { kind: 'composer' }, presentation } as never)
+    expect(result.text).toBeUndefined()
+    expect(result.context).toBeUndefined()
+  }
+  expect(h.opens).toEqual([{ id: 'obs', title: 'obs', rows: 14 }, { id: 'obs', title: 'obs', columns: 56 }])
+  expect(h.snapshots).toBe(2)
+  const ui = await $.ui.mount(pane('terminal', 56))
+  expect(await ui.find({ type: 'Text', text: /^350$/ })).toBeDefined()
+  await ui.unmount()
+  expect(await obs($, 'overview', WIDE)).toMatch(/^obs snapshot 3 · /)
+  expect(h.opens).toHaveLength(2)
+})
+
+test('bare /obs returns the pane to the current session after a saved selection', async ($, on) => {
+  const saved = { ...SECOND, transcript: { ...SECOND.transcript, path: '/outside/my run.jsonl', session_id: 'other', kind: 'other' } }
+  const h = host(on, [saved, SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, 'pane --session "/outside/my run.jsonl"')
+  expect(await obs($, '', WIDE)).toBe('')
+  expect(h.snapshots).toBe(2)
+  expect(h.bridgeCalls.filter(c => c[0] === 'snapshot').map(c => c.slice(-2))).toEqual([['--kind', 'other'], ['--kind', 'current']])
+  const ui = await $.ui.mount(pane('terminal', 56))
+  expect(await ui.find({ type: 'Text', text: /^311$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('bare /obs falls back to the overview if the interactive host cannot place its pane', async ($, on) => {
+  const h = host(on, [SNAPSHOT], { isPlaced: false, reason: 'no-surface: none attached' })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  expect(await obs($, '', WIDE)).toMatch(/^obs snapshot 1 · /)
+  expect(h.snapshots).toBe(1)
+})
+
+test('bare headless /obs prints an overview without opening a pane', async ($, on) => {
+  const h = host(on, [SNAPSHOT])
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: false })
+  expect(await obs($)).toMatch(/^obs snapshot 1 · /)
+  expect(h.opens).toHaveLength(0)
 })
 
 test('an open the surface cannot place is said in the row', async ($, on) => {
