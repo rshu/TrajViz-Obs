@@ -81,6 +81,11 @@ def _native_wall_clock(elapsed, steps, raw):
     return 0.0 if len(stamps) >= 2 and min(stamps) == max(stamps) else None
 
 
+def _summed_elapsed(steps):
+    """Keep the elapsed-time fallback independent of the model duration sample."""
+    return sum(step["duration"] for step in steps if _observed(step, "duration"))
+
+
 def dashboard_field_observed(step, field):
     from agent_trajviz.insight.telemetry_quality import field_observed, is_otel_step
 
@@ -96,6 +101,10 @@ def dashboard_token_total_observed(step):
 def _usage_steps(steps):
     return [step for step in steps if step.get("role") == "assistant" or (step.get("role") == "compaction" and (
         step.get("_trajviz_obs_opencode_v2") or any(value and _number(value) for value in step["tokens"].values())))]
+
+
+def _assistant_duration_observed(step):
+    return step.get("role") == "assistant" and _observed(step, "duration")
 
 
 def _outcome(call):
@@ -194,7 +203,6 @@ def _project_metrics(metrics, quality, steps):
     dependencies = {
         "avg_cache_ratio": ("tokens.total", "tokens.cache_read"),
         "non_cache_ratio": ("tokens.total", "tokens.input"), "output_input_ratio": ("tokens.input", "tokens.output"),
-        "tokens_per_second": ("tokens.total", "duration"),
         "avg_tokens_per_step": ("tokens.total",), "avg_tokens_per_assistant_step": ("tokens.total",),
         "median_step_tokens": ("tokens.total",), "p95_step_tokens": ("tokens.total",),
         "tokens_per_tool": ("tokens.total",),
@@ -212,12 +220,13 @@ def _project_metrics(metrics, quality, steps):
     return result
 
 
-def _duration_metrics(steps):
+def _duration_metrics(steps, processed_tokens):
     from agent_trajviz.insight.metrics import _percentile
 
-    durations = [step["duration"] for step in steps if _observed(step, "duration")]
+    durations = [step["duration"] for step in steps if _assistant_duration_observed(step)]
     if not durations:
-        return dict.fromkeys(("total_duration", "avg_duration", "median_duration", "p95_duration", "max_duration"))
+        return dict.fromkeys(("total_duration", "avg_duration", "median_duration", "p95_duration", "max_duration",
+                              "tokens_per_second"))
     total = sum(durations)
     return {
         "total_duration": round(total, 2),
@@ -225,6 +234,7 @@ def _duration_metrics(steps):
         "median_duration": round(statistics.median(durations), 2),
         "p95_duration": round(_percentile(durations, 0.95), 2),
         "max_duration": round(max(durations), 2),
+        "tokens_per_second": round(processed_tokens / total, 1) if processed_tokens is not None and total > 0 else None,
     }
 
 
@@ -241,7 +251,7 @@ def _generation_metrics(steps):
     from agent_trajviz.insight.metrics import output_throughput
 
     assistant = [step for step in steps if step.get("role") == "assistant"]
-    measured = [step for step in assistant if _observed(step, "duration") and _observed(step, "tokens.output")]
+    measured = [step for step in assistant if _assistant_duration_observed(step) and _observed(step, "tokens.output")]
     sample = output_throughput(measured)
     count, total = sample["timed_steps"], len(assistant)
     seconds = sample["seconds"]
@@ -303,14 +313,15 @@ class _Projection:
     @cached_property
     def metrics(self):
         result = _project_metrics(self._original.metrics, self.data_quality, self.steps)
-        result.update(_duration_metrics(self.steps))
+        assistant_rows = [row for row in self.message_rows if row["role"] == "assistant"]
+        totals = [row["tokens_total"] for row in assistant_rows]
+        processed_tokens = (sum(totals) if _complete(self.data_quality, "duration")
+                            and all(total is not None for total in totals) else None)
+        result.update(_duration_metrics(self.steps, processed_tokens))
         result["model_breakdown"] = _model_breakdown(self.steps)
         result.update(_generation_metrics(self.steps))
-        rates = [row["tokens_per_sec"] for row in self.message_rows
-                 if row["role"] == "assistant" and row["tokens_per_sec"] is not None]
+        rates = [row["tokens_per_sec"] for row in assistant_rows if row["tokens_per_sec"] is not None]
         result["median_tokens_per_second"] = round(statistics.median(rates), 1) if rates else None
-        if not result["total_duration"]:
-            result["tokens_per_second"] = None
         raw = self._original.raw
         elapsed = result["wall_clock"]
         if result["total_duration"] != self._original.metrics["total_duration"]:
@@ -319,7 +330,7 @@ class _Projection:
             # The native fallback sums step durations when calendar evidence is absent.
             elapsed = session_wall_clock_seconds(self.steps, raw.get("timing"))
             if elapsed is None:
-                elapsed = result["total_duration"]
+                elapsed = _summed_elapsed(self.steps)
         result["wall_clock"] = _native_wall_clock(elapsed, self.steps, raw)
         return result
 
@@ -381,8 +392,8 @@ class _Projection:
             totals = _observed_token_totals({token: row[key] for key, token in token_fields.items()}, quality, steps)
             for key, token in token_fields.items():
                 row[key] = totals[token]
-            if not quality["fields"]["duration"]["observed"]:
-                row["total_duration_s"] = None
+            durations = [step["duration"] for step in steps if _assistant_duration_observed(step)]
+            row["total_duration_s"] = round(sum(durations), 2) if durations else None
             if not _complete(quality, "tokens.total", "tokens.cache_read"):
                 row["cache_efficiency_pct"] = None
             generation = _generation_metrics(grouped[row["agent_id"]])
@@ -503,8 +514,7 @@ def project_dashboard_session(session):
         full = session.run
         elapsed = session_wall_clock_seconds(full.steps, full.raw.get("timing"))
         if elapsed is None and projection is not run._analysis:
-            duration = sum(step["duration"] for step in full.steps if _observed(step, "duration"))
-            elapsed = _native_wall_clock(duration, full.steps, full.raw)
+            elapsed = _native_wall_clock(_summed_elapsed(full.steps), full.steps, full.raw)
         metrics = {**metrics, "wall_clock": elapsed}
 
     from agent_trajviz.insight.metrics import format_duration_seconds
@@ -516,6 +526,20 @@ def project_dashboard_session(session):
     return replace(session, verdicts=projection.verdicts, agent_summaries=projection.agent_summaries,
                    message_rows=projection.message_rows, step_analytics=projection.step_analytics,
                    user_repeats=projection.user_repeats)
+
+
+def _project_step_durations(data, steps):
+    from agent_trajviz.insight.chart_data import detect_outliers
+
+    for row in data["steps"]:
+        if not _assistant_duration_observed(steps[row["step"]]):
+            row.update(duration_s=None, spawn_adjusted=False, outlier=False)
+    sample = [row for row in data["steps"] if row["duration_s"] is not None]
+    durations = [row["duration_s"] for row in sample]
+    outliers = {index for index, _, _ in detect_outliers(durations)}
+    for index, row in enumerate(sample):
+        row["outlier"] = index in outliers
+    data["average_s"] = sum(durations) / len(durations) if durations else None
 
 
 def project_view(run, view):
@@ -549,6 +573,11 @@ def project_view(run, view):
         from agent_trajviz.insight.chart_data import agent_tokens
 
         data = agent_tokens(projection.agent_summaries)
+        if run.format == "claude_code" and run.raw.get("_claude_code_format"):
+            # Claude reports disjoint components. Partial sums can cover different
+            # steps, so their totals cannot identify how the components overlap.
+            for row in data["agents"]:
+                row["segments"].update(fresh=row["input"], cache_write=row["cache_write"], output=row["output"])
     elif view.id == "workflow":
         # Published schema 2 still requires an integer workflow token count.
         # Explicit observation metadata lets the UI suppress that placeholder.
@@ -560,8 +589,8 @@ def project_view(run, view):
                 if any(not _observed(steps[index], "tokens.total") for index in range(
                         segment["start"], segment["end"] + 1) if index in steps):
                     segment["tokens"] = None
-    elif view.id == "step_durations" and not projection.data_quality["fields"]["duration"]["observed"]:
-        data["average_s"] = None
+    elif view.id == "step_durations":
+        _project_step_durations(data, steps)
     dependencies = {"token_usage": tuple(f"tokens.{key}" for key in TOKEN_LABELS),
                     "agent_tokens": tuple(f"tokens.{key}" for key in TOKEN_LABELS),
                     "agent_swimlane": ("tokens.total",),

@@ -9,6 +9,8 @@ METRIC_TRANSLATIONS = {
     "Median uses assistant steps with both tokens and duration recorded.": "中位数仅使用同时记录了 Token 和耗时的助手步骤。",
     "Includes cache reads. Divided by summed step duration.": "包含缓存读取，分母为各步骤耗时之和。",
     "Requires complete token and timing records.": "需要完整的 Token 和耗时记录。",
+    "Includes cache reads. Divided by summed assistant step duration.": "包含缓存读取，分母为各助手步骤耗时之和。",
+    "Requires complete assistant token and timing records.": "需要完整的助手步骤 Token 和耗时记录。",
     "({count} total, {rate}% success)": "（共 {count} 次，成功率 {rate}%）",
     "({count} total, success rate unavailable)": "（共 {count} 次，成功率不可用）",
     "({count} total, success rate unavailable, {observed}/{count} outcomes recorded)":
@@ -33,7 +35,9 @@ def format_deep_dive_metrics(metrics, wall_clock, rows):
 
     native_chip = _clone_native_function(formatting._metric_chip, {"ui_text": metric_text})
     tokens = metrics["tokens"]
-    fields = metrics.get("data_quality", {}).get("fields", {})
+    quality = metrics.get("data_quality", {})
+    fields = quality.get("fields", {})
+    native_sample = quality.get("source") == "native"
     assistant = [row for row in rows if row["role"] == "assistant"]
 
     def partial(observed, total):
@@ -57,12 +61,15 @@ def format_deep_dive_metrics(metrics, wall_clock, rows):
             hint = coverage("tokens.input")
         elif label in _DURATION_LABELS:
             hint = coverage("duration")
-        elif label == "Total processed tok/sec" and value != "N/A":
-            hint = "Includes cache reads. Divided by summed step duration."
-        elif label == "Total processed tok/sec" and any(
-                fields.get(field, {}).get("status") in {"partial", "unknown", "unavailable"}
-                for field in ("tokens.total", "duration")):
-            hint = "Requires complete token and timing records."
+        elif label == "Total processed tok/sec":
+            if value != "N/A":
+                hint = ("Includes cache reads. Divided by summed assistant step duration." if native_sample
+                        else "Includes cache reads. Divided by summed step duration.")
+            elif native_sample and any(row["tokens_total"] is None or row["duration"] is None for row in assistant):
+                hint = "Requires complete assistant token and timing records."
+            elif not native_sample and any(fields.get(field, {}).get("status") in {"partial", "unknown", "unavailable"}
+                                           for field in ("tokens.total", "duration")):
+                hint = "Requires complete token and timing records."
         elif label == "Median processed tok/sec" and value != "N/A":
             observed = sum(row["tokens_per_sec"] is not None for row in assistant)
             hint = partial(observed, len(assistant)) or "Median uses assistant steps with both tokens and duration recorded."

@@ -36,7 +36,7 @@ _DEEP_DIVE_TRANSLATIONS = {
     "Context Growth": "上下文增长",
     "Own Completion": "本步生成",
     "New Content": "新增内容",
-    "No positive cache reads were recorded.": "未记录到非零缓存读取。",
+    "No cache-read shares could be ranked.": "没有可排序的缓存读取占比。",
     "No positive context growth could be measured between consecutive calls.": "未能测得相邻调用间的上下文增长。",
     "Open Workflow step {n}": "在工作流中查看第 {n} 步",
 }
@@ -65,6 +65,15 @@ _CSS = """
 .obs-dashboard .obs-guide p { font-size: 13px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
 .obs-dashboard .obs-guide-charts { font-size: 12px; color: var(--ov-accent, #1d4ed8); text-decoration: underline; }
 .obs-dashboard #obs-summary-chart-guide { scroll-margin-top: 76px; }
+.obs-dashboard #obs-summary-chart-guide button.section-guide-trigger {
+  padding: 0; border: 0; border-bottom: 1px dotted currentColor; background: transparent; font-family: inherit;
+}
+.obs-dashboard #obs-summary-chart-guide button.section-guide-trigger:focus-visible {
+  outline: 2px solid var(--ov-accent, #1d4ed8); outline-offset: 2px;
+}
+.obs-dashboard #obs-summary-chart-guide .section-guide-tip.obs-guide-dismissed .section-guide-pop {
+  display: none;
+}
 .obs-dashboard .obs-guide strong { display: block; margin-bottom: 3px; }
 .obs-dashboard .obs-model-note { font-size: 12px !important; margin-top: 12px !important;
   color: var(--ov-muted, #475569); }
@@ -196,6 +205,9 @@ _JS = "() => {\n  " + _LIGHT + r"""
   let sourceSettled = false;
   let measuredTabs = null;
   let tokenPanel = null;
+  let guideTip = null;
+  const guideSelector = '#obs-summary-chart-guide .section-guide-tip';
+  const reopenGuide = tip => tip.classList.remove('obs-guide-dismissed');
   const tokenSelection = new MutationObserver(records => {
     // TrajViz toggles the selected step's display when a token bar is clicked.
     const detail = records.find(({target}) => target.matches('.tv-token-step-detail')
@@ -211,8 +223,15 @@ _JS = "() => {\n  " + _LIGHT + r"""
     }
   });
   root.addEventListener('click', event => {
+    const trigger = event.target.closest?.(guideSelector + ' button');
+    if (trigger) {
+      reopenGuide(trigger.parentElement);
+      trigger.focus({preventScroll: true});
+      return;
+    }
     const link = event.target.closest?.('.obs-guide-charts');
-    if (!link || !window.tvClickMainTab) return;
+    if (!link || !window.tvClickMainTab || event.defaultPrevented || event.button !== 0
+        || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
     event.preventDefault();
     window.tvClickMainTab('Overview');
     const start = performance.now();
@@ -225,14 +244,23 @@ _JS = "() => {\n  " + _LIGHT + r"""
       }
       const guide = root.querySelector('#obs-summary-chart-guide');
       const tip = guide?.querySelector('.section-guide-tip');
-      if (tip?.getClientRects().length) {
+      const trigger = tip?.querySelector('button');
+      if (trigger?.getClientRects().length) {
         guide.scrollIntoView({block: 'start'});
-        tip.focus({preventScroll: true});
+        reopenGuide(tip);
+        trigger.focus({preventScroll: true});
       } else if (performance.now() - start < 3000) {
         requestAnimationFrame(showGuide);
       }
     };
     requestAnimationFrame(showGuide);
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    const tip = root.querySelector(guideSelector);
+    if (tip?.querySelector('.section-guide-pop')?.getClientRects().length) {
+      tip.classList.add('obs-guide-dismissed');
+    }
   });
   root.addEventListener('keydown', event => {
     const step = event.target.closest?.('.insight-step-link:not(a[href])');
@@ -244,6 +272,12 @@ _JS = "() => {\n  " + _LIGHT + r"""
   function polish() {
     queued = false;
     const tabs = root.querySelector('.obs-main-tabs');
+    const tip = root.querySelector(guideSelector);
+    if (tip && tip !== guideTip) {
+      tip.addEventListener('pointerenter', () => reopenGuide(tip));
+      tip.addEventListener('focusin', () => reopenGuide(tip));
+      guideTip = tip;
+    }
     const panel = root.querySelector('.token-step-explain');
     if (panel !== tokenPanel) {
       tokenSelection.disconnect();
@@ -811,6 +845,14 @@ def _focus_overview(page: gr.Blocks) -> None:
                         and "section-guide-tip" in str(child.value)), None)
     if chart_guide is not None:
         chart_guide.elem_id = "obs-summary-chart-guide"
+        chart_guide.value = chart_guide.value.replace(
+            "<div class='section-guide-tip' tabindex='0'><span class='section-guide-trigger'>",
+            "<div class='section-guide-tip'><button type='button' class='section-guide-trigger' "
+            "aria-describedby='obs-summary-chart-help'>", 1,
+        ).replace(
+            "</span><div class='section-guide-pop' role='tooltip'>",
+            "</button><div class='section-guide-pop' role='tooltip' id='obs-summary-chart-help'>", 1,
+        )
     cards = [child for child in page.children if "overview-kpi-strip" in (child.elem_classes or [])]
     warnings = [child for child in page.children if isinstance(child, gr.Column) and any(
         "label-status-badge" in (part.elem_classes or []) for part in child.children)]

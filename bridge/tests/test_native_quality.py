@@ -177,12 +177,31 @@ def test_native_duration_aggregates_skip_reversed_intervals_but_keep_measured_ze
     assert metrics["tokens_per_second"] is None
     assert projected.data_quality["fields"]["duration"]["observed"] == 2
     assert [row["duration"] for row in projected.message_rows] == [None, None, 0.0, 2.0]
+    assert projected.agent_summaries[0]["total_duration_s"] == 2.0
+    chart = project_view(run, run.view("step_durations")).data
+    assert chart["average_s"] == 1.0
+    assert [row["duration_s"] for row in chart["steps"]] == [None, None, 0.0, 2.0]
 
     # Legacy or imported steps may have durations without calendar stamps.
     untimestamped = replace(run, steps=[{**step, "time_created_ms": None, "time_completed_ms": None}
                                        for step in run.steps], raw={})
     assert untimestamped.metrics["wall_clock"] == 1.9
     assert project_analysis(untimestamped).metrics["wall_clock"] == 2.0
+
+
+def test_compaction_time_cannot_fill_missing_assistant_duration(native_run):
+    compact = {"id": "compact", "type": "compaction", "status": "completed", "reason": "manual",
+               "summary": "Controlled summary", "time": {"created": BASE + 800, "completed": BASE + 1300}}
+    _, run = native_run([message(tokens=usage(), completed=None), compact], session_time=False)
+    projected = project_analysis(run)
+    assert run.metrics["avg_duration"] == 0.5
+    assert projected.metrics["avg_duration"] is None
+    assert projected.metrics["wall_clock"] == run.metrics["wall_clock"] == 1.2
+    assert projected.data_quality["fields"]["duration"]["observed"] == 0
+    assert projected.agent_summaries[0]["total_duration_s"] is None
+    chart = project_view(run, run.view("step_durations")).data
+    assert chart["average_s"] is None
+    assert [row["duration_s"] for row in chart["steps"]] == [None, None]
 
 
 def test_duration_aggregation_keeps_native_rounding_and_percentile_for_valid_records(native_run):
@@ -192,6 +211,38 @@ def test_duration_aggregation_keeps_native_rounding_and_percentile_for_valid_rec
     for key in ("total_duration", "avg_duration", "median_duration", "p95_duration", "max_duration",
                 "wall_clock", "tokens_per_second", "median_tokens_per_second", "model_breakdown"):
         assert metrics[key] == run.metrics[key]
+
+
+def test_total_processed_throughput_uses_unrounded_valid_durations(native_run):
+    _, run = native_run([message(tokens=usage(input=100, output=0, reasoning=0, read=0), completed=2100),
+                         {"type": "skill", "id": "skill", "name": "demo",
+                          "time": {"created": BASE + 2000, "completed": BASE + 1000}}])
+    assert run.metrics["tokens_per_second"] == 100.0
+    projected = project_analysis(run)
+    assert projected.data_quality["fields"]["duration"]["status"] == "observed"
+    assert projected.metrics["total_duration"] == 2.0
+    assert projected.metrics["tokens_per_second"] == 50.0
+
+    # Claude's per-message transcript intervals can have millisecond precision.
+    short = replace(run, steps=[{**run.steps[0], "duration": 0.004,
+                                "time_completed_ms": run.steps[0]["time_created_ms"] + 4}])
+    assert project_analysis(short).metrics["total_duration"] == 0.0
+    assert project_analysis(short).metrics["tokens_per_second"] == 25_000.0
+
+
+@pytest.mark.parametrize("compaction_tokens", [usage(input=90, output=10, reasoning=0, read=0), None])
+def test_processed_throughput_uses_assistant_tokens_and_duration_only(native_run, compaction_tokens):
+    assistant = message(tokens=usage(input=40, output=10, reasoning=0, read=50), completed=2100)
+    compact = {"id": "compact", "type": "compaction", "status": "completed", "reason": "manual",
+               "summary": "Controlled summary", "time": {"created": BASE + 2200, "completed": BASE + 2700}}
+    if compaction_tokens is not None:
+        compact["tokens"] = compaction_tokens
+    _, run = native_run([assistant, compact])
+    assert run.metrics["total_duration"] == 2.5
+    metrics = project_analysis(run).metrics
+    assert metrics["tokens"]["total"] == (200 if compaction_tokens else 100)
+    assert metrics["total_duration"] == 2.0
+    assert metrics["tokens_per_second"] == 50.0
 
 
 def test_model_breakdown_counts_assistant_work_instead_of_prompt_or_checkpoint_metadata(native_run):

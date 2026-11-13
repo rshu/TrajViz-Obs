@@ -403,7 +403,7 @@ def _dashboard_overview_presenter():
         markdown = re.sub(r"(?<=\| )None(?= \|)", "N/A", markdown)
         before_growth, growth_heading, growth = markdown.partition("\n\n**Top context-growth steps**")
         if "**Lowest cache read steps**" not in before_growth:
-            before_growth += "\n\n**Lowest cache read steps**\n\n*No positive cache reads were recorded.*"
+            before_growth += "\n\n**Lowest cache read steps**\n\n*No cache-read shares could be ranked.*"
         if not growth_heading:
             growth_heading = "\n\n**Top context-growth steps**"
             growth = "\n\n*No positive context growth could be measured between consecutive calls.*"

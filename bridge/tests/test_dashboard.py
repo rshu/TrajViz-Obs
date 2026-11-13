@@ -148,14 +148,33 @@ def test_deep_dive_keeps_step_links_and_distinguishes_missing_from_zero(tmp_path
     assert re.search(r"#tv-step-2[^\n]+0\.90 \| 0 \|", latency)
     assert re.search(r"#tv-step-3[^\n]+40 \| 0 \| N/A \|", token)
     assert "#tv-step-0" not in token and " | None | " not in hotspots
-    assert "**Lowest cache read steps**\n\n*No positive cache reads were recorded.*" in token
+    assert "**Lowest cache read steps**\n\n*No cache-read shares could be ranked.*" in token
     assert "**Top context-growth steps**\n\n*No positive context growth" in token
     assert re.findall(r"#tv-step-([0-9]+)", per_message) == ["0", "1", "2", "3"]
     metrics = next(value for value in values.values() if isinstance(value, str) and value.startswith("### Timing"))
-    assert "Requires complete token and timing records." in metrics
+    assert "Requires complete assistant token and timing records." in metrics
     assert "Partial coverage: 1/3 recorded" in metrics
     html = _mixed_md_to_html(per_message)
     assert "<td>0</td>" in html and "#tv-step-" not in html
+
+
+def test_deep_dive_does_not_deny_observed_cache_reads_without_a_total(tmp_path):
+    source = tmp_path / "partial-claude.jsonl"
+    source.write_text(json.dumps({
+        "type": "assistant", "sessionId": "partial", "uuid": "assistant", "timestamp": "2026-10-28T01:00:01Z",
+        "message": {"id": "reply", "role": "assistant", "model": "claude-test",
+                    "content": [{"type": "text", "text": "Checked."}],
+                    "usage": {"input_tokens": 12, "output_tokens": 5, "cache_read_input_tokens": 50}},
+    }) + "\n")
+    app = build_preloaded_insight(str(source))
+    loader = _loader(app)
+    values = loader.fn(str(source), False, "")
+    hotspots = next(value for value in values.values() if isinstance(value, str)
+                    and value.startswith("### Message Hotspots"))
+    metrics = next(value for value in values.values() if isinstance(value, str) and value.startswith("### Timing"))
+    assert re.search(r">Cache read</span></span><span[^>]*>50</span>", metrics)
+    assert re.search(r">Total tokens</span></span><span[^>]*>N/A</span>", metrics)
+    assert "**Lowest cache read steps**\n\n*No cache-read shares could be ranked.*" in hotspots
 
 
 def test_token_explanations_distinguish_missing_cache_counters_from_zero(tmp_path):

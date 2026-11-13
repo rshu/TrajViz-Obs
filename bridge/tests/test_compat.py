@@ -248,9 +248,9 @@ def test_native_claude_aggregates_exclude_unobserved_partial_totals(tmp_path):
     transcript = tmp_path / "mixed-usage.jsonl"
     rows = [
         ("user", None),
-        ("assistant", {"input_tokens": 4, "output_tokens": 5, "cache_read_input_tokens": 1000,
-                       "cache_creation_input_tokens": 2}),
-        ("assistant", {"input_tokens": 12, "output_tokens": 5}),
+        ("assistant", {"input_tokens": 4, "output_tokens": 1, "cache_read_input_tokens": 20,
+                       "cache_creation_input_tokens": 5}),
+        ("assistant", {"input_tokens": 50, "output_tokens": 5}),
     ]
     with transcript.open("w") as file:
         for index, (role, usage) in enumerate(rows):
@@ -264,22 +264,25 @@ def test_native_claude_aggregates_exclude_unobserved_partial_totals(tmp_path):
     summary = project_view(run, run.view("summary")).data
     metrics = project_view(run, run.view("metrics")).data
     assert summary["tokens"] == metrics["tokens"] == {
-        "total": 1011, "input": 16, "output": 10, "reasoning": None, "cache_read": 1000, "cache_write": 2,
+        "total": 30, "input": 54, "output": 6, "reasoning": None, "cache_read": 20, "cache_write": 5,
     }
-    assert metrics["non_cache_tokens"] == 16 and metrics["non_cache_ratio"] is None
+    assert metrics["non_cache_tokens"] == 54 and metrics["non_cache_ratio"] is None
     assert metrics["metric_coverage"]["tokens.total"] == "partial"
     agent = project_view(run, run.view("agents")).data[0]
-    assert agent["total_tokens"] == 1011 and agent["input_tokens"] == 16
+    assert agent["total_tokens"] == 30 and agent["input_tokens"] == 54
     assert agent["cache_efficiency_pct"] is None
     agent_tokens = project_view(run, run.view("agent_tokens")).data["agents"][0]
-    assert agent_tokens["total"] == 1011
+    assert agent_tokens["total"] == 30
+    assert agent_tokens["segments"] == {
+        "fresh": 54, "cache_read": 20, "cache_write": 5, "output": 6, "reasoning": None,
+    }
 
     session = project_dashboard_session(session_from_run(run))
     deep_dive = _dashboard_overview_presenter()(session)["metrics_text"]
     assert session.metrics["tokens"] == summary["tokens"]
-    assert ">1,011</span>" in deep_dive and "Partial coverage: 1/2 recorded" in deep_dive
-    assert run.steps[-1]["tokens"]["total"] == 17
-    assert run.metrics["tokens"]["total"] == 1028
+    assert ">30</span>" in deep_dive and "Partial coverage: 1/2 recorded" in deep_dive
+    assert run.steps[-1]["tokens"]["total"] == 55
+    assert run.metrics["tokens"]["total"] == 85
 
 
 def test_native_filter_handles_inline_progress_without_erasing_other_meta():
