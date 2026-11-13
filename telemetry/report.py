@@ -10,8 +10,9 @@ from bridge.telemetry_protocol import ADAPTERS, DURATION_BUCKETS, valid_agent_ve
 from .collector import DEFAULT_RETENTION_DAYS, database_connection, retention_cutoff
 
 REPORT_FORMAT = "trajviz-obs-usage-report"
-REPORT_SCHEMA_VERSION = 2
+REPORT_SCHEMA_VERSION = 3
 _EXECUTED_OUTCOMES = ("success", "error")
+_COMPLETED_OUTCOMES = (*_EXECUTED_OUTCOMES, "cancelled")
 
 
 def _rate(numerator: int, denominator: int) -> float | None:
@@ -98,17 +99,21 @@ def _daily(connection, start: str, today: date, days: int) -> list[dict]:
             for day in dates for adapter in ADAPTERS]
 
 
-def _activity(connection, start: str, today: date, days: int, monthly_start: str) -> dict:
-    columns = {row["name"] for row in connection.execute("PRAGMA table_info(events)")}
+def _agent_version_sql(connection, columns: set[str]) -> str:
+    if "agent_version" not in columns:
+        return "NULL"
+
+    def valid_version(value):
+        return value if valid_agent_version(value) else None
+
+    connection.create_function("report_agent_version", 1, valid_version, deterministic=True)
+    return "report_agent_version(agent_version)"
+
+
+def _activity(connection, start: str, today: date, days: int, monthly_start: str, columns: set[str],
+              version: str) -> dict:
     address = ("CASE WHEN typeof(address_digest) = 'blob' AND length(address_digest) = 32 THEN address_digest END"
                if "address_digest" in columns else "NULL")
-    version = "NULL"
-    if "agent_version" in columns:
-        def valid_version(value):
-            return value if valid_agent_version(value) else None
-
-        connection.create_function("report_agent_version", 1, valid_version, deterministic=True)
-        version = "report_agent_version(agent_version)"
     # Adapter names and installation IDs are allowlisted, so ':' separates the
     # installation identity components unambiguously. Hex encodes the digest
     # only inside the count to identify distinct address/installation pairs.
@@ -176,27 +181,76 @@ def _activity(connection, start: str, today: date, days: int, monthly_start: str
             "by_agent_version": versions}
 
 
-def _features(connection, period: tuple[str, str]) -> list[dict]:
+def _rolling_activity(connection, weekly_start: str, monthly_start: str, end: str) -> dict:
     rows = connection.execute(
         """
-        SELECT adapter, feature, count(*) AS invocations, count(DISTINCT installation_id) AS installations
+        WITH active AS (
+            SELECT adapter, installation_id, max(day) AS last_activity
+            FROM events WHERE day BETWEEN :month AND :end
+            GROUP BY adapter, installation_id
+        )
+        SELECT adapter, count(*) AS active_30,
+               count(CASE WHEN first_day < :month THEN 1 END) AS returning_30,
+               count(CASE WHEN last_activity >= :week THEN 1 END) AS active_7,
+               count(CASE WHEN last_activity >= :week AND first_day < :week THEN 1 END) AS returning_7
+        FROM active JOIN installations USING (adapter, installation_id)
+        GROUP BY adapter
+        """,
+        {"week": weekly_start, "month": monthly_start, "end": end},
+    )
+    by_adapter = {row["adapter"]: dict(row) for row in rows}
+
+    def windows(counts):
+        return {
+            f"last_{length}_days": {
+                "start": start, "active_installations": counts.get(f"active_{length}", 0),
+                "returning_installations": counts.get(f"returning_{length}", 0),
+            }
+            for length, start in ((7, weekly_start), (30, monthly_start))
+        }
+
+    # Installations are already scoped to their adapter.
+    totals = {key: sum(row[key] for row in by_adapter.values())
+              for key in ("active_7", "returning_7", "active_30", "returning_30")}
+    return {**windows(totals), "by_adapter": [
+        {"adapter": adapter, **windows(by_adapter.get(adapter, {}))} for adapter in ADAPTERS
+    ]}
+
+
+def _feature_category(feature: str) -> str:
+    prefix = feature.partition(".")[0]
+    return {"dashboard": "dashboard", "converge": "dashboard", "pane": "pane"}.get(prefix, "command")
+
+
+def _features(connection, period: tuple[str, str], *, agent_version_sql: str | None = None) -> list[dict]:
+    version = agent_version_sql or "NULL"
+    rows = connection.execute(
+        f"""
+        SELECT adapter, feature, {version} AS host_version, count(*) AS invocations,
+               count(DISTINCT installation_id) AS installations
         FROM events WHERE day BETWEEN ? AND ? AND feature != 'activation'
-        GROUP BY adapter, feature ORDER BY adapter, invocations DESC, feature
+        GROUP BY adapter, feature, host_version ORDER BY adapter, invocations DESC, feature, host_version
         """,
         period,
     )
-    features = {(row["adapter"], row["feature"]): {**dict(row), "outcomes": {}, "duration_buckets": {}}
-                for row in rows}
+    features = {}
+    for row in rows:
+        feature = dict(row)
+        host_version = feature.pop("host_version")
+        key = (feature["adapter"], feature["feature"], host_version)
+        if agent_version_sql is not None:
+            feature.update(agent_version=host_version, category=_feature_category(feature["feature"]))
+        features[key] = {**feature, "outcomes": {}, "duration_buckets": {}}
     dimensions = connection.execute(
-        """
-        SELECT adapter, feature, outcome, duration_bucket, count(*) AS count
+        f"""
+        SELECT adapter, feature, {version} AS host_version, outcome, duration_bucket, count(*) AS count
         FROM events WHERE day BETWEEN ? AND ? AND feature != 'activation'
-        GROUP BY adapter, feature, outcome, duration_bucket
+        GROUP BY adapter, feature, host_version, outcome, duration_bucket
         """,
         period,
     )
     for row in dimensions:
-        feature = features[row["adapter"], row["feature"]]
+        feature = features[row["adapter"], row["feature"], row["host_version"]]
         outcome, bucket, count = row["outcome"], row["duration_bucket"], row["count"]
         outcomes = feature["outcomes"]
         outcomes[outcome] = outcomes.get(outcome, 0) + count
@@ -206,8 +260,14 @@ def _features(connection, period: tuple[str, str]) -> list[dict]:
     for feature in features.values():
         outcomes = feature["outcomes"]
         executed = sum(outcomes.get(outcome, 0) for outcome in _EXECUTED_OUTCOMES)
-        feature.update(executed=executed, success_rate=_rate(outcomes.get("success", 0), executed),
-                       error_rate=_rate(outcomes.get("error", 0), executed),
+        eligible = executed
+        if agent_version_sql is not None:
+            eligible = sum(outcomes.get(outcome, 0) for outcome in _COMPLETED_OUTCOMES)
+            feature.update(completed=eligible, cancelled_rate=_rate(outcomes.get("cancelled", 0), eligible))
+        else:
+            feature["executed"] = executed
+        feature.update(success_rate=_rate(outcomes.get("success", 0), eligible),
+                       error_rate=_rate(outcomes.get("error", 0), eligible),
                        p50_duration_bucket=_percentile_bucket(feature["duration_buckets"], executed, 50),
                        p95_duration_bucket=_percentile_bucket(feature["duration_buckets"], executed, 95))
     return list(features.values())
@@ -277,9 +337,12 @@ def report(database: Path, *, today: date, days: int = 30, retention_days: int =
         raise ValueError("The requested report period and its 30-day activity window must fit within retention.")
     start = (today - timedelta(days=days - 1)).isoformat()
     period = (start, today.isoformat())
+    weekly_start = (today - timedelta(days=6)).isoformat()
     monthly_start = (today - timedelta(days=29)).isoformat()
     with database_connection(database, read_only=True) as connection:
         connection.execute("BEGIN")
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(events)")}
+        agent_version_sql = _agent_version_sql(connection, columns)
         surfaces = connection.execute(
             """
             SELECT adapter, surface, count(*) AS invocations, count(DISTINCT installation_id) AS installations
@@ -307,5 +370,9 @@ def report(database: Path, *, today: date, days: int = 30, retention_days: int =
             "surfaces": [dict(row) for row in surfaces],
             "versions": [dict(row) for row in versions],
             "retention": _retention(connection, cutoff, period[1]),
-            "activity": _activity(connection, start, today, days, monthly_start),
+            "activity": _activity(connection, start, today, days, monthly_start, columns, agent_version_sql),
+            "usage": {
+                "rolling": _rolling_activity(connection, weekly_start, monthly_start, period[1]),
+                "features": _features(connection, period, agent_version_sql=agent_version_sql),
+            },
         }

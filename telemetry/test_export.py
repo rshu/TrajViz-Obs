@@ -37,7 +37,7 @@ def test_cli_exports_the_same_snapshot_as_json_and_html(tmp_path):
 
     snapshot = json.loads(run().stdout)
     assert snapshot["format"] == "trajviz-obs-usage-report"
-    assert snapshot["schema_version"] == 2
+    assert snapshot["schema_version"] == 3
     assert snapshot["retention_days"] == 365
     assert snapshot["engagement"][0]["average_days_per_engaged_installation"] is None
     json_file = tmp_path / "exports" / "usage.json"
@@ -112,6 +112,14 @@ def test_cli_serves_live_report_and_ingests_events_on_the_same_port(tmp_path, mo
             assert [(row["adapter"], row["feature"], row["invocations"]) for row in snapshot["features"]] == [
                 ("claude-code", "help", 1),
             ]
+
+            first_seen = sum(row["new_installations"] for row in snapshot["adoption"])
+            assert first_seen == 1
+            assert snapshot["usage"]["rolling"]["last_7_days"]["active_installations"] == 1
+            assert snapshot["usage"]["rolling"]["last_30_days"]["returning_installations"] == 0
+            feature, = snapshot["usage"]["features"]
+            assert (feature["agent_version"], feature["category"], feature["success_rate"],
+                    feature["error_rate"], feature["cancelled_rate"]) == (None, "command", 1, 0, 0)
 
             offline = database.with_suffix(".offline")
             database.rename(offline)

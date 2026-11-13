@@ -30,7 +30,7 @@ def test_report_schema_matches_format_and_ingest_allowlists():
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     assert schema["properties"]["format"]["const"] == REPORT_FORMAT
-    assert schema["properties"]["schema_version"]["enum"] == [1, REPORT_SCHEMA_VERSION]
+    assert schema["properties"]["schema_version"]["enum"] == [1, 2, REPORT_SCHEMA_VERSION]
     definitions = schema["$defs"]
     assert definitions["adapter"]["enum"] == list(ADAPTERS)
     assert definitions["surface_name"]["enum"] == list(SURFACES)
@@ -67,9 +67,12 @@ def test_empty_and_populated_reports_match_schema(tmp_path):
 
     populated = report(database, today=today, days=14)
     validator.validate(populated)
-    legacy = {key: value for key, value in populated.items() if key != "activity"}
+    legacy = {key: value for key, value in populated.items() if key not in {"activity", "usage"}}
     validator.validate({**legacy, "schema_version": 1})
-    assert not validator.is_valid(legacy)
+    validator.validate({**legacy, "schema_version": 2, "activity": populated["activity"]})
+    assert not validator.is_valid({**legacy, "schema_version": 2})
+    assert not validator.is_valid({**legacy, "activity": populated["activity"]})
+    assert not validator.is_valid({**populated, "schema_version": 2})
     assert not validator.is_valid({**populated, "schema_version": 1})
     activity = populated["activity"]
     assert activity["period"]["distinct_installations"] == 3
@@ -82,9 +85,13 @@ def test_empty_and_populated_reports_match_schema(tmp_path):
     assert len(populated["features"]) == 3
     assert populated["features"][0]["p95_duration_bucket"] is None
 
-    for key, invalid in (("as_of", "2026-02-30"), ("schema_version", 3), ("retention_days", 31)):
+    for key, invalid in (("as_of", "2026-02-30"), ("schema_version", 4), ("retention_days", 31)):
         assert not validator.is_valid({**populated, key: invalid})
 
     with_identifier = deepcopy(populated)
     with_identifier["features"][0]["installation_id"] = uuid4().hex
     assert not validator.is_valid(with_identifier)
+
+    malformed = deepcopy(populated)
+    malformed["usage"]["features"][0]["agent_version"] = "2.1.311\n"
+    assert not validator.is_valid(malformed)

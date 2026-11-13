@@ -96,7 +96,7 @@ def test_publisher_keeps_previous_report_until_recovery(tmp_path, monkeypatch, c
         publish.publish_reports(database, html, days=1, retention_days=DEFAULT_RETENTION_DAYS, interval_seconds=1)
     assert attempts == 2
     assert str(error) in capsys.readouterr().err
-    assert json.loads(embedded_text(html.read_text(encoding="utf-8")))["schema_version"] == 2
+    assert json.loads(embedded_text(html.read_text(encoding="utf-8")))["schema_version"] == 3
 
 
 def test_publisher_recovers_after_html_snapshot_fits_again(tmp_path, monkeypatch, capsys):
@@ -119,4 +119,4 @@ def test_publisher_recovers_after_html_snapshot_fits_again(tmp_path, monkeypatch
     with pytest.raises(KeyboardInterrupt):
         publish.publish_reports(database, html, days=1, retention_days=DEFAULT_RETENTION_DAYS, interval_seconds=1)
     assert "viewer limit" in capsys.readouterr().err
-    assert json.loads(embedded_text(html.read_text(encoding="utf-8")))["schema_version"] == 2
+    assert json.loads(embedded_text(html.read_text(encoding="utf-8")))["schema_version"] == 3

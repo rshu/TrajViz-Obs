@@ -172,6 +172,13 @@ def test_cohort_reconciles_after_lost_acknowledgement(tmp_path, client_bridge):
         ("claude-code", 2, 1), ("opencode", 2, 2),
     ]
     assert [row["invocations"] for row in summary["engagement"]] == [4, 4]
+    assert summary["usage"]["rolling"]["last_7_days"]["active_installations"] == 4
+    assert summary["usage"]["rolling"]["last_30_days"]["returning_installations"] == 0
+    by_feature = {(row["adapter"], row["feature"]): row for row in summary["usage"]["features"]}
+    assert sum(row["invocations"] for row in by_feature.values()) == 8
+    assert by_feature["claude-code", "dashboard.tab"]["success_rate"] is None
+    assert by_feature["opencode", "pane.refresh"]["error_rate"] == 1
+    assert by_feature["opencode", "tool"]["cancelled_rate"] == 1
     assert all(identity not in result.stdout for identity in ids)
 
 

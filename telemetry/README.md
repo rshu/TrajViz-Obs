@@ -76,18 +76,18 @@ python3 -m telemetry --database "$usage_db" publish \
 
 - `publish` requires `--html PATH`. It defaults to `--days 30` and a refresh every 3,600 seconds.
 - `report` defaults to 30 UTC days ending today. Set `--days N` or `--as-of YYYY-MM-DD` to change the window. Both the requested window and the rolling 30-day window must fit within retention. Use either `--html PATH` or `--json PATH`, or omit both for JSON on stdout.
-- Use **EN | 中** to switch between English and Simplified Chinese in the offline HTML report or [JSON viewer](viewer.html). The viewer accepts report schemas 1 and 2 in JSON snapshots up to 5 MiB and displays up to 100 plugin-version rows ranked by tracked actions. JSON retains all rows. Open schema 2 snapshots with the current viewer. A `null` metric has no eligible data and `0` is a measured zero. [JSON schema](report.schema.json)
-- Feature usage, Surfaces, and Plugin versions have **Table** and **Bar chart** views. Each chart shows up to 12 vertical bars ranked by tracked actions and follows the adapter filter and the feature search where applicable.
+- Use **EN | 中** to switch between English and Simplified Chinese. The offline viewer opens report schemas 1–3, up to 5 MiB. Use the current viewer for schema 3 snapshots. [JSON viewer](viewer.html) [JSON schema](report.schema.json)
 
-An installation is active when it has an event in the selected UTC window, including activation. Engagement requires a tracked action. Automatic refresh and polling are excluded. IDs are scoped to local state, the adapter, and the collector. OpenCode Desktop and terminal share an installation when they use the same server state.
+| Question | How the report counts it |
+| --- | --- |
+| Are people trying the plugin? | First-seen opt-in installations in the selected UTC period. The earliest recorded event date determines first seen. |
+| Do they come back? | Distinct active and returning installations in the trailing 7 and 30 UTC days. Active means at least one event, including activation. Returning means the collector first saw that installation before the window started and recorded activity in the window. |
+| What do they use? | Tracked command, dashboard, and pane actions in the selected period, filterable by coding agent and host version. Older uploads appear under **Unknown**. An installation may use multiple versions during a period. |
+| Where do they get stuck? | Success, error, and cancellation rates by feature. Each rate divides by the sum of those three outcomes. Empty results, rejections, confirmation prompts, and browser observations count as tracked events and stay out of that denominator. Features without eligible outcomes show unavailable rates. Browser interactions measure gestures. Native outcomes describe what the command reported. |
 
-The report shows three activity counts for the last day, selected period, and trailing 30 days. It also breaks out activity by coding agent and host version, separately from the plugin-version table.
+Installation IDs are scoped to the local state, adapter, and collector. OpenCode Desktop and terminal share an installation when they use the same server state. Clearing state or expiring inactive IDs can affect first-seen counts. Automatic refreshes and polls are excluded.
 
-- **Active installations** counts distinct adapter and installation ID pairs. An installation stays one instance across network changes.
-- **Network addresses** counts observed upload addresses. Several installations can share one address through NAT, a VPN, or an OpenCode server. A changing address can count more than once.
-- **Address–installation pairs** counts each observed combination. One installation that reports from two addresses contributes two pairs. These counts cannot establish how many people used the plugin.
-
-Network coverage starts with same-day uploads from clients using the new protocol and a collector configured with an address key. Delayed uploads retain their dated activity without an address. Legacy uploads, including the first upload that negotiates protocol support at a collector, retain their installation counts with address and host version unknown. An upgrade can appear in multiple version rows during a window. Use the aggregate total for distinct installations across those versions.
+Optional network counts are available in report details. They cover same-day uploads with address measurement enabled. Delayed and legacy events still contribute to installation activity. Shared networks can group multiple installations under one address, and an installation can upload from several addresses.
 
 Events include a UTC day, adapter, surface, allowlisted feature, outcome, latency bucket, plugin version, host version when available, and random installation and event IDs. Prompts, transcripts, paths, command arguments, account identifiers, and result text stay on the host. The collector stores a keyed digest for each measured address within the configured retention period. Raw addresses and address digests are omitted from exports and the built-in request logs. The offline HTML sends no usage events.
 

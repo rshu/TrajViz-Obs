@@ -53,15 +53,13 @@
     .field { display: flex; gap: .5rem; align-items: center; font-size: .875rem; font-weight: 650; }
     .field input, .field select { min-width: 0; padding: .43rem .55rem; border: 1px solid #aebfc9; border-radius: 7px; color: var(--ink); background: var(--surface); }
     .field input { width: min(10rem, 42vw); }
-    .kpis, .pair { display: grid; gap: 14px; }
-    .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .pair { display: grid; gap: 14px; }
     .pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .panel { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
     .block { margin-top: 16px; }
     .pad { padding: 15px 17px; }
-    .kpi { margin: 0; }
-    .kpi dt { color: var(--muted); font-size: .81rem; font-weight: 650; }
-    .kpi dd { margin: 4px 0 0; font-size: clamp(1.2rem, 3vw, 2.05rem); letter-spacing: -.04em; font-weight: 750; overflow-wrap: anywhere; }
+    .total { display: block; margin-top: .55rem; color: var(--accent); font-size: 2rem; line-height: 1.1; font-weight: 750; }
+    .report-details > summary { font-size: .95rem; }
     .legend { display: flex; flex-wrap: wrap; gap: 8px 15px; margin: 10px 0 0; font-size: .77rem; color: var(--muted); }
     .adapter { display: inline-flex; align-items: center; gap: .4rem; white-space: nowrap; }
     .adapter::before { content: ''; height: .57rem; width: .57rem; border-radius: 50%; background: var(--series); }
@@ -90,7 +88,7 @@
     .bar-fill { position: relative; width: min(62%, 3.25rem); border-radius: 5px 5px 0 0; background: var(--series); }
     .bar-value { position: absolute; bottom: calc(100% + .25rem); left: 50%; transform: translateX(-50%); width: max-content; max-width: 5.35rem; overflow-wrap: anywhere; text-align: center; font-size: .76rem; line-height: 1.15; font-weight: 700; }
     .table-wrap { overflow: auto; }
-    .feature-table, #agent-versions-data { max-height: 30rem; }
+    .feature-table, #reliability, #agent-versions-data { max-height: 30rem; }
     table { border-collapse: separate; border-spacing: 0; width: 100%; text-align: left; font-size: .83rem; }
     th, td { padding: .58rem .65rem; border-bottom: 1px solid var(--line); vertical-align: top; }
     thead th { position: sticky; top: 0; z-index: 1; color: #304757; background: var(--tint); white-space: nowrap; }
@@ -102,22 +100,20 @@
     .tag { background: var(--tint); border-radius: 5px; padding: .12rem .32rem; white-space: nowrap; color: var(--muted); }
     .tag.success { background: #e2f4ee; color: var(--positive); }
     .tag.error { background: #fae8eb; color: var(--negative); }
+    .tag.cancelled { background: #f7eddb; color: #735017; }
     .compact { display: block; margin-top: 3px; color: var(--muted); font-size: .76rem; white-space: nowrap; }
     .range { white-space: nowrap; }
     .daily-data { padding-top: 12px; }
     summary { cursor: pointer; color: var(--accent); font-size: .83rem; font-weight: 650; }
     details > .table-wrap { margin-top: 10px; max-height: 22rem; }
     .no-data { margin: 4px 0; color: var(--muted); font-size: .86rem; }
-    @media (max-width: 820px) {
-      .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
     @media (max-width: 650px) {
       .frame { width: min(100% - 24px, 1260px); }
       .masthead { padding-block: 24px 19px; }
       main { padding-top: 14px; }
       .pair { grid-template-columns: 1fr; }
       .pad { padding: 12px; }
-      .kpis, .pair { gap: 9px; }
+      .pair { gap: 9px; }
     }
   </style>
 </head>
@@ -148,11 +144,43 @@
     </section>
     <div id="dashboard" hidden>
       <div class="toolbar">
-        <p class="subtle" data-copy="adapterHint">Installation IDs are counted separately for each adapter.</p>
+        <p class="subtle" data-copy="adapterHint">Counts cover opt-in plugin installations. Claude Code and OpenCode have separate installation IDs.</p>
         <label class="field"><span data-copy="adapter">Adapter</span> <select id="adapter-filter"><option value="all" data-copy="allAdapters">All adapters</option><option value="claude-code">Claude Code</option><option value="opencode">OpenCode</option></select></label>
       </div>
-      <section id="overview" class="kpis" aria-label="Usage overview" data-copy-aria="usageOverview" aria-describedby="activity-definition"></section>
-      <p id="activity-definition" class="subtle" data-copy="activityDefinition">Active installations have at least one event dated in the report period, including activation. Engaged installations have at least one tracked action beyond activation.</p>
+      <div class="pair">
+        <section class="panel pad" aria-labelledby="first-seen-title">
+          <h2 id="first-seen-title" data-copy="firstSeen">First-seen installations</h2>
+          <p class="subtle" data-copy="firstSeenDefinition"></p>
+          <div id="first-seen"></div>
+        </section>
+        <section class="panel pad" aria-labelledby="returning-title">
+          <h2 id="returning-title" data-copy="activeReturning">Active and returning installations</h2>
+          <p class="subtle" data-copy="returningDefinition"></p>
+          <div id="returning" class="table-wrap block" role="region" tabindex="0" aria-label="Active and returning installations" data-copy-aria="activeReturning"></div>
+        </section>
+      </div>
+      <section class="panel block pad" aria-labelledby="features-title">
+        <div class="section-head">
+          <h2 id="features-title" data-copy="features">Feature usage by coding agent</h2>
+          <div class="section-actions">
+            <label class="field"><span data-copy="featureCategory">Category</span> <select id="feature-category"><option value="all" data-copy="allCategories">All categories</option><option value="command" data-copy="commands">Commands</option><option value="pane" data-copy="panes">Pane</option><option value="dashboard" data-copy="dashboards">Dashboard</option></select></label>
+            <label id="feature-version-field" class="field" hidden><span data-copy="agentVersion">Host version</span> <select id="feature-version"></select></label>
+            <label class="field"><span data-copy="filterFeatures">Filter features</span> <input id="feature-filter" type="search" maxlength="80" autocomplete="off"></label>
+            <div class="view-switch" role="group" data-view-switch="features"></div>
+          </div>
+        </div>
+        <p class="subtle" data-copy="featureHint"></p>
+        <p id="legacy-features" class="subtle" data-copy="legacyFeatureVersions" hidden></p>
+        <div id="features" class="table-wrap feature-table block" role="region" tabindex="0"></div>
+      </section>
+      <section class="panel block pad" aria-labelledby="reliability-title">
+        <h2 id="reliability-title" data-copy="featureReliability">Feature reliability</h2>
+        <p class="subtle" data-copy="reliabilityDefinition"></p>
+        <div id="reliability" class="table-wrap block" role="region" tabindex="0" aria-label="Feature reliability" data-copy-aria="featureReliability"></div>
+      </section>
+      <details class="panel pad block report-details">
+        <summary data-copy="reportDetails">Additional report details</summary>
+        <p class="subtle" data-copy="activityDefinition"></p>
       <div class="pair block">
         <section id="active-chart" class="panel pad" aria-label="Daily active installations" data-copy-aria="dailyActive"></section>
         <section id="actions-chart" class="panel pad" aria-label="Daily tracked actions" data-copy-aria="dailyActions"></section>
@@ -168,17 +196,6 @@
         <section id="addresses-chart" class="panel pad block" aria-label="Daily distinct network addresses" data-copy-aria="dailyAddresses"></section>
         <details class="panel pad block daily-data"><summary data-copy="viewDailyNetwork">View daily network counts</summary><div id="daily-network" class="table-wrap" role="region" aria-label="Daily network counts table" data-copy-aria="dailyNetworkTable" tabindex="0"></div></details>
       </div>
-      <section class="panel block pad" aria-labelledby="features-title">
-        <div class="section-head">
-          <h2 id="features-title" data-copy="features">Feature usage</h2>
-          <div class="section-actions">
-            <label class="field"><span data-copy="filterFeatures">Filter features</span> <input id="feature-filter" type="search" maxlength="80" autocomplete="off"></label>
-            <div class="view-switch" role="group" data-view-switch="features"></div>
-          </div>
-        </div>
-        <p id="feature-hint" class="subtle" data-copy="featureHint">Success and latency use completed command outcomes. Browser observations count as actions.</p>
-        <div id="features" class="table-wrap feature-table block" role="region" aria-label="Feature usage table" tabindex="0"></div>
-      </section>
       <div class="pair block">
         <section id="adoption" class="panel pad" aria-label="Installation activity" data-copy-aria="installationActivity"></section>
         <section id="retention" class="panel pad" aria-label="Exact-day retention" data-copy-aria="retention"></section>
@@ -204,6 +221,7 @@
         <p class="subtle" data-copy="agentVersionDefinition"></p>
         <div id="agent-versions-data" class="table-wrap block" role="region" aria-label="Coding agent versions table" data-copy-aria="agentVersionsTable" tabindex="0"></div>
       </section>
+      </details>
     </div>
   </main>
   <script id="embedded-report" type="application/json">__TRAJVIZ_EMBEDDED_REPORT__</script>
@@ -218,11 +236,24 @@
       viewer: ['Offline aggregate report viewer', '离线汇总报告查看器'],
       dropReport: ['Drop a usage report here', '将使用遥测报告拖到此处'],
       dropHint: ['Open the aggregate JSON generated by python -m telemetry … report.', '打开由 python -m telemetry … report 生成的汇总 JSON 文件。'],
-      adapterHint: ['Installation IDs are counted separately for each adapter.', '按适配器分别统计安装实例。'],
+      adapterHint: ['Counts cover opt-in plugin installations. Claude Code and OpenCode have separate installation IDs.', '仅统计已开启遥测的插件安装实例。Claude Code 和 OpenCode 分别使用各自的安装实例标识。'],
       adapter: ['Adapter', '适配器'],
       allAdapters: ['All adapters', '所有适配器'],
-      usageOverview: ['Usage overview', '使用概览'],
       activeInstallations: ['Active installations', '活跃安装实例'],
+      firstSeen: ['First-seen installations', '首次出现的安装实例'],
+      firstSeenDefinition: [
+        'Installations first observed during the selected UTC period. Clearing local state or exceeding retention can create a new first observation.',
+        '统计所选 UTC 时段内首次观测到的安装实例。清除本地状态或超出保留期后，可能再次被计为首次出现。',
+      ],
+      activeReturning: ['Active and returning installations', '活跃与回访安装实例'],
+      returningDefinition: [
+        'Active means at least one event in the window, including activation. Returning means active in the window and first observed before it began.',
+        '活跃表示该时段至少记录了一条事件，激活也计入。回访表示该时段内有活动，且在时段开始前已经被观测到。',
+      ],
+      returningInstallations: ['Returning installations', '回访安装实例'],
+      last7Days: ['Last 7 days', '最近 7 天'],
+      legacyRolling: ['Older reports may lack counts for some windows.', '旧版报告可能缺少部分时段的统计。'],
+      reportDetails: ['Additional report details', '更多报告详情'],
       activityDefinition: [
         'Active installations have at least one event dated in the report period, including activation. Engaged installations have at least one tracked action beyond activation.',
         '活跃安装实例在报告期内至少有一条事件记录，激活也计入。有操作的安装实例在激活之外至少记录过一次操作。',
@@ -257,9 +288,27 @@
       viewDaily: ['View daily counts', '查看每日统计'],
       dailyTable: ['Daily counts table', '每日统计表'],
       utcDay: ['UTC day', 'UTC 日期'],
-      features: ['Feature usage', '功能使用情况'],
+      features: ['Feature usage by coding agent', '按编程智能体查看功能使用情况'],
+      featureCategory: ['Category', '类别'],
+      allCategories: ['All categories', '所有类别'],
+      commands: ['Commands', '命令'],
+      panes: ['Pane', '面板'],
+      dashboards: ['Dashboard', '仪表盘'],
+      codingAgent: ['Coding agent', '编程智能体'],
       filterFeatures: ['Filter features', '筛选功能'],
-      featureHint: ['Success and latency use completed command outcomes. Browser observations count as actions.', '成功率和耗时基于已完成的命令。浏览器中观测到的事件也计为操作。'],
+      featureHint: [
+        'Counts include browser observations. One installation can appear in more than one version row after an upgrade. Filters also apply to reliability.',
+        '统计包含浏览器中观测到的操作。同一安装实例升级后可能出现在多个版本中。筛选条件也适用于可靠性统计。',
+      ],
+      legacyFeatureVersions: ['This older report has feature counts by agent only.', '此旧版报告仅提供按编程智能体统计的功能使用数据。'],
+      featureReliability: ['Feature reliability', '功能可靠性'],
+      reliabilityDefinition: [
+        'Success, error, and cancellation rates use the sum of those three outcomes. Other outcomes are shown separately. Latency uses successful and failed runs.',
+        '成功率、错误率和取消率均以这三类结果的总数为分母。其他结果单独列出。耗时仅统计成功和失败的运行。',
+      ],
+      otherOutcomes: ['Other outcomes', '其他结果'],
+      completed: ['Completed attempts', '有最终结果的尝试'],
+      outcomeRate: ['{count} · {rate}', '{count} · {rate}'],
       tableView: ['Table', '表格'],
       barView: ['Bar chart', '柱状图'],
       viewMode: ['{title} view', '{title}显示方式'],
@@ -268,12 +317,9 @@
       feature: ['Feature', '功能'],
       actions: ['Actions', '操作数'],
       installations: ['Installations', '安装实例数'],
-      outcomes: ['Outcomes', '结果'],
       reliability: ['Reliability', '可靠性'],
       latency: ['Latency', '耗时'],
       buckets: ['Buckets', '耗时区间'],
-      successRate: ['{rate} success', '成功率 {rate}'],
-      errorRate: ['{rate} error · {count} completed', '错误率 {rate} · 已完成 {count} 次'],
       installationActivity: ['Installation activity', '安装实例活动'],
       engagement: ['Engagement', '参与度'],
       metric: ['Metric', '指标'],
@@ -289,7 +335,8 @@
       version: ['Version', '版本'],
       versionLimit: ['Showing {shown} of {total} rows, ordered by actions. The JSON includes all rows.', '按操作次数排序，显示 {shown} / {total} 行。JSON 文件包含全部记录。'],
       agentVersions: ['Coding agent versions', '编程智能体版本'],
-      agentVersion: ['Agent version', '智能体版本'],
+      agentVersion: ['Host version', '宿主版本'],
+      allVersions: ['All versions', '所有版本'],
       agentVersionsTable: ['Coding agent versions table', '编程智能体版本统计表'],
       agentVersionDefinition: [
         'Versions are for Claude Code or OpenCode. One installation can appear in multiple rows if it reports different versions. Unknown includes events that did not report a version.',
@@ -352,8 +399,11 @@
     const DAILY = { active_installations: COPY.activeInstallations, engaged_installations: ENGAGEMENT.engaged_installations, new_installations: ['First seen', '首次出现'], returning_installations: ['Returning', '回访'], invocations: COPY.actions };
     const ACTIVITY_WINDOWS = { period: 'periodWindow', today: 'today', last_30_days: 'last30Days' };
     const ACTIVITY_COLUMNS = ['distinctAddresses', 'activeInstallations', 'addressInstallationPairs', 'addressCoverage', 'agentVersionCoverage'];
+    const ROLLING_WINDOWS = { last_7_days: ['last7Days', 7], last_30_days: ['last30Days', 30] };
+    const FEATURE_CATEGORIES = { command: 'commands', pane: 'panes', dashboard: 'dashboards' };
+    const COMPLETED_OUTCOMES = ['success', 'error', 'cancelled'];
     const FORMAT = 'trajviz-obs-usage-report';
-    const VERSION = 2;
+    const VERSION = 3;
     const MAX_FILE_SIZE = 5 * 1024 * 1024;
     const VERSION_ROWS = 100;
     const BAR_ROWS = 12;
@@ -384,6 +434,11 @@
     const ACTIVITY_RULES = {
       distinct_addresses: nullable(count), distinct_installations: count, distinct_address_installation_pairs: nullable(count),
       events: count, events_with_address: count, events_with_agent_version: count,
+    };
+    const FEATURE_RULES = {
+      feature: value => FEATURES.has(value), invocations: count, installations: count,
+      outcomes: countMap(OUTCOMES), duration_buckets: countMap(BUCKETS), success_rate: nullable(rate), error_rate: nullable(rate),
+      p50_duration_bucket: nullable(known(BUCKETS)), p95_duration_bucket: nullable(known(BUCKETS)),
     };
 
     class ReportError extends Error {
@@ -430,19 +485,39 @@
       }
     }
 
+    function validateUsage(usage, end) {
+      if (!exact(usage, ['rolling', 'features'])) throw new ReportError('invalidSection', 'features');
+      const windows = Object.fromEntries(Object.entries(ROLLING_WINDOWS).map(([key, [, days]]) => [key, row => matchesFields(row, {
+        start: value => day(value) && dateMillis(end) - dateMillis(value) === (days - 1) * DAY_MS,
+        active_installations: count,
+        returning_installations: value => count(value) && value <= row.active_installations,
+      })]));
+      const rolling = usage.rolling;
+      if (!matchesFields(rolling, { ...windows, by_adapter: Array.isArray })) throw new ReportError('invalidSection', 'activeReturning');
+      const adapter = known(ADAPTERS);
+      checkRows(rolling.by_adapter, 'activeReturning', { adapter, ...windows }, row => row.adapter, ADAPTER_IDS.length);
+      if (rolling.by_adapter.length !== ADAPTER_IDS.length) throw new ReportError('missingRows');
+      checkRows(usage.features, 'features', {
+        ...FEATURE_RULES, adapter, agent_version: nullable(version), category: known(FEATURE_CATEGORIES),
+        completed: count, cancelled_rate: nullable(rate),
+      }, row => `${row.adapter}/${row.agent_version}/${row.feature}`);
+    }
+
     function validate(report) {
       if (!record(report)) throw new ReportError('invalidReport');
       const versioned = own(report, 'format') || own(report, 'schema_version');
-      if (versioned && (report.format !== FORMAT || ![1, VERSION].includes(report.schema_version))) {
+      if (versioned && (report.format !== FORMAT || ![1, 2, VERSION].includes(report.schema_version))) {
         throw new ReportError('unsupportedReport');
       }
       const hasActivity = own(report, 'activity');
-      if (hasActivity !== (versioned && report.schema_version === VERSION)) {
+      const hasUsage = own(report, 'usage');
+      if (hasActivity !== (versioned && report.schema_version >= 2) || hasUsage !== (versioned && report.schema_version === VERSION)) {
         throw new ReportError('unsupportedReport');
       }
       const fields = ['as_of', 'period_start', 'retained_from', 'retention_days', ...VIEW_SECTIONS];
       if (versioned) fields.push('format', 'schema_version');
       if (hasActivity) fields.push('activity');
+      if (hasUsage) fields.push('usage');
       if (!exact(report, fields)) throw new ReportError('missingSections');
       const { as_of: end, period_start: start, retained_from: retained, retention_days: days } = report;
       if (![end, start, retained].every(day) || !Number.isInteger(days) || days < 32 || days > 365 || retained > start || start > end) {
@@ -457,12 +532,7 @@
       checkAdapterRows(report.adoption, 'installationActivity', countFields(ADOPTION), key, 2);
       checkAdapterRows(report.engagement, 'engagement', { ...countFields(ENGAGEMENT), average_invocations_per_engaged_installation: nullable(average), average_days_per_engaged_installation: nullable(average) }, key, 2);
       checkAdapterRows(report.daily, 'dailyActivity', { ...countFields(DAILY), day: value => day(value) && value >= start && value <= end }, row => `${row.adapter}/${row.day}`, periodDays * 2);
-      checkAdapterRows(report.features, 'features', {
-        feature: value => FEATURES.has(value),
-        invocations: count, installations: count, executed: count, outcomes: countMap(OUTCOMES), duration_buckets: countMap(BUCKETS),
-        success_rate: nullable(rate), error_rate: nullable(rate),
-        p50_duration_bucket: nullable(known(BUCKETS)), p95_duration_bucket: nullable(known(BUCKETS)),
-      }, row => `${row.adapter}/${row.feature}`, FEATURES.size * 2);
+      checkAdapterRows(report.features, 'features', { ...FEATURE_RULES, executed: count }, row => `${row.adapter}/${row.feature}`, FEATURES.size * 2);
       checkAdapterRows(report.surfaces, 'surfaces', { surface: known(SURFACES), invocations: count, installations: count }, row => `${row.adapter}/${row.surface}`, 10);
       checkAdapterRows(report.versions, 'versions', { version, invocations: count, installations: count }, row => `${row.adapter}/${row.version}`);
       checkAdapterRows(report.retention, 'retention', { days_after_first_seen: value => value === 7 || value === 30, eligible_installations: count, returned_installations: count, rate: nullable(rate) }, row => `${row.adapter}/${row.days_after_first_seen}`, 4);
@@ -470,6 +540,7 @@
         throw new ReportError('missingRows');
       }
       if (hasActivity) validateActivity(report.activity, start, end, periodDays);
+      if (hasUsage) validateUsage(report.usage, end);
       return report;
     }
 
@@ -612,6 +683,7 @@
         if (boundary) category.append(name.slice(0, boundary), node('wbr'), name.slice(boundary));
         else category.textContent = name;
         label.append(category, adapterLabel(row.adapter));
+        if (own(row, 'agent_version')) label.append(node('span', row.agent_version ?? t('unknownVersion'), 'compact'));
         const track = node('span', undefined, 'bar-track');
         const fill = node('span', undefined, `bar-fill ${row.adapter}`);
         fill.style.height = `${row.invocations / max * 100}%`;
@@ -635,54 +707,111 @@
       return chart;
     }
 
+    function featureCategory(feature) {
+      const family = feature.split('.', 1)[0];
+      if (family === 'pane') return 'pane';
+      if (family === 'dashboard' || family === 'converge') return 'dashboard';
+      return 'command';
+    }
+
+    function matchingFeatures(rows) {
+      const filter = element('feature-filter').value.trim().toLowerCase();
+      const category = element('feature-category').value;
+      return visibleRows(rows).filter(row => row.feature.includes(filter) &&
+        (category === 'all' || category === (row.category ?? featureCategory(row.feature))))
+        .sort((a, b) => b.invocations - a.invocations || a.feature.localeCompare(b.feature) || a.adapter.localeCompare(b.adapter));
+    }
+
+    function showNoFeatures(target) {
+      const filtered = element('feature-filter').value.trim() || element('feature-category').value !== 'all' || element('feature-version').value !== 'all';
+      target.replaceChildren(node('p', t(filtered ? 'noMatchingFeatures' : 'noFeatureActions'), 'no-data'));
+    }
+
+    const versionFilter = row => row.agent_version ?? 'unknown';
+
+    function refreshVersionFilter(usage) {
+      const field = element('feature-version-field');
+      const select = element('feature-version');
+      const previous = select.value;
+      field.hidden = !usage;
+      const all = node('option', t('allVersions'));
+      all.value = 'all';
+      select.replaceChildren(all);
+      if (!usage) return;
+      const versions = [...new Set(visibleRows(usage.features).map(versionFilter))].sort();
+      for (const version of versions) {
+        const option = node('option', version === 'unknown' ? t('unknownVersion') : version);
+        option.value = version;
+        select.append(option);
+      }
+      if (versions.includes(previous)) select.value = previous;
+    }
+
     function drawFeatures(report) {
       const target = element('features');
+      const chart = updateViewRegion(target, 'features');
+      target.classList.toggle('feature-table', !chart);
+      element('legacy-features').hidden = !!report.usage;
+      const selected = element('feature-version').value;
+      const features = matchingFeatures(report.usage?.features ?? report.features)
+        .filter(row => selected === 'all' || versionFilter(row) === selected);
+      if (!features.length) { showNoFeatures(target); return; }
+      if (chart) { drawBars(target, features, row => row.feature); return; }
+      const rows = features.map(row => [
+        node('span', row.feature, 'feature-name'),
+        t(FEATURE_CATEGORIES[row.category ?? featureCategory(row.feature)]), adapterLabel(row.adapter),
+        ...(report.usage ? [row.agent_version ?? t('unknownVersion')] : []),
+        valueLabel(row.invocations), valueLabel(row.installations),
+      ]);
+      const fields = ['feature', 'featureCategory', 'codingAgent', ...(report.usage ? ['agentVersion'] : []), 'actions', 'installations'];
+      target.replaceChildren(table(labels(fields), rows, { numeric: [fields.length - 2, fields.length - 1], rowHeader: true }));
+    }
+
+    function latencyCell(row) {
+      if (row.p50_duration_bucket === null && row.p95_duration_bucket === null) return t('unavailable');
+      const latency = node('div');
+      latency.append(node('span', `p50 ${localized(BUCKETS[row.p50_duration_bucket] ?? COPY.unavailable)}`, 'range'));
+      latency.append(node('span', `p95 ${localized(BUCKETS[row.p95_duration_bucket] ?? COPY.unavailable)}`, 'compact'));
+      const buckets = node('details');
+      buckets.dataset.feature = `${row.adapter}/${row.feature}`;
+      buckets.open = expandedFeatures.has(buckets.dataset.feature);
+      buckets.append(node('summary', t('buckets')));
+      for (const key of Object.keys(BUCKETS)) {
+        if (own(row.duration_buckets, key)) buckets.append(node('span', `${localized(BUCKETS[key])} · ${valueLabel(row.duration_buckets[key])}`, 'compact'));
+      }
+      latency.append(buckets);
+      return latency;
+    }
+
+    function drawReliability(report) {
+      const target = element('reliability');
       for (const details of target.querySelectorAll('details[data-feature]')) {
         if (details.open) expandedFeatures.add(details.dataset.feature);
         else expandedFeatures.delete(details.dataset.feature);
       }
-      const chart = updateViewRegion(target, 'features');
-      target.classList.toggle('feature-table', !chart);
-      element('feature-hint').hidden = chart;
-      const filter = element('feature-filter').value.trim().toLowerCase();
-      const features = visibleRows(report.features).filter(row => row.feature.includes(filter));
-      features.sort((a, b) => b.invocations - a.invocations || a.feature.localeCompare(b.feature) || a.adapter.localeCompare(b.adapter));
-      if (!features.length) {
-        target.replaceChildren(node('p', t(filter ? 'noMatchingFeatures' : 'noFeatureActions'), 'no-data'));
-        return;
-      }
-      if (chart) {
-        drawBars(target, features, row => row.feature);
-        return;
-      }
+      // The adapter-level rows already contain exact counts across versions.
+      const selected = element('feature-version').value;
+      const source = selected === 'all' ? report.features : report.usage.features.filter(row => versionFilter(row) === selected);
+      const features = matchingFeatures(source);
+      if (!features.length) { showNoFeatures(target); return; }
       const rows = features.map(row => {
-        const outcomes = node('div', undefined, 'outcomes');
+        const totals = COMPLETED_OUTCOMES.map(key => row.outcomes[key] ?? 0);
+        const completed = totals.reduce((total, value) => total + BigInt(value), 0n);
+        const results = totals.map((value, index) => node('span', t('outcomeRate', {
+          count: valueLabel(value), rate: rateLabel(completed ? Number(value) / Number(completed) : null),
+        }), `tag ${COMPLETED_OUTCOMES[index]}`));
+        const other = node('div', undefined, 'outcomes');
         for (const key of Object.keys(OUTCOMES)) {
-          if (own(row.outcomes, key)) outcomes.append(node('span', `${localized(OUTCOMES[key])} ${valueLabel(row.outcomes[key])}`, `tag ${key}`));
-        }
-        const reliability = node('div');
-        if (row.success_rate === null) reliability.append(node('span', t('unavailable')));
-        else {
-          reliability.append(node('span', t('successRate', { rate: rateLabel(row.success_rate) }), 'range'));
-          reliability.append(node('span', t('errorRate', { rate: rateLabel(row.error_rate), count: valueLabel(row.executed) }), 'compact'));
-        }
-        const latency = node('div');
-        if (row.p50_duration_bucket === null && row.p95_duration_bucket === null) latency.append(node('span', t('unavailable')));
-        else {
-          latency.append(node('span', `p50 ${localized(BUCKETS[row.p50_duration_bucket] ?? COPY.unavailable)}`, 'range'));
-          latency.append(node('span', `p95 ${localized(BUCKETS[row.p95_duration_bucket] ?? COPY.unavailable)}`, 'compact'));
-          const buckets = node('details');
-          buckets.dataset.feature = `${row.adapter}/${row.feature}`;
-          buckets.open = expandedFeatures.has(buckets.dataset.feature);
-          buckets.append(node('summary', t('buckets')));
-          for (const key of Object.keys(BUCKETS)) {
-            if (own(row.duration_buckets, key)) buckets.append(node('span', `${localized(BUCKETS[key])} · ${valueLabel(row.duration_buckets[key])}`, 'compact'));
+          if (!COMPLETED_OUTCOMES.includes(key) && own(row.outcomes, key)) {
+            other.append(node('span', `${localized(OUTCOMES[key])} ${valueLabel(row.outcomes[key])}`, `tag ${key}`));
           }
-          latency.append(buckets);
         }
-        return [node('span', row.feature, 'feature-name'), adapterLabel(row.adapter), valueLabel(row.invocations), valueLabel(row.installations), outcomes, reliability, latency];
+        return [node('span', row.feature, 'feature-name'), adapterLabel(row.adapter), ...results,
+          valueLabel(completed), other.childElementCount ? other : '—', latencyCell(row)];
       });
-      target.replaceChildren(table(labels(['feature', 'adapter', 'actions', 'installations', 'outcomes', 'reliability', 'latency']), rows, { numeric: [2, 3], rowHeader: true }));
+      const headers = [...labels(['feature', 'codingAgent']), ...COMPLETED_OUTCOMES.map(key => localized(OUTCOMES[key])),
+        ...labels(['completed', 'otherOutcomes', 'latency'])];
+      target.replaceChildren(table(headers, rows, { numeric: [2, 3, 4, 5], rowHeader: true }));
     }
 
     function drawBreakdown(report, id) {
@@ -747,20 +876,36 @@
       }
     }
 
+    function drawAdoption(report, adoption) {
+      const total = node('strong', valueLabel(sum(adoption, 'new_installations')), 'total');
+      const split = node('p', undefined, 'legend');
+      for (const row of adoption) {
+        const label = adapterLabel(row.adapter);
+        label.append(node('strong', valueLabel(row.new_installations)));
+        split.append(label);
+      }
+      element('first-seen').replaceChildren(total, split);
+
+      const adapter = selectedAdapter();
+      const rolling = report.usage?.rolling;
+      const scope = adapter === 'all' ? rolling : rolling?.by_adapter.find(row => row.adapter === adapter);
+      const windows = Object.entries(ROLLING_WINDOWS).map(([key, [label]]) => {
+        const counts = scope?.[key];
+        const active = counts?.active_installations ?? (key === 'last_30_days' ? sum(adoption, 'active_last_30_days') : null);
+        return [t(label), valueLabel(active), valueLabel(counts?.returning_installations ?? null)];
+      });
+      const target = element('returning');
+      target.replaceChildren(table(labels(['window', 'activeInstallations', 'returningInstallations']), windows, { numeric: [1, 2], rowHeader: true }));
+      if (!rolling) target.append(node('p', t('legacyRolling'), 'subtle'));
+    }
+
     function render(report) {
       const adoption = visibleRows(report.adoption);
       const engagement = visibleRows(report.engagement);
-      const tiles = [
-        [t('activeInstallations'), sum(adoption, 'active_in_period')],
-        [localized(ADOPTION.new_installations), sum(adoption, 'new_installations')],
-        [localized(ENGAGEMENT.engaged_installations), sum(adoption, 'engaged_in_period')],
-        [localized(ENGAGEMENT.invocations), sum(engagement, 'invocations')],
-      ];
-      element('overview').replaceChildren(...tiles.map(([label, value]) => {
-        const tile = node('dl', undefined, 'panel pad kpi');
-        tile.append(node('dt', label), node('dd', number.format(value)));
-        return tile;
-      }));
+      drawAdoption(report, adoption);
+      refreshVersionFilter(report.usage);
+      drawFeatures(report);
+      drawReliability(report);
       const daily = visibleRows(report.daily).sort(byDay);
       const dates = [...new Set(daily.map(row => row.day))];
       drawChart(element('active-chart'), t('dailyActive'), 'active_installations', daily, dates);
@@ -769,7 +914,6 @@
         row.day, adapterLabel(row.adapter), ...Object.keys(DAILY).map(key => valueLabel(row[key])),
       ]), { numeric: [2, 3, 4, 5, 6], rowHeader: true }));
       drawObservedActivity(report.activity);
-      drawFeatures(report);
 
       const metrics = [...Object.entries(ADOPTION).map(([key, label]) => [label, adoption, key]),
         ...Object.entries(ENGAGEMENT).filter(([key]) => key !== 'engaged_installations').map(([key, label]) => [label, engagement, key])];
@@ -838,7 +982,10 @@
       catch { throw new ReportError('invalidJson'); }
       const report = validate(data);
       element('feature-filter').value = '';
+      element('feature-category').value = 'all';
+      element('feature-version').value = 'all';
       element('features').replaceChildren();
+      element('reliability').replaceChildren();
       expandedFeatures.clear();
       render(report);
       currentReport = report;
@@ -902,7 +1049,14 @@
       event.target.value = '';
     });
     element('adapter-filter').addEventListener('change', () => { if (currentReport) render(currentReport); });
-    element('feature-filter').addEventListener('input', () => { if (currentReport) drawFeatures(currentReport); });
+    function updateFeatureFilter() {
+      if (!currentReport) return;
+      drawFeatures(currentReport);
+      drawReliability(currentReport);
+    }
+    element('feature-filter').addEventListener('input', updateFeatureFilter);
+    element('feature-category').addEventListener('change', updateFeatureFilter);
+    element('feature-version').addEventListener('change', updateFeatureFilter);
     document.addEventListener('dragover', event => {
       if (!event.dataTransfer?.types.includes('Files')) return;
       event.preventDefault();
