@@ -4,7 +4,7 @@ Inspect session health, tools, subagents, context use, and step labels with `/ob
 
 ## Install
 
-Requires **OpenCode 2**, [Bun](https://bun.sh) **1.3.0+**, and either [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Tested on terminal **2.2.5** and Desktop **2.2.6**.
+Requires **OpenCode 2**, [Bun](https://bun.sh) **1.3.0+**, and either [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Tested on terminal **2.2.5** and Desktop **2.2.7** on macOS.
 
 ### 1. Build the adapter and find its path
 
@@ -40,7 +40,7 @@ For a new file, paste the following and replace the example path with your `pwd`
 
 Use **`plugins` (plural)** for OpenCode 2. In an existing file, preserve other settings and add this top-level field, or append the adapter path to its existing array. If TrajViz Obs is already listed, update that entry in place. Save in nano with **Ctrl+O**, **Enter**, then exit with **Ctrl+X**.
 
-Alternatively, enable it for **one project only** by putting the entry in `opencode.json` or `opencode.jsonc` in that project's root directory. See OpenCode's [configuration](https://opencode.ai/v2/docs/config) and [plugin](https://opencode.ai/v2/docs/plugins) guides.
+Alternatively, enable it for **one project only** by putting the entry in `opencode.json` or `opencode.jsonc` in that project's root directory. See OpenCode's [configuration](https://opencode.ai/docs/config) and [plugin](https://opencode.ai/docs/plugins) guides.
 
 ### 3. Restart and verify
 
@@ -55,11 +55,11 @@ Alternatively, enable it for **one project only** by putting the entry in `openc
 /obs dashboard
 ```
 
-`/obs` opens the summary. `/obs dashboard` starts the browser dashboard; click **Open dashboard** in its result to view it. Stop the server with `/obs dashboard stop`.
+`/obs` opens the summary. If Enter selects it from the slash-command picker, press Enter again to submit it. `/obs dashboard` starts the browser dashboard. Click **Open dashboard** in its result, and run `/obs dashboard stop` when done.
 
 For an optional live panel beside the conversation, run `/obs pane`; use **Expand** for a larger view.
 
-If the plugin is missing, check the global configuration and the absolute adapter path from step 1, then restart the app. If its Desktop UI fails to load, use **Reload** on the plugin's settings row. See OpenCode's [Desktop plugin guidance](https://opencode.ai/v2/docs/plugins#desktop).
+If the plugin is missing, check the global configuration and the absolute adapter path from step 1, then restart the app. If its Desktop UI fails to load, use **Reload** on the plugin's settings row. See OpenCode's [Desktop plugin guidance](https://opencode.ai/docs/plugins#desktop).
 
 #### OpenCode terminal
 
@@ -84,9 +84,11 @@ To disable the adapter, remove its entry from the configuration you edited and r
 
 After an assistant response, run `/obs` for a summary, `/obs pane` for the live panel, or `/obs dashboard` for the browser dashboard. Use **Open dashboard** in Desktop or **Open URL** in the terminal; remote servers need port forwarding.
 
+The [browser dashboard guide](https://github.com/rshu/TrajViz-Obs#browser-dashboard) covers per-step charts, Workflow, the execution timeline, and Deep Dive. For a saved session, use the stop command shown in the launch result. It includes the session selector and any capture session ID.
+
 Use `/obs dashboard --html session.html` to save an offline copy. Add `--dark` for dark charts, or `--inline-plotly` to a live dashboard command to make its browser HTML exports work offline.
 
-The panel has Overview, Tools, Issues, Patterns, Agents, Context, and Timeline tabs. See the [demo screenshots](../README.md#demo). `/obs pane close` closes it. `/obs watch off` disables automatic refresh; `/obs statusline on` adds a compact status summary. `/obs cancel` cancels a running command.
+The panel has Overview, Tools, Issues, Patterns, Agents, Context, and Timeline tabs. See the [demo screenshots](https://github.com/rshu/TrajViz-Obs#demo). `/obs pane close` closes it. `/obs watch off` disables automatic refresh; `/obs statusline on` adds a compact status summary. `/obs cancel` cancels a running command.
 
 Overview charts show tokens, context, and step time excluding recorded subagent waits. Tools ranks calls and outcomes; Agents shows activity by work step. Charts follow OpenCode's theme and distinguish missing measurements from zero. Set `NO_COLOR=1` for monochrome terminal charts.
 
@@ -123,7 +125,7 @@ Live captures are limited to 32 MiB and 64 sessions in one family. For larger in
 
 Run `/obs enable_telemetry` to opt in or `/obs disable_telemetry` to turn it off in Desktop or the terminal. Both save the preference on the connected OpenCode server, where it takes effect immediately and persists across restarts. Disabling pauses queued uploads. After enabling, reopen any existing dashboards to include browser interactions.
 
-Run `/obs telemetry` to check delivery or `/obs telemetry_destination` to see the collector. `/obs telemetry_destination https://telemetry.example.com` changes it immediately on the connected server and adds `/v1/events` automatically. `default` restores the server’s launch setting or the loopback collector. For authenticated delivery, set `TRAJVIZ_OBS_TELEMETRY_TOKEN` and the full `/v1/events` URL in `TRAJVIZ_OBS_TELEMETRY_URL` in the server’s launch environment. The server uses that token only for this exact endpoint, including when a client specifies `--use-launch-token`. [Telemetry setup](../README.md#usage-telemetry)
+Run `/obs telemetry` to check delivery or `/obs telemetry_destination` to see the collector. `/obs telemetry_destination https://telemetry.example.com` changes it immediately on the connected server and adds `/v1/events` automatically. `default` restores the server’s launch setting or the loopback collector. For authenticated delivery, set `TRAJVIZ_OBS_TELEMETRY_TOKEN` and the full `/v1/events` URL in `TRAJVIZ_OBS_TELEMETRY_URL` in the server’s launch environment. The server uses that token only for this exact endpoint, including when a client specifies `--use-launch-token`. [Telemetry setup](https://github.com/rshu/TrajViz-Obs#usage-telemetry)
 
 ## Development
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add the Chart guide and per-step token breakdown to Summary. Open Workflow steps directly from duration charts and Deep Dive tables.
+- Expand Deep Dive with timing, tokens, efficiency, tools, models, and evidence-aware hotspot and per-message tables.
+- Switch between compressed idle gaps and true wall-clock time on the execution timeline. Exclude Claude Code resume display records from session timing.
+- Set dashboard ports and telemetry destinations from `/obs` while a session is running.
+- Add opt-in usage telemetry, with local consent controls and delivery status for both plugins.
+
 ## OpenCode 0.5.4 / Claude Code 0.3.8 — 2026-11-11
 
 - Keep browser Issues, AI analysis, and issue exports aligned with the recorded findings.
