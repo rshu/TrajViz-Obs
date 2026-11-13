@@ -69,11 +69,13 @@
     .legend .opencode::before { border-top-style: dashed; }
     .claude-code { --series: var(--claude); }
     .opencode { --series: var(--opencode); }
+    .all-adapters { --series: var(--accent); }
     svg { width: 100%; height: auto; display: block; margin-top: 5px; }
     .chart text { fill: var(--muted); font-size: 13px; }
     .chart line { stroke: var(--line); stroke-width: 1; }
     .chart polyline { fill: none; stroke: var(--series); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
     .chart circle { fill: var(--series); }
+    #addresses-chart svg { max-height: 230px; }
     .bar-chart { margin: 0; }
     .bar-chart figcaption { color: var(--muted); font-size: .83rem; font-weight: 650; }
     .bar-plot { overflow-x: auto; overscroll-behavior-x: contain; margin-top: .35rem; }
@@ -88,7 +90,7 @@
     .bar-fill { position: relative; width: min(62%, 3.25rem); border-radius: 5px 5px 0 0; background: var(--series); }
     .bar-value { position: absolute; bottom: calc(100% + .25rem); left: 50%; transform: translateX(-50%); width: max-content; max-width: 5.35rem; overflow-wrap: anywhere; text-align: center; font-size: .76rem; line-height: 1.15; font-weight: 700; }
     .table-wrap { overflow: auto; }
-    .feature-table { max-height: 30rem; }
+    .feature-table, #agent-versions-data { max-height: 30rem; }
     table { border-collapse: separate; border-spacing: 0; width: 100%; text-align: left; font-size: .83rem; }
     th, td { padding: .58rem .65rem; border-bottom: 1px solid var(--line); vertical-align: top; }
     thead th { position: sticky; top: 0; z-index: 1; color: #304757; background: var(--tint); white-space: nowrap; }
@@ -156,6 +158,16 @@
         <section id="actions-chart" class="panel pad" aria-label="Daily tracked actions" data-copy-aria="dailyActions"></section>
       </div>
       <details class="panel pad block daily-data"><summary data-copy="viewDaily">View daily counts</summary><div id="daily" class="table-wrap" role="region" aria-label="Daily counts table" data-copy-aria="dailyTable" tabindex="0"></div></details>
+      <div id="observed-activity" hidden>
+        <section class="panel pad block" aria-labelledby="observed-activity-title">
+          <h2 id="observed-activity-title" data-copy="observedActivity">Observed network and installation activity</h2>
+          <p class="subtle" data-copy="addressDefinition"></p>
+          <p class="subtle" data-copy="coverageDefinition"></p>
+          <div id="activity-counts" class="table-wrap block" role="region" aria-label="Activity counts by window" data-copy-aria="activityWindows" tabindex="0"></div>
+        </section>
+        <section id="addresses-chart" class="panel pad block" aria-label="Daily distinct network addresses" data-copy-aria="dailyAddresses"></section>
+        <details class="panel pad block daily-data"><summary data-copy="viewDailyNetwork">View daily network counts</summary><div id="daily-network" class="table-wrap" role="region" aria-label="Daily network counts table" data-copy-aria="dailyNetworkTable" tabindex="0"></div></details>
+      </div>
       <section class="panel block pad" aria-labelledby="features-title">
         <div class="section-head">
           <h2 id="features-title" data-copy="features">Feature usage</h2>
@@ -187,6 +199,11 @@
           <div id="versions-data" class="table-wrap block" role="region" tabindex="0"></div>
         </section>
       </div>
+      <section id="agent-versions" class="panel pad block" aria-labelledby="agent-versions-title" hidden>
+        <h2 id="agent-versions-title" data-copy="agentVersions">Coding agent versions</h2>
+        <p class="subtle" data-copy="agentVersionDefinition"></p>
+        <div id="agent-versions-data" class="table-wrap block" role="region" aria-label="Coding agent versions table" data-copy-aria="agentVersionsTable" tabindex="0"></div>
+      </section>
     </div>
   </main>
   <script id="embedded-report" type="application/json">__TRAJVIZ_EMBEDDED_REPORT__</script>
@@ -210,6 +227,30 @@
         'Active installations have at least one event dated in the report period, including activation. Engaged installations have at least one tracked action beyond activation.',
         '活跃安装实例在报告期内至少有一条事件记录，激活也计入。有操作的安装实例在激活之外至少记录过一次操作。',
       ],
+      observedActivity: ['Observed network and installation activity', '观测到的网络与安装活动'],
+      addressDefinition: [
+        'Network addresses and installations do not identify people. Several installations may share an address through NAT or a VPN, and a changing IP can give one installation several addresses. Address–installation pairs count each distinct combination. The report contains no addresses or installation IDs.',
+        '网络地址和安装实例无法识别具体用户。多个安装实例可能通过 NAT 或 VPN 共用一个地址，IP 变化也可能让一个安装实例对应多个地址。地址与安装实例组合按不同组合计数。报告不包含地址或安装实例标识。',
+      ],
+      coverageDefinition: [
+        'Address counts use the upload connection for events received on the same UTC day. Events without an observed address still count toward installation activity. Unavailable means no address was observed in that window.',
+        '地址统计使用事件在同一 UTC 日期内上传时的连接地址。未观测到地址的事件仍计入安装实例活动。“暂无数据”表示该时段未观测到地址。',
+      ],
+      activityWindows: ['Activity counts by window', '各时段活动统计'],
+      window: ['Window', '时段'],
+      today: ['Last report day', '报告最后一天'],
+      periodWindow: ['Report period', '报告时段'],
+      last30Days: ['Last 30 days', '最近 30 天'],
+      distinctAddresses: ['Distinct network addresses', '不同网络地址数'],
+      addressInstallationPairs: ['Address–installation pairs', '地址与安装实例组合数'],
+      addressCoverage: ['Events with address', '有地址记录的事件'],
+      agentVersionCoverage: ['Events with agent version', '有智能体版本记录的事件'],
+      events: ['Events', '事件数'],
+      coverage: ['{observed} of {total}', '{observed} / {total}'],
+      dailyAddresses: ['Daily distinct network addresses', '每日不同网络地址数'],
+      viewDailyNetwork: ['View daily network counts', '查看每日网络统计'],
+      dailyNetworkTable: ['Daily network counts table', '每日网络统计表'],
+      addressChart: ['{title}. Exact values are in View daily network counts.', '{title}。确切数值见“查看每日网络统计”。'],
       dailyActive: ['Daily active installations', '每日活跃安装实例'],
       dailyActions: ['Daily tracked actions', '每日记录的操作'],
       dailyActivity: ['Daily activity', '每日活动'],
@@ -247,6 +288,15 @@
       versions: ['Plugin versions', '插件版本'],
       version: ['Version', '版本'],
       versionLimit: ['Showing {shown} of {total} rows, ordered by actions. The JSON includes all rows.', '按操作次数排序，显示 {shown} / {total} 行。JSON 文件包含全部记录。'],
+      agentVersions: ['Coding agent versions', '编程智能体版本'],
+      agentVersion: ['Agent version', '智能体版本'],
+      agentVersionsTable: ['Coding agent versions table', '编程智能体版本统计表'],
+      agentVersionDefinition: [
+        'Versions are for Claude Code or OpenCode. One installation can appear in multiple rows if it reports different versions. Unknown includes events that did not report a version.',
+        '这里显示 Claude Code 或 OpenCode 本身的版本。同一安装实例如果报告了不同版本，可以出现在多行中。“未知”包含未报告版本的事件。',
+      ],
+      unknownVersion: ['Unknown', '未知'],
+      agentVersionLimit: ['Showing {shown} of {total} rows, ordered by events. The JSON includes all rows.', '按事件数排序，显示 {shown} / {total} 行。JSON 文件包含全部记录。'],
       table: ['{title} table', '{title}统计表'],
       chart: ['{title} by adapter. Exact values are in View daily counts.', '按适配器展示{title}。确切数值见“查看每日统计”。'],
       period: ['{range} UTC · {days}-day retention', '{range}（UTC） · 数据保留期 {days} 天'],
@@ -300,8 +350,10 @@
       average_days_per_engaged_installation: ['Average engaged days', '平均操作天数'],
     };
     const DAILY = { active_installations: COPY.activeInstallations, engaged_installations: ENGAGEMENT.engaged_installations, new_installations: ['First seen', '首次出现'], returning_installations: ['Returning', '回访'], invocations: COPY.actions };
+    const ACTIVITY_WINDOWS = { period: 'periodWindow', today: 'today', last_30_days: 'last30Days' };
+    const ACTIVITY_COLUMNS = ['distinctAddresses', 'activeInstallations', 'addressInstallationPairs', 'addressCoverage', 'agentVersionCoverage'];
     const FORMAT = 'trajviz-obs-usage-report';
-    const VERSION = 1;
+    const VERSION = 2;
     const MAX_FILE_SIZE = 5 * 1024 * 1024;
     const VERSION_ROWS = 100;
     const BAR_ROWS = 12;
@@ -328,6 +380,11 @@
     const exact = (value, keys) => record(value) && Object.keys(value).length === keys.length && keys.every(key => own(value, key));
     const countMap = options => value => record(value) && Object.entries(value).every(([key, item]) => own(options, key) && count(item));
     const countFields = fields => Object.fromEntries(Object.keys(fields).map(key => [key, count]));
+    const version = value => typeof value === 'string' && /^(?:0|[1-9][0-9]{0,3})(?:\.(?:0|[1-9][0-9]{0,3})){2}(?:-(?:alpha|beta|rc)\.[0-9]{1,3})?$/.test(value);
+    const ACTIVITY_RULES = {
+      distinct_addresses: nullable(count), distinct_installations: count, distinct_address_installation_pairs: nullable(count),
+      events: count, events_with_address: count, events_with_agent_version: count,
+    };
 
     class ReportError extends Error {
       constructor(key, section) {
@@ -342,28 +399,50 @@
       return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
     }
 
-    function checkRows(rows, name, fields, keyOf, limit = Infinity) {
+    const matchesFields = (value, rules) => exact(value, Object.keys(rules)) && Object.entries(rules).every(([key, test]) => test(value[key]));
+
+    function checkRows(rows, name, rules, keyOf, limit = Infinity) {
       if (!Array.isArray(rows) || rows.length > limit) throw new ReportError('invalidSection', name);
       const identity = new Set();
-      const rules = { adapter: known(ADAPTERS), ...fields };
       for (const row of rows) {
-        if (!exact(row, Object.keys(rules)) || !Object.entries(rules).every(([key, test]) => test(row[key]))) {
-          throw new ReportError('invalidRow', name);
-        }
+        if (!matchesFields(row, rules)) throw new ReportError('invalidRow', name);
         const key = keyOf(row);
         if (identity.has(key)) throw new ReportError('duplicateRow', name);
         identity.add(key);
       }
     }
 
+    function validateActivity(activity, start, end, periodDays) {
+      const section = 'observedActivity';
+      const windows = Object.fromEntries(Object.keys(ACTIVITY_WINDOWS).map(key => [key, row => matchesFields(row, ACTIVITY_RULES)]));
+      const countsByWindow = { ...windows, daily: Array.isArray };
+      if (!matchesFields(activity, { ...countsByWindow, by_adapter: Array.isArray, by_agent_version: Array.isArray })) {
+        throw new ReportError('invalidSection', section);
+      }
+      const adapter = known(ADAPTERS);
+      checkRows(activity.by_adapter, section, { adapter, ...countsByWindow }, row => row.adapter, ADAPTER_IDS.length);
+      checkRows(activity.by_agent_version, 'agentVersions', { adapter, agent_version: nullable(version), ...ACTIVITY_RULES }, row => `${row.adapter}/${row.agent_version}`);
+      if (activity.by_adapter.length !== ADAPTER_IDS.length) throw new ReportError('missingRows');
+      const daily = { day: value => day(value) && value >= start && value <= end, ...ACTIVITY_RULES };
+      for (const scope of [activity, ...activity.by_adapter]) {
+        checkRows(scope.daily, section, daily, row => row.day, periodDays);
+        if (scope.daily.length !== periodDays) throw new ReportError('missingRows');
+      }
+    }
+
     function validate(report) {
       if (!record(report)) throw new ReportError('invalidReport');
       const versioned = own(report, 'format') || own(report, 'schema_version');
-      if (versioned && (report.format !== FORMAT || report.schema_version !== VERSION)) {
+      if (versioned && (report.format !== FORMAT || ![1, VERSION].includes(report.schema_version))) {
+        throw new ReportError('unsupportedReport');
+      }
+      const hasActivity = own(report, 'activity');
+      if (hasActivity !== (versioned && report.schema_version === VERSION)) {
         throw new ReportError('unsupportedReport');
       }
       const fields = ['as_of', 'period_start', 'retained_from', 'retention_days', ...VIEW_SECTIONS];
       if (versioned) fields.push('format', 'schema_version');
+      if (hasActivity) fields.push('activity');
       if (!exact(report, fields)) throw new ReportError('missingSections');
       const { as_of: end, period_start: start, retained_from: retained, retention_days: days } = report;
       if (![end, start, retained].every(day) || !Number.isInteger(days) || days < 32 || days > 365 || retained > start || start > end) {
@@ -374,21 +453,23 @@
         throw new ReportError('datesOutsideRetention');
       }
       const key = row => row.adapter;
-      checkRows(report.adoption, 'installationActivity', countFields(ADOPTION), key, 2);
-      checkRows(report.engagement, 'engagement', { ...countFields(ENGAGEMENT), average_invocations_per_engaged_installation: nullable(average), average_days_per_engaged_installation: nullable(average) }, key, 2);
-      checkRows(report.daily, 'dailyActivity', { ...countFields(DAILY), day: value => day(value) && value >= start && value <= end }, row => `${row.adapter}/${row.day}`, periodDays * 2);
-      checkRows(report.features, 'features', {
+      const checkAdapterRows = (rows, name, rules, keyOf, limit) => checkRows(rows, name, { adapter: known(ADAPTERS), ...rules }, keyOf, limit);
+      checkAdapterRows(report.adoption, 'installationActivity', countFields(ADOPTION), key, 2);
+      checkAdapterRows(report.engagement, 'engagement', { ...countFields(ENGAGEMENT), average_invocations_per_engaged_installation: nullable(average), average_days_per_engaged_installation: nullable(average) }, key, 2);
+      checkAdapterRows(report.daily, 'dailyActivity', { ...countFields(DAILY), day: value => day(value) && value >= start && value <= end }, row => `${row.adapter}/${row.day}`, periodDays * 2);
+      checkAdapterRows(report.features, 'features', {
         feature: value => FEATURES.has(value),
         invocations: count, installations: count, executed: count, outcomes: countMap(OUTCOMES), duration_buckets: countMap(BUCKETS),
         success_rate: nullable(rate), error_rate: nullable(rate),
         p50_duration_bucket: nullable(known(BUCKETS)), p95_duration_bucket: nullable(known(BUCKETS)),
       }, row => `${row.adapter}/${row.feature}`, FEATURES.size * 2);
-      checkRows(report.surfaces, 'surfaces', { surface: known(SURFACES), invocations: count, installations: count }, row => `${row.adapter}/${row.surface}`, 10);
-      checkRows(report.versions, 'versions', { version: value => typeof value === 'string' && /^(?:0|[1-9][0-9]{0,3})(?:\.(?:0|[1-9][0-9]{0,3})){2}(?:-(?:alpha|beta|rc)\.[0-9]{1,3})?$/.test(value), invocations: count, installations: count }, row => `${row.adapter}/${row.version}`);
-      checkRows(report.retention, 'retention', { days_after_first_seen: value => value === 7 || value === 30, eligible_installations: count, returned_installations: count, rate: nullable(rate) }, row => `${row.adapter}/${row.days_after_first_seen}`, 4);
+      checkAdapterRows(report.surfaces, 'surfaces', { surface: known(SURFACES), invocations: count, installations: count }, row => `${row.adapter}/${row.surface}`, 10);
+      checkAdapterRows(report.versions, 'versions', { version, invocations: count, installations: count }, row => `${row.adapter}/${row.version}`);
+      checkAdapterRows(report.retention, 'retention', { days_after_first_seen: value => value === 7 || value === 30, eligible_installations: count, returned_installations: count, rate: nullable(rate) }, row => `${row.adapter}/${row.days_after_first_seen}`, 4);
       if (report.adoption.length !== 2 || report.engagement.length !== 2 || report.retention.length !== 4 || report.daily.length !== periodDays * 2) {
         throw new ReportError('missingRows');
       }
+      if (hasActivity) validateActivity(report.activity, start, end, periodDays);
       return report;
     }
 
@@ -458,17 +539,21 @@
       return result;
     }
 
-    function drawChart(target, title, metric, rows, dates) {
+    function drawChart(target, title, metric, rows, dates, { address = false } = {}) {
       heading(target, title);
       const legend = node('div', undefined, 'legend');
-      for (const adapter of ADAPTER_IDS.filter(id => selectedAdapter() === 'all' || selectedAdapter() === id)) legend.append(adapterLabel(adapter));
+      const selected = selectedAdapter();
+      const adapters = selected !== 'all' ? [selected] : address ? ['all'] : ADAPTER_IDS;
+      const seriesLabel = adapter => adapter === 'all' ? t('allAdapters') : ADAPTERS[adapter];
+      const seriesClass = adapter => adapter === 'all' ? 'all-adapters' : adapter;
+      for (const adapter of adapters) legend.append(node('span', seriesLabel(adapter), `adapter ${seriesClass(adapter)}`));
       target.append(legend);
       if (!rows.some(row => row[metric] > 0)) {
-        target.append(node('p', t('noActivity'), 'no-data block'));
+        target.append(node('p', t(address ? 'unavailable' : 'noActivity'), 'no-data block'));
         return;
       }
       const width = 580, height = 174, left = 52, right = 560, top = 14, bottom = 143;
-      const chart = svgNode('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', class: 'chart', 'aria-label': t('chart', { title }) });
+      const chart = svgNode('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', class: 'chart', 'aria-label': t(address ? 'addressChart' : 'chart', { title }) });
       const max = Math.max(...rows.map(row => row[metric]));
       const interval = 10 ** Math.floor(Math.log10(max));
       const ceiling = Math.ceil(max / interval) * interval;
@@ -483,17 +568,25 @@
         const anchor = dates.length === 1 ? 'middle' : index === 0 ? 'start' : index === dates.length - 1 ? 'end' : 'middle';
         chart.append(svgNode('text', { x: x(index), y: height - 8, 'text-anchor': anchor }, shortDate.format(dateMillis(dates[index]))));
       }
-      for (const adapter of ADAPTER_IDS) {
-        const series = rows.filter(row => row.adapter === adapter);
-        if (!series.length) continue;
-        const points = series.map((row, index) => `${x(index)},${y(row[metric])}`).join(' ');
-        chart.append(svgNode('polyline', { class: adapter, points, 'stroke-dasharray': adapter === 'opencode' ? '5 3' : 'none' }));
-        if (series.length <= 31) {
-          series.forEach((row, index) => {
-            const marker = svgNode('circle', { class: adapter, cx: x(index), cy: y(row[metric]), r: 3 });
-            marker.append(svgNode('title', {}, `${ADAPTERS[adapter]} · ${date.format(dateMillis(row.day))} · ${valueLabel(row[metric])}`));
+      for (const adapter of adapters) {
+        const series = address ? rows : rows.filter(row => row.adapter === adapter);
+        const runs = [];
+        let run = [];
+        series.forEach((row, index) => {
+          if (row[metric] !== null) run.push([row, index]);
+          else if (run.length) { runs.push(run); run = []; }
+        });
+        if (run.length) runs.push(run);
+        for (const points of runs) {
+          const coordinates = points.map(([row, index]) => `${x(index)},${y(row[metric])}`).join(' ');
+          const style = { class: seriesClass(adapter), points: coordinates, 'stroke-dasharray': adapter === 'opencode' ? '5 3' : 'none' };
+          if (points.length > 1) chart.append(svgNode('polyline', style));
+          if (series.length > 31 && points.length > 1) continue;
+          for (const [row, index] of points) {
+            const marker = svgNode('circle', { class: seriesClass(adapter), cx: x(index), cy: y(row[metric]), r: 3 });
+            marker.append(svgNode('title', {}, `${seriesLabel(adapter)} · ${date.format(dateMillis(row.day))} · ${valueLabel(row[metric])}`));
             chart.append(marker);
-          });
+          }
         }
       }
       target.append(chart);
@@ -612,6 +705,48 @@
       }
     }
 
+    function coverageLabel(observed, total) {
+      return t('coverage', { observed: valueLabel(observed), total: valueLabel(total) });
+    }
+
+    function activityCells(row) {
+      return [valueLabel(row.distinct_addresses), valueLabel(row.distinct_installations),
+        valueLabel(row.distinct_address_installation_pairs), coverageLabel(row.events_with_address, row.events),
+        coverageLabel(row.events_with_agent_version, row.events)];
+    }
+
+    function drawObservedActivity(activity) {
+      element('observed-activity').hidden = !activity;
+      element('agent-versions').hidden = !activity;
+      if (!activity) return;
+
+      const adapter = selectedAdapter();
+      const scope = adapter === 'all' ? activity : activity.by_adapter.find(row => row.adapter === adapter);
+      const daily = [...scope.daily].sort((a, b) => a.day.localeCompare(b.day));
+      const numeric = [1, 2, 3, 4, 5];
+      element('activity-counts').replaceChildren(table(labels(['window', ...ACTIVITY_COLUMNS]),
+        Object.entries(ACTIVITY_WINDOWS).map(([key, label]) => [t(label), ...activityCells(scope[key])]),
+        { numeric, rowHeader: true }));
+      drawChart(element('addresses-chart'), t('dailyAddresses'), 'distinct_addresses', daily, daily.map(row => row.day), { address: true });
+      element('daily-network').replaceChildren(table(labels(['utcDay', ...ACTIVITY_COLUMNS]),
+        daily.map(row => [row.day, ...activityCells(row)]), { numeric, rowHeader: true }));
+
+      const target = element('agent-versions-data');
+      const rows = visibleRows(activity.by_agent_version).sort((a, b) => b.events - a.events || a.adapter.localeCompare(b.adapter));
+      if (!rows.length) {
+        target.replaceChildren(node('p', t('noActivity'), 'no-data'));
+        return;
+      }
+      const shown = rows.slice(0, VERSION_ROWS);
+      const headers = labels(['agentVersion', 'adapter', 'events', ...ACTIVITY_COLUMNS.slice(0, 3)]);
+      target.replaceChildren(table(headers, shown.map(row => [
+        row.agent_version ?? t('unknownVersion'), adapterLabel(row.adapter), valueLabel(row.events), ...activityCells(row).slice(0, 3),
+      ]), { numeric: [2, 3, 4, 5], rowHeader: true }));
+      if (shown.length < rows.length) {
+        target.append(node('p', t('agentVersionLimit', { shown: valueLabel(shown.length), total: valueLabel(rows.length) }), 'subtle'));
+      }
+    }
+
     function render(report) {
       const adoption = visibleRows(report.adoption);
       const engagement = visibleRows(report.engagement);
@@ -633,6 +768,7 @@
       element('daily').replaceChildren(table([...labels(['utcDay', 'adapter']), ...Object.values(DAILY).map(localized)], daily.map(row => [
         row.day, adapterLabel(row.adapter), ...Object.keys(DAILY).map(key => valueLabel(row[key])),
       ]), { numeric: [2, 3, 4, 5, 6], rowHeader: true }));
+      drawObservedActivity(report.activity);
       drawFeatures(report);
 
       const metrics = [...Object.entries(ADOPTION).map(([key, label]) => [label, adoption, key]),

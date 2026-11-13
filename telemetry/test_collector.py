@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import Path
 from threading import Thread
-from unittest.mock import patch
+from unittest.mock import call, patch
 from urllib.request import ProxyHandler, Request, build_opener
 from uuid import uuid4
 from wsgiref.simple_server import make_server
@@ -135,9 +135,15 @@ class CollectorTest(unittest.TestCase):
             connection = connect.return_value.__enter__.return_value
             busy = sqlite3.OperationalError("database is locked")
             busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
-            connection.execute.side_effect = [busy, None]
+            def execute(statement):
+                if statement == "PRAGMA journal_mode = WAL" and connection.execute.call_count == 1:
+                    raise busy
+                if statement == "PRAGMA table_info(events)":
+                    return [{"name": "address_digest"}, {"name": "agent_version"}]
+
+            connection.execute.side_effect = execute
             init_database(self.database)
-            self.assertEqual(connection.execute.call_count, 2)
+            self.assertEqual(connection.execute.call_args_list[:2], [call("PRAGMA journal_mode = WAL")] * 2)
             connection.executescript.assert_called_once()
 
     def test_upload_window_skips_expired_rows_and_rejects_implausible_future_days(self):

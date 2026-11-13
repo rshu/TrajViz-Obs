@@ -1,16 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "TrajViz Obs usage report v1",
+  "title": "TrajViz Obs usage report",
   "description": "An aggregate snapshot of opt-in plugin activity. All dates are UTC and windows include both endpoints.",
   "type": "object",
   "additionalProperties": false,
+  "if": {"properties": {"schema_version": {"const": 2}}},
+  "then": {"required": ["activity"]},
+  "else": {"not": {"required": ["activity"]}},
   "required": [
     "format", "schema_version", "as_of", "period_start", "retained_from", "retention_days",
     "adoption", "daily", "engagement", "features", "surfaces", "versions", "retention"
   ],
   "properties": {
     "format": {"const": "trajviz-obs-usage-report"},
-    "schema_version": {"type": "integer", "const": 1},
+    "schema_version": {"type": "integer", "enum": [1, 2]},
     "as_of": {"$ref": "#/$defs/day", "description": "Last day in the reporting window."},
     "period_start": {"$ref": "#/$defs/day", "description": "First day in the reporting window."},
     "retained_from": {"$ref": "#/$defs/day", "description": "First day in the available retention window."},
@@ -33,12 +36,91 @@
       "maxItems": 4,
       "items": {"$ref": "#/$defs/retention"},
       "description": "One cohort row per adapter and offset. The 7-day and 30-day rates use exact-day returns."
+    },
+    "activity": {
+      "type": "object",
+      "allOf": [{"$ref": "#/$defs/activity_windows"}],
+      "unevaluatedProperties": false,
+      "required": ["by_adapter", "by_agent_version"],
+      "properties": {
+        "by_adapter": {
+          "type": "array", "minItems": 2, "maxItems": 2,
+          "items": {"$ref": "#/$defs/activity_adapter"}
+        },
+        "by_agent_version": {
+          "type": "array", "items": {"$ref": "#/$defs/activity_agent_version"},
+          "description": "Counts in the selected period by adapter and host agent version, separate from plugin versions."
+        }
+      }
     }
   },
   "$defs": {
     "day": {"type": "string", "format": "date", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
     "adapter": {"enum": ["claude-code", "opencode"]},
     "count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "nullable_count": {"anyOf": [{"$ref": "#/$defs/count"}, {"type": "null"}]},
+    "activity_counts": {
+      "type": "object",
+      "required": [
+        "distinct_addresses", "distinct_installations", "distinct_address_installation_pairs",
+        "events", "events_with_address", "events_with_agent_version"
+      ],
+      "properties": {
+        "distinct_addresses": {
+          "$ref": "#/$defs/nullable_count",
+          "description": "Distinct observed network addresses, including addresses shared by both adapters. Null means no observed addresses."
+        },
+        "distinct_installations": {
+          "$ref": "#/$defs/count",
+          "description": "Distinct active plugin installations. An installation identity is scoped to one adapter."
+        },
+        "distinct_address_installation_pairs": {
+          "$ref": "#/$defs/nullable_count",
+          "description": "Distinct observed address and adapter-scoped installation pairs. Null means no observed addresses."
+        },
+        "events": {"$ref": "#/$defs/count", "description": "All accepted observations in scope, including activations."},
+        "events_with_address": {"$ref": "#/$defs/count"},
+        "events_with_agent_version": {"$ref": "#/$defs/count"}
+      }
+    },
+    "activity_window": {"$ref": "#/$defs/activity_counts", "unevaluatedProperties": false},
+    "activity_day": {
+      "allOf": [{"$ref": "#/$defs/activity_counts"}],
+      "unevaluatedProperties": false,
+      "required": ["day"],
+      "properties": {"day": {"$ref": "#/$defs/day"}}
+    },
+    "activity_windows": {
+      "type": "object",
+      "required": ["today", "period", "last_30_days", "daily"],
+      "properties": {
+        "today": {"$ref": "#/$defs/activity_window", "description": "Counts on as_of, which may be a historical date."},
+        "period": {"$ref": "#/$defs/activity_window", "description": "Distinct counts across the selected report period."},
+        "last_30_days": {"$ref": "#/$defs/activity_window", "description": "Distinct counts across 30 UTC days ending on as_of."},
+        "daily": {
+          "type": "array", "minItems": 1, "maxItems": 365, "items": {"$ref": "#/$defs/activity_day"},
+          "description": "One row for every day in the report period, including days with zero events."
+        }
+      }
+    },
+    "activity_adapter": {
+      "allOf": [{"$ref": "#/$defs/activity_windows"}],
+      "unevaluatedProperties": false,
+      "required": ["adapter"],
+      "properties": {"adapter": {"$ref": "#/$defs/adapter"}}
+    },
+    "activity_agent_version": {
+      "allOf": [{"$ref": "#/$defs/activity_counts"}],
+      "unevaluatedProperties": false,
+      "required": ["adapter", "agent_version"],
+      "properties": {
+        "adapter": {"$ref": "#/$defs/adapter"},
+        "agent_version": {
+          "anyOf": [{"$ref": "#/$defs/plugin_version"}, {"type": "null"}],
+          "description": "Reported host agent version. Null means unknown or unreported."
+        }
+      }
+    },
     "invocations": {
       "$ref": "#/$defs/count",
       "description": "Recorded actions other than activation, including browser observations."

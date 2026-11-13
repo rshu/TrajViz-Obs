@@ -30,7 +30,7 @@ def test_report_schema_matches_format_and_ingest_allowlists():
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     assert schema["properties"]["format"]["const"] == REPORT_FORMAT
-    assert schema["properties"]["schema_version"]["const"] == REPORT_SCHEMA_VERSION
+    assert schema["properties"]["schema_version"]["enum"] == [1, REPORT_SCHEMA_VERSION]
     definitions = schema["$defs"]
     assert definitions["adapter"]["enum"] == list(ADAPTERS)
     assert definitions["surface_name"]["enum"] == list(SURFACES)
@@ -67,10 +67,22 @@ def test_empty_and_populated_reports_match_schema(tmp_path):
 
     populated = report(database, today=today, days=14)
     validator.validate(populated)
+    legacy = {key: value for key, value in populated.items() if key != "activity"}
+    validator.validate({**legacy, "schema_version": 1})
+    assert not validator.is_valid(legacy)
+    assert not validator.is_valid({**populated, "schema_version": 1})
+    activity = populated["activity"]
+    assert activity["period"]["distinct_installations"] == 3
+    assert activity["period"]["distinct_addresses"] is None
+    for row in (activity["today"], activity["daily"][0], activity["by_adapter"][0],
+                activity["by_agent_version"][0]):
+        row["address_digest"] = "private"
+        assert not validator.is_valid(populated)
+        del row["address_digest"]
     assert len(populated["features"]) == 3
     assert populated["features"][0]["p95_duration_bucket"] is None
 
-    for key, invalid in (("as_of", "2026-02-30"), ("schema_version", 2), ("retention_days", 31)):
+    for key, invalid in (("as_of", "2026-02-30"), ("schema_version", 3), ("retention_days", 31)):
         assert not validator.is_valid({**populated, key: invalid})
 
     with_identifier = deepcopy(populated)

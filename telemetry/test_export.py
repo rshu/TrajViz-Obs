@@ -37,7 +37,7 @@ def test_cli_exports_the_same_snapshot_as_json_and_html(tmp_path):
 
     snapshot = json.loads(run().stdout)
     assert snapshot["format"] == "trajviz-obs-usage-report"
-    assert snapshot["schema_version"] == 1
+    assert snapshot["schema_version"] == 2
     assert snapshot["retention_days"] == 365
     assert snapshot["engagement"][0]["average_days_per_engaged_installation"] is None
     json_file = tmp_path / "exports" / "usage.json"

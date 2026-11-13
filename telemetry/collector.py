@@ -2,22 +2,33 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
+import re
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
+from ipaddress import IPv6Address, ip_address
 from math import ceil
 from pathlib import Path
 from time import monotonic, sleep, time
 
-from bridge.telemetry_protocol import BACKFILL_DAYS, MAX_BODY, validate_payload
+from bridge.telemetry_protocol import (
+    AGENT_VERSION_SCHEMA,
+    BACKFILL_DAYS,
+    MAX_BODY,
+    SCHEMA_HEADER,
+    validate_payload,
+)
 
 from .credentials import CredentialRegistry, registry_path
 
 DEFAULT_RETENTION_DAYS = 365
 EVENTS_PATH = "/v1/events"
+ADDRESS_KEY_ENV = "TRAJVIZ_OBS_ADDRESS_KEY"
+_ADDRESS_KEY_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
 DEFAULT_REQUESTS_PER_MINUTE = 60
 DEFAULT_GLOBAL_REQUESTS_PER_MINUTE = 600
 _DATABASE_TIMEOUT_SECONDS = 5
@@ -43,6 +54,8 @@ CREATE TABLE IF NOT EXISTS events (
     outcome TEXT NOT NULL,
     duration_bucket TEXT NOT NULL,
     version TEXT NOT NULL,
+    agent_version TEXT,
+    address_digest BLOB,
     PRIMARY KEY (adapter, installation_id, event_id)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS events_day ON events(day);
@@ -55,6 +68,11 @@ CREATE TABLE IF NOT EXISTS ingestion_metrics (
     requests INTEGER NOT NULL,
     events INTEGER NOT NULL,
     PRIMARY KEY (day, outcome)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS address_key_check (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    digest BLOB NOT NULL
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS ingestion_quota (
@@ -111,6 +129,42 @@ def init_database(database: Path) -> None:
                     raise
                 sleep(0.01)
         connection.executescript(_SCHEMA)
+        connection.execute("BEGIN IMMEDIATE")
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(events)")}
+        for column, sql_type in (("agent_version", "TEXT"), ("address_digest", "BLOB")):
+            if column not in columns:
+                connection.execute(f"ALTER TABLE events ADD COLUMN {column} {sql_type}")
+
+
+def _address_key(database: Path, configured: str | None) -> bytes | None:
+    value = configured if configured is not None else os.environ.get(ADDRESS_KEY_ENV)
+    if value is None:
+        return None
+    if not _ADDRESS_KEY_PATTERN.fullmatch(value):
+        raise ValueError(f"{ADDRESS_KEY_ENV} must be a 32-byte secret encoded as 64 hexadecimal digits.")
+    key = bytes.fromhex(value)
+    fingerprint = hmac.digest(key, b"TrajViz Obs address key check", "sha256")
+    with database_connection(database) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("INSERT OR IGNORE INTO address_key_check VALUES (1, ?)", (fingerprint,))
+        stored = connection.execute("SELECT digest FROM address_key_check WHERE singleton = 1").fetchone()[0]
+        if not hmac.compare_digest(stored, fingerprint):
+            raise ValueError("The configured address key differs from the key for this database.")
+    return key
+
+
+def _address_digest(key: bytes | None, peer: object) -> bytes | None:
+    if key is None or not isinstance(peer, str) or len(peer) > 45 or "%" in peer:
+        return None
+    try:
+        address = ip_address(peer)
+    except ValueError:
+        return None
+    if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    if address.is_unspecified or address.is_multicast:
+        return None
+    return hmac.digest(key, b"TrajViz Obs upload address\0" + address.packed, "sha256")
 
 
 def _prune(connection: sqlite3.Connection, cutoff: str) -> None:
@@ -189,8 +243,10 @@ def _reserve_upload(database: Path, credential: str, per_credential: int, global
     return None
 
 
-def _record(database: Path, batch: dict, today: date, retention_days: int, *, count_request: bool = False) -> None:
+def _record(database: Path, batch: dict, today: date, retention_days: int, *, count_request: bool = False,
+            address_digest: bytes | None = None) -> None:
     adapter, installation_id = batch["adapter"], batch["installation_id"]
+    received_day = today.isoformat()
     first_day = (today - timedelta(days=BACKFILL_DAYS)).isoformat()
     last_day = (today + timedelta(days=1)).isoformat()
     if any(event["day"] > last_day for event in batch["events"]):
@@ -208,11 +264,12 @@ def _record(database: Path, batch: dict, today: date, retention_days: int, *, co
             written = connection.execute(
                 """
                 INSERT INTO events(adapter, installation_id, event_id, day, surface, feature, outcome,
-                                   duration_bucket, version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING
+                                   duration_bucket, version, agent_version, address_digest)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING
                 """,
                 (adapter, installation_id, event["id"], event["day"], event["surface"], event["feature"],
-                 event["outcome"], event["duration_bucket"], event["version"]),
+                 event["outcome"], event["duration_bucket"], event["version"], event.get("agent_version"),
+                 address_digest if event["day"] == received_day else None),
             )
             if written.rowcount:
                 accepted_days.append(event["day"])
@@ -240,7 +297,8 @@ def _unique_fields(pairs: list[tuple[str, object]]) -> dict:
 def create_app(database: str | Path, *, retention_days: int = DEFAULT_RETENTION_DAYS,
                credentials: str | Path | None = None, require_auth: bool = False,
                requests_per_minute: int = DEFAULT_REQUESTS_PER_MINUTE,
-               global_requests_per_minute: int = DEFAULT_GLOBAL_REQUESTS_PER_MINUTE) -> Callable:
+               global_requests_per_minute: int = DEFAULT_GLOBAL_REQUESTS_PER_MINUTE,
+               address_key: str | None = None) -> Callable:
     """Return a WSGI callable for loopback or an explicitly configured receiver."""
     config = registry_path(credentials, required=require_auth)
     registry = CredentialRegistry(config) if config is not None else None
@@ -250,6 +308,7 @@ def create_app(database: str | Path, *, retention_days: int = DEFAULT_RETENTION_
     path = Path(database).expanduser().resolve()
     retention_cutoff(utc_day(), retention_days)
     init_database(path)
+    digest_key = _address_key(path, address_key)
     prune(path, utc_day(), retention_days)
 
     def app(environ, start_response):
@@ -267,6 +326,8 @@ def create_app(database: str | Path, *, retention_days: int = DEFAULT_RETENTION_
                 except sqlite3.Error:
                     pass
             headers = [("Cache-Control", "no-store"), *extra_headers]
+            if environ["PATH_INFO"] == EVENTS_PATH:
+                headers.append((SCHEMA_HEADER, str(AGENT_VERSION_SCHEMA)))
             if not status.startswith("204 "):
                 headers.append(("Content-Length", "0"))
             start_response(status, headers)
@@ -305,7 +366,11 @@ def create_app(database: str | Path, *, retention_days: int = DEFAULT_RETENTION_
             if len(body) != size:
                 return answer("400 Bad Request", outcome="rejected")
             batch = validate_payload(json.loads(body.decode("utf-8"), object_pairs_hook=_unique_fields))
-            _record(path, batch, today, retention_days, count_request=True)
+            # Measure addresses only on the new wire contract. Use the trusted transport peer
+            # supplied by WSGI and keep forwarded headers out of the collector.
+            peer = environ.get("REMOTE_ADDR") if batch["schema_version"] == AGENT_VERSION_SCHEMA else None
+            _record(path, batch, today, retention_days, count_request=True,
+                    address_digest=_address_digest(digest_key, peer))
         except (ValueError, OSError, RecursionError):
             return answer("400 Bad Request", outcome="rejected")
         except sqlite3.Error:
@@ -318,7 +383,9 @@ def create_app(database: str | Path, *, retention_days: int = DEFAULT_RETENTION_
 def create_production_app(database: str | Path, *, retention_days: int = DEFAULT_RETENTION_DAYS,
                           credentials: str | Path | None = None,
                           requests_per_minute: int = DEFAULT_REQUESTS_PER_MINUTE,
-                          global_requests_per_minute: int = DEFAULT_GLOBAL_REQUESTS_PER_MINUTE) -> Callable:
+                          global_requests_per_minute: int = DEFAULT_GLOBAL_REQUESTS_PER_MINUTE,
+                          address_key: str | None = None) -> Callable:
     """Build the authenticated receiver for a production WSGI server behind an HTTPS proxy."""
     return create_app(database, retention_days=retention_days, credentials=credentials, require_auth=True,
-                      requests_per_minute=requests_per_minute, global_requests_per_minute=global_requests_per_minute)
+                      requests_per_minute=requests_per_minute, global_requests_per_minute=global_requests_per_minute,
+                      address_key=address_key)

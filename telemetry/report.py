@@ -5,12 +5,12 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
-from bridge.telemetry_protocol import ADAPTERS, DURATION_BUCKETS
+from bridge.telemetry_protocol import ADAPTERS, DURATION_BUCKETS, valid_agent_version
 
 from .collector import DEFAULT_RETENTION_DAYS, database_connection, retention_cutoff
 
 REPORT_FORMAT = "trajviz-obs-usage-report"
-REPORT_SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 2
 _EXECUTED_OUTCOMES = ("success", "error")
 
 
@@ -96,6 +96,84 @@ def _daily(connection, start: str, today: date, days: int) -> list[dict]:
     dates = ((today - timedelta(days=offset)).isoformat() for offset in range(days - 1, -1, -1))
     return [by_day.get((day, adapter), {"day": day, "adapter": adapter, **empty})
             for day in dates for adapter in ADAPTERS]
+
+
+def _activity(connection, start: str, today: date, days: int, monthly_start: str) -> dict:
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(events)")}
+    address = ("CASE WHEN typeof(address_digest) = 'blob' AND length(address_digest) = 32 THEN address_digest END"
+               if "address_digest" in columns else "NULL")
+    version = "NULL"
+    if "agent_version" in columns:
+        def valid_version(value):
+            return value if valid_agent_version(value) else None
+
+        connection.create_function("report_agent_version", 1, valid_version, deterministic=True)
+        version = "report_agent_version(agent_version)"
+    # Adapter names and installation IDs are allowlisted, so ':' separates the
+    # installation identity components unambiguously. Hex encodes the digest
+    # only inside the count to identify distinct address/installation pairs.
+    rows = connection.execute(
+        f"""
+        WITH base AS (
+            SELECT adapter, installation_id, day, {address} AS address, {version} AS agent_version,
+                   count(*) AS event_count
+            FROM events WHERE day BETWEEN min(:start, :month) AND :end
+            GROUP BY 1, 2, 3, 4, 5
+        ), adapters(adapter) AS (VALUES (NULL), (:claude), (:opencode)),
+        windows(scope, start) AS (VALUES ('today', :end), ('period', :start), ('last_30_days', :month)),
+        scoped AS (
+            SELECT scope, a.adapter AS group_adapter, NULL AS group_day, NULL AS group_version,
+                   b.adapter, b.installation_id, b.address, b.agent_version, b.event_count
+            FROM base b JOIN windows w ON b.day >= w.start
+            JOIN adapters a ON a.adapter IS NULL OR a.adapter = b.adapter
+            UNION ALL
+            SELECT 'daily', a.adapter, b.day, NULL, b.adapter, b.installation_id, b.address, b.agent_version, b.event_count
+            FROM base b JOIN adapters a ON a.adapter IS NULL OR a.adapter = b.adapter
+            WHERE b.day >= :start
+            UNION ALL
+            SELECT 'version', adapter, NULL, agent_version, adapter, installation_id, address, agent_version, event_count
+            FROM base WHERE day >= :start
+        )
+        SELECT scope, group_adapter, group_day, group_version,
+               nullif(count(DISTINCT address), 0) AS distinct_addresses,
+               count(DISTINCT adapter || ':' || installation_id) AS distinct_installations,
+               nullif(count(DISTINCT CASE WHEN address IS NOT NULL
+                     THEN hex(address) || ':' || adapter || ':' || installation_id END), 0)
+                   AS distinct_address_installation_pairs,
+               sum(event_count) AS events,
+               sum(CASE WHEN address IS NOT NULL THEN event_count ELSE 0 END) AS events_with_address,
+               sum(CASE WHEN agent_version IS NOT NULL THEN event_count ELSE 0 END) AS events_with_agent_version
+        FROM scoped GROUP BY scope, group_adapter, group_day, group_version
+        """,
+        {"start": start, "month": monthly_start, "end": today.isoformat(), "claude": ADAPTERS[0], "opencode": ADAPTERS[1]},
+    )
+    aggregates = {}
+    versions = []
+    for row in rows:
+        counts = dict(row)
+        scope = counts.pop("scope")
+        adapter = counts.pop("group_adapter")
+        day = counts.pop("group_day")
+        agent_version = counts.pop("group_version")
+        if scope == "version":
+            versions.append({"adapter": adapter, "agent_version": agent_version, **counts})
+        else:
+            aggregates[scope, adapter, day] = counts
+    empty = {
+        "distinct_addresses": None, "distinct_installations": 0, "distinct_address_installation_pairs": None,
+        "events": 0, "events_with_address": 0, "events_with_agent_version": 0,
+    }
+    dates = [(today - timedelta(days=offset)).isoformat() for offset in range(days - 1, -1, -1)]
+
+    def windows(adapter):
+        result = {scope: aggregates.get((scope, adapter, None), empty.copy())
+                  for scope in ("today", "period", "last_30_days")}
+        result["daily"] = [{"day": day, **aggregates.get(("daily", adapter, day), empty)} for day in dates]
+        return result
+
+    versions.sort(key=lambda row: (row["adapter"], row["agent_version"] is None, row["agent_version"] or ""))
+    return {**windows(None), "by_adapter": [{"adapter": adapter, **windows(adapter)} for adapter in ADAPTERS],
+            "by_agent_version": versions}
 
 
 def _features(connection, period: tuple[str, str]) -> list[dict]:
@@ -229,4 +307,5 @@ def report(database: Path, *, today: date, days: int = 30, retention_days: int =
             "surfaces": [dict(row) for row in surfaces],
             "versions": [dict(row) for row in versions],
             "retention": _retention(connection, cutoff, period[1]),
+            "activity": _activity(connection, start, today, days, monthly_start),
         }

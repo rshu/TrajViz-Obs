@@ -11,7 +11,7 @@ Visualize and diagnose Claude Code and OpenCode 2 sessions with [TrajViz](https:
 
 ## Telemetry service
 
-This branch contains the collector and HTML publisher for opt-in usage telemetry from Claude Code and OpenCode. The client instrumentation lives on `codex/usage-telemetry`. See the [telemetry service setup guide](telemetry/README.md) for configuration, local testing, and deployment.
+This branch contains the collector and HTML publisher for opt-in usage telemetry from Claude Code and OpenCode. Client instrumentation lives in the plugin branch. See the [telemetry service setup guide](telemetry/README.md) for configuration, local testing, and deployment.
 
 ## Install
 
