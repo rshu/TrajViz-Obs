@@ -21,7 +21,7 @@ In Claude Code:
 /plugin install trajviz-obs --marketplace rshu/TrajViz-Obs
 ```
 
-Confirm the marketplace and installation scope, then restart Claude Code. The first `/obs` installs a private TrajViz runtime; dashboards add their dependencies when first opened. Initial setup requires network access.
+Confirm the marketplace and installation scope, then restart Claude Code. The first `/obs` prepares a private TrajViz runtime. The live dashboard needs the optional `app` dependencies. Initial setup requires network access.
 
 To update:
 
@@ -34,38 +34,37 @@ Run the update from the project where you use the plugin. It selects that projec
 
 ## Use
 
-After the session's first assistant response:
+Run `/obs` after the session’s first assistant response.
 
-```text
-/obs
-/obs dashboard
-```
+- **Claude Code** shows the live pane and keeps the conversation clear. The prompt stays ready for input. The pane docks beside the conversation in wide fullscreen terminals and opens above the prompt in narrower or main-screen layouts. Run `/obs overview` to print a summary in the transcript. Bare `/obs` also prints the summary when the host cannot show a pane, including in headless mode.
+- **OpenCode 2** shows the summary in the terminal or Desktop. Run `/obs pane` for the live panel.
 
-In Claude Code, `/obs` opens the live pane and keeps the prompt focused. It docks beside a fullscreen transcript and opens above the prompt in the main-screen layout. Run `/obs pane` to focus it, then use **1–7** to switch tabs. Run `/obs overview` to print the summary in the transcript. OpenCode’s `/obs` opens its summary.
+In Claude Code, run `/obs pane` to open or focus the pane. With the pane focused, use **1–7** for tabs, **r** to refresh, **w** to toggle watch, and **d** for the browser dashboard.
 
 | Task | Command |
 | --- | --- |
 | Inspect diagnostics | `/obs issues`, `/obs agents`, `/obs view` |
 | Inspect recorded workflow evidence | `/obs attribution` |
-| Open or focus the live pane | `/obs pane`; close with `/obs pane close` |
+| Open or close the live pane | `/obs pane`, `/obs pane close` |
+| Open the browser dashboard | `/obs dashboard` |
 | Export data | `/obs json`, `/obs bundle`, `/obs dashboard --html session.html` |
 | Compare runs | `/obs compare <session-id>`, `/obs converge` |
 | Ask for analysis or fixes | `/obs analyze [question]`, `/obs fixes` |
 | Label steps by phase and action | `/obs label --max-steps 20` |
 | List all commands and options | `/obs help` |
 
-Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path>` to a session command. Run `/obs` without a selector to return to the current session.
+Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path>` to a session command. Run bare `/obs` to return to the current session.
 
 Both plugins use TrajViz **0.5.1** and expose all **36 views**. `/obs view data_quality` explains missing or partial evidence. The dashboard distinguishes recorded zeros from missing or partial data.
 
-Watch refreshes an open pane after turns. `/obs statusline on` pins a summary under the prompt. Use `/obs watch off` and `/obs statusline off` to stop automatic refreshes.
+Watch refreshes an open pane as the current session progresses. Use `/obs watch off` to turn it off. `/obs statusline on` shows a compact summary in the host UI, and `/obs statusline off` hides it.
 
 <details>
 <summary>Saved imports and exports</summary>
 
 Imports include CodeAgent session exports, OpenCode Desktop and Windows exports, Codex, Pi, and compressed DeepSeek sessions. JSON view exports use schema version **2**.
 
-Saved OTLP captures can contain several sessions. List them with `/obs sessions --session /path/to/capture`, then select one with `/obs --session /path/to/capture --session-id <id>`. JSON, JSONL, bundle manifests, directories, and ZIP captures are supported. This imports saved telemetry; it does not enable live telemetry collection.
+Saved OTLP captures can contain several sessions. List them with `/obs sessions --session /path/to/capture`, then open one with `/obs pane --session /path/to/capture --session-id <id>`. Use `overview` in place of `pane` for a summary. JSON, JSONL, bundle manifests, directories, and ZIP captures are supported. This imports saved telemetry; it does not enable live telemetry collection.
 
 `/obs json` exports the selected session as a reloadable `trajectory.json` alongside its views. Use `--views-only` with a fresh output directory to omit the trajectory. `/obs bundle` preserves a complete OTLP capture, including its other sessions.
 
@@ -87,11 +86,11 @@ Terminal images are rendered from recorded output. The dashboard Summary uses a 
 
 ![Claude Code live pane beside the conversation in light mode](assets/demo-terminal-light.png)
 
-**OpenCode 2 terminal: live overview**
+**OpenCode 2 terminal: live panel overview**
 
-![OpenCode 2 live overview with session metrics, health, and issues in light mode](assets/demo-opencode-overview-light.png)
+![OpenCode 2 terminal live panel with session metrics, health, and issues in light mode](assets/demo-opencode-overview-light.png)
 
-**OpenCode 2 terminal: subagent activity**
+**OpenCode 2 terminal: Agents tab**
 
 ![OpenCode 2 Agents tab in light mode with per-agent steps, tokens, tools, and duration](assets/demo-opencode-agents-light.png)
 
@@ -133,7 +132,7 @@ Labeling uses `LABEL_BASE_URL`, `LABEL_API_KEY`, and `LABEL_MODEL`, falling back
 <details>
 <summary>Inspection and attribution</summary>
 
-`/obs attribution` inspects recorded findings, file and test activity, and recovery evidence without reference data or model calls. For a reference-based failure diagnosis, use `/obs attribution --reference-root /path/to/reference-data`, adding `--agent NAME` and `--instance ID` when needed. The reference data must include the task's reference patch and test outcome; the dashboard also provides reference overrides.
+`/obs attribution` inspects recorded findings, file and test activity, and recovery evidence without reference data or model calls. For a reference-based failure diagnosis, use `/obs attribution --reference-root /path/to/reference-data`, with `--agent NAME` or `--instance ID` to select the target. The reference data must include the task's reference patch and test outcome; the dashboard also provides reference overrides.
 
 To use a default reference folder, set `TRAJVIZ_REFERENCE_ROOT` before starting the host/server, then pass `--agent NAME` or `--instance ID` to select reference diagnosis. Verdicts require the matching canonical session; missing reference evidence produces an explanation instead of capability blame.
 
@@ -149,7 +148,7 @@ In the live `/obs dashboard`, go to **Overview → Summary → Issues** and choo
 
 The dashboard's AI analysis panel has its own **Settings**, independently of `llm`. Environment values provide defaults. Keys stay in the current dashboard session, and remembered details exclude keys. Choose **Analyze trajectory** for a full review or enter your own question. Opening the panel makes no model call. **Test API key** sends a small request without trajectory data.
 
-Exports and cached analysis contain session data and stay on the host unless shared. Plugin dashboards bind to `127.0.0.1` and stop on request or plugin unload. For an authenticated remote dashboard, use the standalone TrajViz CLI with `TRAJVIZ_AUTH` and upload an exported trajectory. [Standalone dashboard options](https://github.com/rshu/TrajViz/tree/v0.5.1#dashboard-and-cli)
+Exports and cached analysis contain session data and stay on the host unless shared. Plugin dashboards bind to `127.0.0.1` and stop on request or plugin unload. For a remote dashboard with authentication, run the standalone TrajViz CLI with `TRAJVIZ_AUTH` and upload an exported trajectory. [Standalone dashboard options](https://github.com/rshu/TrajViz/blob/v0.5.1/README.md#quickstart)
 
 ### Usage telemetry
 
@@ -159,15 +158,15 @@ Run `/obs telemetry_destination` to see the collector. Change it during a sessio
 
 For an authenticated collector, supply its token as `TRAJVIZ_OBS_TELEMETRY_TOKEN` in the host’s launch environment. In Claude Code, append `--use-launch-token` to associate the token with a new destination. In OpenCode, the server sends its launch token only to the exact endpoint configured in `TRAJVIZ_OBS_TELEMETRY_URL`. To change that endpoint, update the server’s launch environment, restart the server, and run `/obs telemetry_destination default` if a saved destination overrides it. Remote collectors require HTTPS. For local HTTP on a custom port, use a URL such as `http://127.0.0.1:8765`. Reopen dashboards that were started before telemetry was enabled to track browser actions.
 
-The sender reports allowlisted feature names, outcomes, coarse timing, and a random installation ID. Prompts, transcripts, paths, and command arguments stay on the host. Collector and HTML reporting development is tracked on `codex/telemetry-service`.
+The sender reports the adapter, surface, plugin version, UTC day, allowlisted features, outcomes, coarse timing, and random installation and event IDs. Prompts, transcripts, paths, and command arguments stay on the host. Collector and HTML reporting development is tracked on `codex/telemetry-service`.
 
 ## Troubleshooting and limits
 
-Run `/obs doctor` to check setup or `/obs setup` to install dependencies. If `/obs` is missing, check the Claude Code debug log for disabled function hooks or an API mismatch. If the dashboard is empty, export `/obs bundle` and load its ZIP manually. Over SSH, forward the displayed port; set `openBrowser=false` to disable browser opening.
+Run `/obs doctor` to check setup or `/obs setup` to install dependencies. If `/obs` is missing, check the Claude Code debug log for disabled function hooks or an API mismatch. In OpenCode, follow the adapter’s restart and verification steps. [OpenCode setup](opencode/README.md#3-restart-and-verify) If the dashboard is empty, export `/obs bundle` and load its ZIP manually. Over SSH, forward the displayed port; set `openBrowser=false` to disable browser opening.
 
 - Timing is estimated from transcripts; workflow-spawned work and subagent finish times may be incomplete.
 - Operation-based OTLP captures support observed metrics and inspection; transcript alignment and reference-based capability diagnosis require supported native transcripts.
-- Imported sessions require manual refresh after their inputs change. Claude Code files above **32 MiB** also require manual refresh. OpenCode has [live-capture limits](opencode/README.md#options). Insight analyzes at most the first **2,000 steps**. The `trajectory.json` export retains the full parsed trajectory.
+- Imported sessions require manual refresh after their inputs change. Claude Code files above **32 MiB** also require manual refresh. OpenCode has [live-capture limits](opencode/README.md#options). The browser dashboard shows at most the first **2,000 steps**. The `trajectory.json` export retains the full parsed trajectory.
 - Real-session validation covers **macOS**. Linux and Windows still need platform-specific end-to-end testing.
 
 ## Development
