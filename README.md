@@ -103,7 +103,7 @@ Terminal images are rendered from recorded output. The dashboard Summary uses a 
 
 **Browser dashboard: Deep Dive**
 
-![Deep Dive in light mode with metric cards and step links in the hotspot tables](assets/demo-dashboard-deep-dive-light.png)
+![Deep Dive in light mode with metric cards and step links in the latency hotspot table](assets/demo-dashboard-deep-dive-light.png)
 
 ## Configure
 
