@@ -91,16 +91,16 @@ def _loaded_run(block, path, session_id=None):
 def test_token_explanations_distinguish_missing_cache_counters_from_zero(tmp_path):
     source = tmp_path / "opencode.json"
     base = 1_790_000_000_000
-    usage = {"total": 50, "input": 45, "output": 5}
+    usage = {"total": 50, "input": 45, "output": 5, "reasoning": 0}
     source.write_text(json.dumps({
         "source_format": "opencode_v2", "schema_version": 1,
         "session": {"id": "tokens", "time": {"created": base, "updated": base + 3000}},
         "messages": [{
-            "id": f"message-{index}", "type": "assistant", "agent": "build",
+            "id": f"message-{index}", "type": "assistant", "agent": "build", "model": {"id": "<demo-model>"},
             "content": [{"type": "text", "text": "Recorded reply"}],
             "time": {"created": base + index * 1000, "completed": base + (index + 1) * 1000},
             "tokens": tokens,
-        } for index, tokens in enumerate([usage, {**usage, "reasoning": 0, "cache": {"read": 0, "write": 0}}])],
+        } for index, tokens in enumerate([{**usage, "cache": {"read": 0, "write": 0}}, usage])],
     }))
     app = build_preloaded_insight(str(source))
     outputs = _loader(app).fn(str(source), False, "")
@@ -113,10 +113,16 @@ def test_token_explanations_distinguish_missing_cache_counters_from_zero(tmp_pat
     summary = markup("token-summary-wrap")
     assert "0% cache hit" not in summary and "Largest step" in summary
     details = markup("token-step-explain")
-    partial, complete = details.split("data-step='1'", 1)
+    complete, partial = details.split("data-step='1'", 1)
     assert "Available token counts" in partial and "Some token counts are unavailable" in partial
-    assert "Total 50" in partial and "No prefix cache hits" not in partial
-    assert "No prefix cache hits" in complete
+    assert "&lt;demo-model&gt;" in partial and "tvGotoWorkflowStep(1)" in partial
+    assert "Open step in Workflow" in partial and "No prefix cache hits" not in partial
+    assert "Total" in partial and "</th><td>50</td>" in partial
+    assert "Reasoning" in partial and "</th><td>0</td>" in partial
+    assert "Cache read" in partial and "Unavailable" in partial
+    assert "No prefix cache hits" in complete and "Fresh Input" in complete
+    assert "Other input ≈ 45 tok" in complete and "System prompt and tool definitions ≈" not in complete
+    assert "How the estimates are calculated" in details and "provider’s count" in details
 
 
 @pytest.fixture

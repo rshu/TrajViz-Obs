@@ -207,11 +207,14 @@ def test_health_and_findings_live_in_summary_without_burying_other_tabs():
     assert "obs-summary-status" in status.elem_classes
     token_row = next(child for child in summary.children if isinstance(child, gr.Row)
                      and any(plot.elem_id == "token-chart" for plot in child.children))
-    assert "token-step-explain" in token_row.children[1].elem_classes
-    assert summary.children[summary.children.index(token_row) + 1].elem_id == "duration-chart"
+    guide = next(child for child in summary.children if child.elem_id == "obs-summary-chart-guide")
+    assert summary.children.index(guide) < summary.children.index(token_row)
+    assert "obs-summary-charts" in token_row.elem_classes
+    assert [chart.elem_id for chart in token_row.children] == ["token-chart", "duration-chart"]
+    assert "token-step-explain" in summary.children[summary.children.index(token_row) + 1].elem_classes
     gantt_row = next(child for child in summary.children if isinstance(child, gr.Row)
                      and any(plot.elem_id == "gantt-chart" for plot in child.children))
-    axis_form = summary.children[summary.children.index(gantt_row) - 1]
+    axis_form = summary.children[summary.children.index(gantt_row) + 1]
     assert any(isinstance(control, gr.Radio) and control.label == "Timeline axis" for control in axis_form.children)
 
 

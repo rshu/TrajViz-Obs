@@ -52,7 +52,7 @@ After the session's first assistant response:
 | Label steps by phase and action | `/obs label --max-steps 20` |
 | List all commands and options | `/obs help` |
 
-In the dashboard, start with **Overview → Summary** for health and issues. Click an issue's step number to inspect it in **Workflow**, where **Expanded** shows full step text and tool results. Overview also has an execution timeline with **Skip idle** and **Wallclock** modes, clickable token bars, issue JSON export, and context-growth hotspots. The selected session and its cached labels load automatically. Close the server with `/obs dashboard stop`.
+In the dashboard, start with **Overview → Summary** for health, issues, and issue JSON export. Use **Chart guide** to learn how to read the charts. Click a token bar for its step breakdown or a duration bar to open that step in **Workflow**. The execution timeline can compress long idle gaps or show their full duration with **True wall-clock**. Find context-growth hotspots in **Deep Dive**. The selected session and its cached labels load automatically. Close the server with `/obs dashboard stop`.
 
 Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path>` to a session command. Run `/obs` without a selector to return to the current session.
 

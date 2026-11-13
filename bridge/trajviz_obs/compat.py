@@ -380,9 +380,10 @@ def write_dashboard_report(writer, source, *, dest, dark, inline_plotly):
 
 def _dashboard_load_packer():
     """Apply evidence-aware presenters only to this app's initial and upload loads."""
-    from agent_trajviz.insight.presenters import workflow
+    from agent_trajviz.insight.presenters import overview, workflow
     from agent_trajviz.insight.ui import load
 
+    from .dashboard_timeline import timeline_builder
     from .dashboard_tokens import token_presenters
     from .native_quality import dashboard_field_observed
 
@@ -399,6 +400,9 @@ def _dashboard_load_packer():
         "workflow_tab": clone(load.workflow_tab.pack_load, {"build_workflow_outputs": workflow_outputs}),
         "overview_tab": clone(load.overview_tab.pack_load, {
             "build_overview_outputs": _dashboard_overview_presenter(),
+            "build_chart_outputs": clone(overview.build_chart_outputs, {
+                "build_execution_gantt_chart": timeline_builder(),
+            }),
             **token_presenters(clone),
         }),
     }
