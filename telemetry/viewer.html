@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
-  <title>Usage telemetry · TrajViz-Obs</title>
+  <title>Plugin usage · TrajViz-Obs</title>
   <style>
     :root {
       color-scheme: light;
@@ -19,7 +19,6 @@
       --accent: #173d58;
       --claude: #a74d2e;
       --opencode: #176b9a;
-      --positive: #11634d;
       --negative: #972d3b;
     }
     * { box-sizing: border-box; }
@@ -31,7 +30,7 @@
     .frame { width: min(1260px, 100% - 48px); margin-inline: auto; }
     .masthead { padding: 36px 0 28px; background: #e8f0f4; border-bottom: 1px solid var(--line); }
     .masthead-inner, .section-head, .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
-    .masthead-actions, .section-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
+    .section-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
     .view-switch, .language { display: inline-flex; align-items: center; gap: .15rem; padding: .2rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); }
     :is(.view-switch, .language) button { min-width: 2.35rem; min-height: 2rem; padding: .2rem .5rem; border: 0; border-radius: 5px; background: transparent; color: var(--accent); font-weight: 700; }
     :is(.view-switch, .language) button:hover { background: var(--tint); }
@@ -42,11 +41,7 @@
     h2 { margin: 0; font-size: 1.2rem; letter-spacing: -.025em; }
     p { line-height: 1.55; }
     .subtle, .meta { margin: 6px 0 0; color: var(--muted); font-size: .875rem; }
-    .primary { background: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: .65rem .9rem; color: #fff; font-weight: 700; }
-    .primary:hover { background: #245575; }
     main { padding-block: 22px 50px; }
-    .empty-upload { min-height: 240px; display: grid; align-content: center; text-align: center; padding: 25px; border: 2px dashed #b4c6d2; border-radius: 14px; background: var(--surface); }
-    body.dragging .empty-upload, body.dragging .masthead { background: #dbeef7; }
     .error { margin: 0 0 16px; padding: .7rem .9rem; border-radius: 8px; background: #fff0f1; color: var(--negative); }
     .toolbar { margin-bottom: 15px; }
     .toolbar .subtle { margin: 0; }
@@ -88,7 +83,7 @@
     .bar-fill { position: relative; width: min(62%, 3.25rem); border-radius: 5px 5px 0 0; background: var(--series); }
     .bar-value { position: absolute; bottom: calc(100% + .25rem); left: 50%; transform: translateX(-50%); width: max-content; max-width: 5.35rem; overflow-wrap: anywhere; text-align: center; font-size: .76rem; line-height: 1.15; font-weight: 700; }
     .table-wrap { overflow: auto; }
-    .feature-table, #reliability, #agent-versions-data { max-height: 30rem; }
+    .feature-table, #agent-versions-data { max-height: 30rem; }
     table { border-collapse: separate; border-spacing: 0; width: 100%; text-align: left; font-size: .83rem; }
     th, td { padding: .58rem .65rem; border-bottom: 1px solid var(--line); vertical-align: top; }
     thead th { position: sticky; top: 0; z-index: 1; color: #304757; background: var(--tint); white-space: nowrap; }
@@ -96,13 +91,7 @@
     tbody tr:nth-child(even) { background: #f7fafb; }
     .num { text-align: right; font-variant-numeric: tabular-nums; }
     .feature-name { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .8rem; white-space: nowrap; }
-    .outcomes { display: flex; flex-wrap: wrap; gap: 4px; min-width: 125px; }
-    .tag { background: var(--tint); border-radius: 5px; padding: .12rem .32rem; white-space: nowrap; color: var(--muted); }
-    .tag.success { background: #e2f4ee; color: var(--positive); }
-    .tag.error { background: #fae8eb; color: var(--negative); }
-    .tag.cancelled { background: #f7eddb; color: #735017; }
     .compact { display: block; margin-top: 3px; color: var(--muted); font-size: .76rem; white-space: nowrap; }
-    .range { white-space: nowrap; }
     .daily-data { padding-top: 12px; }
     summary { cursor: pointer; color: var(--accent); font-size: .83rem; font-weight: 650; }
     details > .table-wrap { margin-top: 10px; max-height: 22rem; }
@@ -122,50 +111,48 @@
     <div class="frame masthead-inner">
       <div>
         <p class="brand">TrajViz-Obs</p>
-        <h1 data-copy="title">Usage telemetry</h1>
-        <p id="report-meta" class="meta" role="status">Offline aggregate report viewer</p>
+        <h1 data-copy="title">Plugin usage</h1>
+        <p id="report-meta" class="meta" role="status"></p>
       </div>
-      <div class="masthead-actions">
-        <div class="language" role="group" aria-label="Report language" data-copy-aria="language">
-          <button type="button" data-language="en" lang="en" aria-label="English" aria-pressed="true">EN</button>
-          <span aria-hidden="true">|</span>
-          <button type="button" data-language="zh-CN" lang="zh-CN" aria-label="简体中文" aria-pressed="false">中</button>
-        </div>
-        <button id="open-report" class="primary" type="button" data-copy="openReport">Open JSON report</button>
-        <input id="report-file" type="file" accept=".json,application/json" aria-label="Usage report JSON file" data-copy-aria="reportFile" hidden>
+      <div class="language" role="group" aria-label="Report language" data-copy-aria="language">
+        <button type="button" data-language="en" lang="en" aria-label="English" aria-pressed="true">EN</button>
+        <span aria-hidden="true">|</span>
+        <button type="button" data-language="zh-CN" lang="zh-CN" aria-label="简体中文" aria-pressed="false">中</button>
       </div>
     </div>
   </header>
   <main class="frame">
     <p id="error" class="error" role="alert" hidden></p>
-    <section id="empty" class="empty-upload" aria-labelledby="empty-title">
-      <h2 id="empty-title" data-copy="dropReport">Drop a usage report here</h2>
-      <p class="subtle" data-copy="dropHint">Open the aggregate JSON generated by python -m telemetry … report.</p>
-    </section>
     <div id="dashboard" hidden>
       <div class="toolbar">
-        <p class="subtle" data-copy="adapterHint">Counts cover opt-in plugin installations. Claude Code and OpenCode have separate installation IDs.</p>
-        <label class="field"><span data-copy="adapter">Adapter</span> <select id="adapter-filter"><option value="all" data-copy="allAdapters">All adapters</option><option value="claude-code">Claude Code</option><option value="opencode">OpenCode</option></select></label>
+        <p class="subtle" data-copy="adapterHint">The report counts installations that enabled telemetry, separately for Claude Code and OpenCode.</p>
+        <label class="field"><span data-copy="adapter">Coding agent</span> <select id="adapter-filter"><option value="all" data-copy="allAdapters">All agents</option><option value="claude-code">Claude Code</option><option value="opencode">OpenCode</option></select></label>
       </div>
       <div class="pair">
         <section class="panel pad" aria-labelledby="first-seen-title">
           <h2 id="first-seen-title" data-copy="firstSeen">First-seen installations</h2>
-          <p class="subtle" data-copy="firstSeenDefinition"></p>
           <div id="first-seen"></div>
+          <p class="subtle" data-copy="firstSeenDefinition"></p>
         </section>
         <section class="panel pad" aria-labelledby="returning-title">
           <h2 id="returning-title" data-copy="activeReturning">Active and returning installations</h2>
-          <p class="subtle" data-copy="returningDefinition"></p>
           <div id="returning" class="table-wrap block" role="region" tabindex="0" aria-label="Active and returning installations" data-copy-aria="activeReturning"></div>
+          <p class="subtle" data-copy="returningDefinition"></p>
         </section>
       </div>
+      <section id="observed-activity" class="panel block pad" aria-labelledby="observed-activity-title" hidden>
+        <h2 id="observed-activity-title" data-copy="observedActivity">IP counts</h2>
+        <div id="activity-counts" class="table-wrap block" role="region" aria-label="Activity counts by window" data-copy-aria="activityWindows" tabindex="0"></div>
+        <p class="subtle" data-copy="addressDefinition"></p>
+        <p class="subtle" data-copy="coverageDefinition"></p>
+      </section>
       <section class="panel block pad" aria-labelledby="features-title">
         <div class="section-head">
-          <h2 id="features-title" data-copy="features">Feature usage by coding agent</h2>
+          <h2 id="features-title" data-copy="features">Feature usage</h2>
           <div class="section-actions">
             <label class="field"><span data-copy="featureCategory">Category</span> <select id="feature-category"><option value="all" data-copy="allCategories">All categories</option><option value="command" data-copy="commands">Commands</option><option value="pane" data-copy="panes">Pane</option><option value="dashboard" data-copy="dashboards">Dashboard</option></select></label>
-            <label id="feature-version-field" class="field" hidden><span data-copy="agentVersion">Host version</span> <select id="feature-version"></select></label>
-            <label class="field"><span data-copy="filterFeatures">Filter features</span> <input id="feature-filter" type="search" maxlength="80" autocomplete="off"></label>
+            <label id="feature-version-field" class="field" hidden><span data-copy="agentVersion">Agent version</span> <select id="feature-version"></select></label>
+            <label class="field"><span data-copy="filterFeatures">Find a feature</span> <input id="feature-filter" type="search" maxlength="80" autocomplete="off"></label>
             <div class="view-switch" role="group" data-view-switch="features"></div>
           </div>
         </div>
@@ -173,37 +160,25 @@
         <p id="legacy-features" class="subtle" data-copy="legacyFeatureVersions" hidden></p>
         <div id="features" class="table-wrap feature-table block" role="region" tabindex="0"></div>
       </section>
-      <section class="panel block pad" aria-labelledby="reliability-title">
-        <h2 id="reliability-title" data-copy="featureReliability">Feature reliability</h2>
-        <p class="subtle" data-copy="reliabilityDefinition"></p>
-        <div id="reliability" class="table-wrap block" role="region" tabindex="0" aria-label="Feature reliability" data-copy-aria="featureReliability"></div>
-      </section>
       <details class="panel pad block report-details">
-        <summary data-copy="reportDetails">Additional report details</summary>
-        <p class="subtle" data-copy="activityDefinition"></p>
+        <summary data-copy="reportDetails">Daily trends and breakdowns</summary>
       <div class="pair block">
         <section id="active-chart" class="panel pad" aria-label="Daily active installations" data-copy-aria="dailyActive"></section>
-        <section id="actions-chart" class="panel pad" aria-label="Daily tracked actions" data-copy-aria="dailyActions"></section>
+        <section id="actions-chart" class="panel pad" aria-label="Actions per day" data-copy-aria="dailyActions"></section>
       </div>
       <details class="panel pad block daily-data"><summary data-copy="viewDaily">View daily counts</summary><div id="daily" class="table-wrap" role="region" aria-label="Daily counts table" data-copy-aria="dailyTable" tabindex="0"></div></details>
-      <div id="observed-activity" hidden>
-        <section class="panel pad block" aria-labelledby="observed-activity-title">
-          <h2 id="observed-activity-title" data-copy="observedActivity">Observed network and installation activity</h2>
-          <p class="subtle" data-copy="addressDefinition"></p>
-          <p class="subtle" data-copy="coverageDefinition"></p>
-          <div id="activity-counts" class="table-wrap block" role="region" aria-label="Activity counts by window" data-copy-aria="activityWindows" tabindex="0"></div>
-        </section>
-        <section id="addresses-chart" class="panel pad block" aria-label="Daily distinct network addresses" data-copy-aria="dailyAddresses"></section>
-        <details class="panel pad block daily-data"><summary data-copy="viewDailyNetwork">View daily network counts</summary><div id="daily-network" class="table-wrap" role="region" aria-label="Daily network counts table" data-copy-aria="dailyNetworkTable" tabindex="0"></div></details>
+      <div id="daily-addresses" hidden>
+        <section id="addresses-chart" class="panel pad block" aria-label="Daily distinct IP addresses" data-copy-aria="dailyAddresses"></section>
+        <details class="panel pad block daily-data"><summary data-copy="viewDailyNetwork">View daily IP counts</summary><div id="daily-network" class="table-wrap" role="region" aria-label="Daily IP counts table" data-copy-aria="dailyNetworkTable" tabindex="0"></div></details>
       </div>
       <div class="pair block">
         <section id="adoption" class="panel pad" aria-label="Installation activity" data-copy-aria="installationActivity"></section>
-        <section id="retention" class="panel pad" aria-label="Exact-day retention" data-copy-aria="retention"></section>
+        <section id="retention" class="panel pad" aria-label="Returns on day 7 and day 30" data-copy-aria="retention"></section>
       </div>
       <div class="pair block">
         <section id="surfaces" class="panel pad" aria-labelledby="surfaces-title">
           <div class="section-head">
-            <h2 id="surfaces-title" data-copy="surfaces">Surfaces</h2>
+            <h2 id="surfaces-title" data-copy="surfaces">Actions by interface</h2>
             <div class="view-switch" role="group" data-view-switch="surfaces"></div>
           </div>
           <div id="surfaces-data" class="table-wrap block" role="region" tabindex="0"></div>
@@ -229,147 +204,133 @@
     'use strict';
 
     const COPY = {
-      title: ['Usage telemetry', '使用遥测'],
+      title: ['Plugin usage', '插件使用统计'],
       language: ['Report language', '报告语言'],
-      openReport: ['Open JSON report', '打开 JSON 报告'],
-      reportFile: ['Usage report JSON file', '使用遥测报告 JSON 文件'],
-      viewer: ['Offline aggregate report viewer', '离线汇总报告查看器'],
-      dropReport: ['Drop a usage report here', '将使用遥测报告拖到此处'],
-      dropHint: ['Open the aggregate JSON generated by python -m telemetry … report.', '打开由 python -m telemetry … report 生成的汇总 JSON 文件。'],
-      adapterHint: ['Counts cover opt-in plugin installations. Claude Code and OpenCode have separate installation IDs.', '仅统计已开启遥测的插件安装实例。Claude Code 和 OpenCode 分别使用各自的安装实例标识。'],
-      adapter: ['Adapter', '适配器'],
-      allAdapters: ['All adapters', '所有适配器'],
+      adapterHint: ['The report counts installations that enabled telemetry, separately for Claude Code and OpenCode.', '只统计开启遥测的安装实例。Claude Code 和 OpenCode 分开计数。'],
+      adapter: ['Coding agent', '编程智能体'],
+      allAdapters: ['All agents', '全部智能体'],
       activeInstallations: ['Active installations', '活跃安装实例'],
-      firstSeen: ['First-seen installations', '首次出现的安装实例'],
+      firstSeen: ['First-seen installations', '首次记录的安装实例'],
       firstSeenDefinition: [
-        'Installations first observed during the selected UTC period. Clearing local state or exceeding retention can create a new first observation.',
-        '统计所选 UTC 时段内首次观测到的安装实例。清除本地状态或超出保留期后，可能再次被计为首次出现。',
+        'These installations had their first recorded event during the report period. The same installation can count again after a local reset or when its old record expires.',
+        '这些安装实例的首条事件都在报告时段内。清除本地数据或旧记录过期后，同一实例可能再次计入。',
       ],
       activeReturning: ['Active and returning installations', '活跃与回访安装实例'],
       returningDefinition: [
-        'Active means at least one event in the window, including activation. Returning means active in the window and first observed before it began.',
-        '活跃表示该时段至少记录了一条事件，激活也计入。回访表示该时段内有活动，且在时段开始前已经被观测到。',
+        'Active installations have at least one event in the window, including activation. Returning installations are active installations first recorded before that window.',
+        '每个时段内有事件记录的安装实例计为活跃，激活也算。活跃实例如果在时段开始前已有记录，也计为回访。',
       ],
       returningInstallations: ['Returning installations', '回访安装实例'],
       last7Days: ['Last 7 days', '最近 7 天'],
       legacyRolling: ['Older reports may lack counts for some windows.', '旧版报告可能缺少部分时段的统计。'],
-      reportDetails: ['Additional report details', '更多报告详情'],
+      reportDetails: ['Daily trends and breakdowns', '每日趋势与详细统计'],
       activityDefinition: [
-        'Active installations have at least one event dated in the report period, including activation. Engaged installations have at least one tracked action beyond activation.',
-        '活跃安装实例在报告期内至少有一条事件记录，激活也计入。有操作的安装实例在激活之外至少记录过一次操作。',
+        'An installation with actions did something beyond activating the plugin.',
+        '有操作的安装实例至少记录过一次激活以外的操作。',
       ],
-      observedActivity: ['Observed network and installation activity', '观测到的网络与安装活动'],
+      observedActivity: ['IP counts', 'IP 地址统计'],
       addressDefinition: [
-        'Network addresses and installations do not identify people. Several installations may share an address through NAT or a VPN, and a changing IP can give one installation several addresses. Address–installation pairs count each distinct combination. The report contains no addresses or installation IDs.',
-        '网络地址和安装实例无法识别具体用户。多个安装实例可能通过 NAT 或 VPN 共用一个地址，IP 变化也可能让一个安装实例对应多个地址。地址与安装实例组合按不同组合计数。报告不包含地址或安装实例标识。',
+        'Several installations can share an IP, and one installation can use several IPs. Each pair counts once.',
+        '多个安装实例可以共用一个 IP 地址，同一安装实例也可以使用多个 IP 地址。每种 IP 地址与安装实例的组合只计一次。',
       ],
       coverageDefinition: [
-        'Address counts use the upload connection for events received on the same UTC day. Events without an observed address still count toward installation activity. Unavailable means no address was observed in that window.',
-        '地址统计使用事件在同一 UTC 日期内上传时的连接地址。未观测到地址的事件仍计入安装实例活动。“暂无数据”表示该时段未观测到地址。',
+        "IP counting is optional. It uses the connection IP from supported uploads received on the event's UTC day. Unavailable means there were no IP measurements for that window.",
+        'IP 统计可选。启用后，采集服务只统计在事件当天（UTC）收到的兼容上传所用的 IP。暂无数据表示该时段没有 IP 统计。',
       ],
       activityWindows: ['Activity counts by window', '各时段活动统计'],
       window: ['Window', '时段'],
-      today: ['Last report day', '报告最后一天'],
+      today: ['Final day of report', '报告最后一天'],
       periodWindow: ['Report period', '报告时段'],
       last30Days: ['Last 30 days', '最近 30 天'],
-      distinctAddresses: ['Distinct network addresses', '不同网络地址数'],
-      addressInstallationPairs: ['Address–installation pairs', '地址与安装实例组合数'],
-      addressCoverage: ['Events with address', '有地址记录的事件'],
-      agentVersionCoverage: ['Events with agent version', '有智能体版本记录的事件'],
+      distinctAddresses: ['Distinct IP addresses', '不同 IP 地址数'],
+      addressInstallationPairs: ['IP and installation pairs', 'IP 地址与安装实例组合数'],
+      addressCoverage: ['Events with an IP', '有 IP 记录的事件'],
+      agentVersionCoverage: ['Events with an agent version', '有智能体版本记录的事件'],
       events: ['Events', '事件数'],
       coverage: ['{observed} of {total}', '{observed} / {total}'],
-      dailyAddresses: ['Daily distinct network addresses', '每日不同网络地址数'],
-      viewDailyNetwork: ['View daily network counts', '查看每日网络统计'],
-      dailyNetworkTable: ['Daily network counts table', '每日网络统计表'],
-      addressChart: ['{title}. Exact values are in View daily network counts.', '{title}。确切数值见“查看每日网络统计”。'],
+      dailyAddresses: ['Daily distinct IP addresses', '每日不同 IP 地址数'],
+      noAddressActivity: ['No IP data for this period.', '此时段没有 IP 数据。'],
+      viewDailyNetwork: ['View daily IP counts', '查看每日 IP 统计'],
+      dailyNetworkTable: ['Daily IP counts table', '每日 IP 统计表'],
+      addressChart: ['{title}. Open View daily IP counts for exact values.', '{title}。具体数值见“查看每日 IP 统计”。'],
       dailyActive: ['Daily active installations', '每日活跃安装实例'],
-      dailyActions: ['Daily tracked actions', '每日记录的操作'],
+      dailyActions: ['Actions per day', '每日操作数'],
       dailyActivity: ['Daily activity', '每日活动'],
       viewDaily: ['View daily counts', '查看每日统计'],
       dailyTable: ['Daily counts table', '每日统计表'],
       utcDay: ['UTC day', 'UTC 日期'],
-      features: ['Feature usage by coding agent', '按编程智能体查看功能使用情况'],
+      features: ['Feature usage', '功能使用情况'],
       featureCategory: ['Category', '类别'],
       allCategories: ['All categories', '所有类别'],
       commands: ['Commands', '命令'],
       panes: ['Pane', '面板'],
       dashboards: ['Dashboard', '仪表盘'],
       codingAgent: ['Coding agent', '编程智能体'],
-      filterFeatures: ['Filter features', '筛选功能'],
+      filterFeatures: ['Find a feature', '搜索功能'],
       featureHint: [
-        'Counts include browser observations. One installation can appear in more than one version row after an upgrade. Filters also apply to reliability.',
-        '统计包含浏览器中观测到的操作。同一安装实例升级后可能出现在多个版本中。筛选条件也适用于可靠性统计。',
+        'Actions include browser activity. Each installation counts once per row and can appear under several versions.',
+        '操作数包含浏览器活动。每行对同一安装实例只计一次，但同一实例可能出现在多个版本中。',
       ],
-      legacyFeatureVersions: ['This older report has feature counts by agent only.', '此旧版报告仅提供按编程智能体统计的功能使用数据。'],
-      featureReliability: ['Feature reliability', '功能可靠性'],
-      reliabilityDefinition: [
-        'Success, error, and cancellation rates use the sum of those three outcomes. Other outcomes are shown separately. Latency uses successful and failed runs.',
-        '成功率、错误率和取消率均以这三类结果的总数为分母。其他结果单独列出。耗时仅统计成功和失败的运行。',
-      ],
-      otherOutcomes: ['Other outcomes', '其他结果'],
-      completed: ['Completed attempts', '有最终结果的尝试'],
-      outcomeRate: ['{count} · {rate}', '{count} · {rate}'],
+      legacyFeatureVersions: ['This report groups feature usage by coding agent only.', '这份报告只按编程智能体汇总功能使用情况。'],
       tableView: ['Table', '表格'],
       barView: ['Bar chart', '柱状图'],
       viewMode: ['{title} view', '{title}显示方式'],
       barRegion: ['{title} bar chart', '{title}柱状图'],
-      barLimit: ['Showing the top {shown} of {total} rows by tracked actions.', '按记录的操作数显示前 {shown} 行，共 {total} 行。'],
+      barLimit: ['Top {shown} of {total} by action count.', '按操作次数排名，显示前 {shown} 项，共 {total} 项。'],
       feature: ['Feature', '功能'],
       actions: ['Actions', '操作数'],
       installations: ['Installations', '安装实例数'],
-      reliability: ['Reliability', '可靠性'],
-      latency: ['Latency', '耗时'],
-      buckets: ['Buckets', '耗时区间'],
       installationActivity: ['Installation activity', '安装实例活动'],
       engagement: ['Engagement', '参与度'],
       metric: ['Metric', '指标'],
-      retention: ['Exact-day retention', '指定日留存'],
-      day: ['Day', '天数'],
+      retention: ['Returns on day 7 and day 30', '第 7 天与第 30 天的回访'],
+      day: ['Day after first event', '首次记录后第几天'],
       returned: ['Returned', '回访数'],
-      eligible: ['Eligible', '符合条件数'],
-      rate: ['Rate', '留存率'],
-      retentionNote: ['Returns are measured on the exact day after first observation. Retention starts {date} UTC.', '回访按首次观测后的指定日期计算。数据保留起始日为 {date}（UTC）。'],
-      surfaces: ['Surfaces', '使用界面'],
-      surface: ['Surface', '界面'],
+      eligible: ['Reached this day', '已到该天的实例数'],
+      rate: ['Return rate', '回访率'],
+      retentionNote: [
+        'Only activity on that exact day counts. The rate uses installations first recorded on or after {date} UTC that had time to reach the day shown.',
+        '只计指定当天的活动。回访率的分母是从 {date}（UTC）起首次有记录、且已经到达指定天数的安装实例。',
+      ],
+      surfaces: ['Actions by interface', '各界面的操作数'],
+      surface: ['Interface', '界面'],
       versions: ['Plugin versions', '插件版本'],
       version: ['Version', '版本'],
-      versionLimit: ['Showing {shown} of {total} rows, ordered by actions. The JSON includes all rows.', '按操作次数排序，显示 {shown} / {total} 行。JSON 文件包含全部记录。'],
+      versionLimit: ['Top {shown} of {total} by action count. The JSON export includes all rows.', '按操作次数排名，显示前 {shown} 行，共 {total} 行。JSON 导出文件包含全部数据。'],
       agentVersions: ['Coding agent versions', '编程智能体版本'],
-      agentVersion: ['Host version', '宿主版本'],
+      agentVersion: ['Agent version', '智能体版本'],
       allVersions: ['All versions', '所有版本'],
       agentVersionsTable: ['Coding agent versions table', '编程智能体版本统计表'],
       agentVersionDefinition: [
-        'Versions are for Claude Code or OpenCode. One installation can appear in multiple rows if it reports different versions. Unknown includes events that did not report a version.',
-        '这里显示 Claude Code 或 OpenCode 本身的版本。同一安装实例如果报告了不同版本，可以出现在多行中。“未知”包含未报告版本的事件。',
+        'These are Claude Code and OpenCode versions. If an installation reports several versions, it counts under each one. Events without a version appear under Unknown.',
+        '这里统计的是 Claude Code 和 OpenCode 的版本。一个安装实例上报了多个版本时，每个版本各计一次。未上报版本的事件归为“未知”。',
       ],
       unknownVersion: ['Unknown', '未知'],
-      agentVersionLimit: ['Showing {shown} of {total} rows, ordered by events. The JSON includes all rows.', '按事件数排序，显示 {shown} / {total} 行。JSON 文件包含全部记录。'],
+      agentVersionLimit: ['Top {shown} of {total} by event count. The JSON export includes all rows.', '按事件数排名，显示前 {shown} 行，共 {total} 行。JSON 导出文件包含全部数据。'],
       table: ['{title} table', '{title}统计表'],
-      chart: ['{title} by adapter. Exact values are in View daily counts.', '按适配器展示{title}。确切数值见“查看每日统计”。'],
-      period: ['{range} UTC · {days}-day retention', '{range}（UTC） · 数据保留期 {days} 天'],
+      chart: ['{title} by coding agent. Open View daily counts for exact values.', '按编程智能体显示{title}。具体数值见“查看每日统计”。'],
+      dateRange: ['{start} to {end}', '{start}至{end}'],
+      period: ['{range} (UTC). Data kept for {days} days.', '{range}（UTC），数据保留 {days} 天。'],
       unavailable: ['Unavailable', '暂无数据'],
       noActivity: ['No activity in the selected period.', '所选时段内没有活动。'],
       noMatchingFeatures: ['No matching features.', '没有符合条件的功能。'],
-      noFeatureActions: ['No tracked feature actions in the selected period.', '所选时段内没有记录到功能操作。'],
-      invalidReport: ['Choose an aggregate TrajViz-Obs usage report.', '请选择 TrajViz-Obs 使用遥测汇总报告。'],
-      unsupportedReport: ['This usage report format or version is unsupported.', '此使用遥测报告的格式或版本不受支持。'],
-      missingSections: ['The file does not contain the expected aggregate report sections.', '文件缺少所需的汇总报告部分。'],
+      noFeatureActions: ['No feature actions were recorded in this period.', '这段时间没有功能操作记录。'],
+      invalidReport: ['The report is not a TrajViz-Obs usage summary.', '这不是 TrajViz-Obs 使用统计报告。'],
+      unsupportedReport: ['The viewer does not support this report format or version.', '查看器不支持此报告的格式或版本。'],
+      missingSections: ['The report is missing required sections.', '报告缺少必需的部分。'],
       invalidDates: ['The report has an invalid UTC date range.', '报告的 UTC 日期范围无效。'],
       datesOutsideRetention: ['The report date range exceeds its retention window.', '报告的日期范围超出数据保留期。'],
-      invalidSection: ['Invalid section: {section}.', '“{section}”部分无效。'],
+      invalidSection: ['The {section} section is invalid.', '“{section}”部分无效。'],
       invalidRow: ['Invalid row in {section}.', '“{section}”中存在无效的行。'],
       duplicateRow: ['Duplicate row in {section}.', '“{section}”中存在重复的行。'],
-      missingRows: ['The report is missing adapter or date rows.', '报告缺少适配器或日期记录。'],
+      missingRows: ['The report is missing rows for a coding agent or date.', '报告缺少部分编程智能体或日期的记录。'],
       oversized: ['The report exceeds the 5 MiB viewer limit.', '报告超出查看器的 5 MiB 大小限制。'],
-      invalidJson: ['This file is not valid JSON.', '此文件不是有效的 JSON。'],
-      oneFile: ['Open one JSON report at a time.', '每次只能打开一份 JSON 报告。'],
-      openFailed: ['The report could not be opened.', '无法打开此报告。'],
-      embeddedFailed: ['The embedded report could not be opened.', '无法打开内嵌报告。'],
+      loadFailed: ['Could not load the report data.', '无法加载报告数据。'],
     };
     const ADAPTERS = { 'claude-code': 'Claude Code', opencode: 'OpenCode' };
     const SURFACES = { terminal: ['Terminal', '终端'], desktop: ['Desktop', '桌面端'], headless: ['Headless', '无界面'], browser: ['Browser', '浏览器'], unknown: ['Unknown', '未知'] };
-    const OUTCOMES = { success: ['Success', '成功'], error: ['Error', '错误'], observed: ['Observed', '已记录'], empty: ['Empty', '无结果'], cancelled: ['Cancelled', '已取消'], rejected: ['Rejected', '已拒绝'], confirmation: ['Confirmation', '确认'] };
-    const BUCKETS = { lt_100ms: ['<100 ms', '<100 毫秒'], '100ms_1s': ['100 ms–1 s', '100 毫秒–1 秒'], '1s_5s': ['1–5 s', '1–5 秒'], '5s_30s': ['5–30 s', '5–30 秒'], gte_30s: ['≥30 s', '≥30 秒'] };
+    const OUTCOMES = new Set(['success', 'error', 'observed', 'empty', 'cancelled', 'rejected', 'confirmation']);
+    const BUCKETS = new Set(['lt_100ms', '100ms_1s', '1s_5s', '5s_30s', 'gte_30s']);
     const FEATURES = new Set([
       'overview', 'pane', 'pane.close', 'pane.refresh', 'pane.tab', 'pane.expand', 'issues', 'health', 'patterns',
       'agents', 'context', 'timeline', 'view', 'json', 'bundle', 'schemas', 'dashboard', 'dashboard.html', 'dashboard.stop',
@@ -384,27 +345,26 @@
       active_today: ['Active on last day', '报告最后一天活跃'],
       active_last_30_days: ['Active in last 30 days', '近 30 天活跃'],
       active_in_period: ['Active installations in period', '本期活跃安装实例'],
-      engaged_in_period: ['Engaged installations in period', '本期有操作的安装实例'],
+      engaged_in_period: ['Installations with actions in the period', '本期有操作的安装实例'],
       activation_only_in_period: ['Activation only in period', '本期仅激活'],
       returning_in_period: ['Returning in period', '本期回访'],
-      returning_engaged_in_period: ['Returning and engaged', '回访且有操作'],
+      returning_engaged_in_period: ['Returning installations with actions', '回访且有操作的安装实例'],
     };
     const ENGAGEMENT = {
       invocations: ['Tracked actions', '已记录操作'],
-      engaged_installations: ['Engaged installations', '有操作的安装实例'],
-      engaged_on_multiple_days: ['Engaged on multiple days', '在多天有操作'],
-      average_invocations_per_engaged_installation: ['Average actions per engaged installation', '每个有操作实例的平均操作数'],
-      average_days_per_engaged_installation: ['Average engaged days', '平均操作天数'],
+      engaged_installations: ['Installations with actions', '有操作的安装实例'],
+      engaged_on_multiple_days: ['Installations with actions on multiple days', '多天有操作的安装实例'],
+      average_invocations_per_engaged_installation: ['Average actions per installation with actions', '每个有操作实例的平均操作数'],
+      average_days_per_engaged_installation: ['Average days with actions', '平均操作天数'],
     };
     const DAILY = { active_installations: COPY.activeInstallations, engaged_installations: ENGAGEMENT.engaged_installations, new_installations: ['First seen', '首次出现'], returning_installations: ['Returning', '回访'], invocations: COPY.actions };
     const ACTIVITY_WINDOWS = { period: 'periodWindow', today: 'today', last_30_days: 'last30Days' };
     const ACTIVITY_COLUMNS = ['distinctAddresses', 'activeInstallations', 'addressInstallationPairs', 'addressCoverage', 'agentVersionCoverage'];
     const ROLLING_WINDOWS = { last_7_days: ['last7Days', 7], last_30_days: ['last30Days', 30] };
     const FEATURE_CATEGORIES = { command: 'commands', pane: 'panes', dashboard: 'dashboards' };
-    const COMPLETED_OUTCOMES = ['success', 'error', 'cancelled'];
     const FORMAT = 'trajviz-obs-usage-report';
     const VERSION = 3;
-    const MAX_FILE_SIZE = 5 * 1024 * 1024;
+    const MAX_REPORT_SIZE = 5 * 1024 * 1024;
     const VERSION_ROWS = 100;
     const BAR_ROWS = 12;
     const DAY_MS = 86_400_000;
@@ -412,7 +372,6 @@
     const VIEW_SECTIONS = ['adoption', 'daily', 'engagement', 'features', 'surfaces', 'versions', 'retention'];
     const BREAKDOWNS = { surfaces: 'surface', versions: 'version' };
     const viewModes = { features: 'table', surfaces: 'table', versions: 'table' };
-    const expandedFeatures = new Set();
     let locale = 'en';
     let number, percent, axisNumber, shortDate, date;
     const localized = pair => pair[locale === 'en' ? 0 : 1];
@@ -428,7 +387,7 @@
     const known = options => value => typeof value === 'string' && own(options, value);
     const nullable = predicate => value => value === null || predicate(value);
     const exact = (value, keys) => record(value) && Object.keys(value).length === keys.length && keys.every(key => own(value, key));
-    const countMap = options => value => record(value) && Object.entries(value).every(([key, item]) => own(options, key) && count(item));
+    const countMap = options => value => record(value) && Object.entries(value).every(([key, item]) => options.has(key) && count(item));
     const countFields = fields => Object.fromEntries(Object.keys(fields).map(key => [key, count]));
     const version = value => typeof value === 'string' && /^(?:0|[1-9][0-9]{0,3})(?:\.(?:0|[1-9][0-9]{0,3})){2}(?:-(?:alpha|beta|rc)\.[0-9]{1,3})?$/.test(value);
     const ACTIVITY_RULES = {
@@ -438,7 +397,7 @@
     const FEATURE_RULES = {
       feature: value => FEATURES.has(value), invocations: count, installations: count,
       outcomes: countMap(OUTCOMES), duration_buckets: countMap(BUCKETS), success_rate: nullable(rate), error_rate: nullable(rate),
-      p50_duration_bucket: nullable(known(BUCKETS)), p95_duration_bucket: nullable(known(BUCKETS)),
+      p50_duration_bucket: nullable(value => BUCKETS.has(value)), p95_duration_bucket: nullable(value => BUCKETS.has(value)),
     };
 
     class ReportError extends Error {
@@ -620,7 +579,7 @@
       for (const adapter of adapters) legend.append(node('span', seriesLabel(adapter), `adapter ${seriesClass(adapter)}`));
       target.append(legend);
       if (!rows.some(row => row[metric] > 0)) {
-        target.append(node('p', t(address ? 'unavailable' : 'noActivity'), 'no-data block'));
+        target.append(node('p', t(address ? 'noAddressActivity' : 'noActivity'), 'no-data block'));
         return;
       }
       const width = 580, height = 174, left = 52, right = 560, top = 14, bottom = 143;
@@ -767,53 +726,6 @@
       target.replaceChildren(table(labels(fields), rows, { numeric: [fields.length - 2, fields.length - 1], rowHeader: true }));
     }
 
-    function latencyCell(row) {
-      if (row.p50_duration_bucket === null && row.p95_duration_bucket === null) return t('unavailable');
-      const latency = node('div');
-      latency.append(node('span', `p50 ${localized(BUCKETS[row.p50_duration_bucket] ?? COPY.unavailable)}`, 'range'));
-      latency.append(node('span', `p95 ${localized(BUCKETS[row.p95_duration_bucket] ?? COPY.unavailable)}`, 'compact'));
-      const buckets = node('details');
-      buckets.dataset.feature = `${row.adapter}/${row.feature}`;
-      buckets.open = expandedFeatures.has(buckets.dataset.feature);
-      buckets.append(node('summary', t('buckets')));
-      for (const key of Object.keys(BUCKETS)) {
-        if (own(row.duration_buckets, key)) buckets.append(node('span', `${localized(BUCKETS[key])} · ${valueLabel(row.duration_buckets[key])}`, 'compact'));
-      }
-      latency.append(buckets);
-      return latency;
-    }
-
-    function drawReliability(report) {
-      const target = element('reliability');
-      for (const details of target.querySelectorAll('details[data-feature]')) {
-        if (details.open) expandedFeatures.add(details.dataset.feature);
-        else expandedFeatures.delete(details.dataset.feature);
-      }
-      // The adapter-level rows already contain exact counts across versions.
-      const selected = element('feature-version').value;
-      const source = selected === 'all' ? report.features : report.usage.features.filter(row => versionFilter(row) === selected);
-      const features = matchingFeatures(source);
-      if (!features.length) { showNoFeatures(target); return; }
-      const rows = features.map(row => {
-        const totals = COMPLETED_OUTCOMES.map(key => row.outcomes[key] ?? 0);
-        const completed = totals.reduce((total, value) => total + BigInt(value), 0n);
-        const results = totals.map((value, index) => node('span', t('outcomeRate', {
-          count: valueLabel(value), rate: rateLabel(completed ? Number(value) / Number(completed) : null),
-        }), `tag ${COMPLETED_OUTCOMES[index]}`));
-        const other = node('div', undefined, 'outcomes');
-        for (const key of Object.keys(OUTCOMES)) {
-          if (!COMPLETED_OUTCOMES.includes(key) && own(row.outcomes, key)) {
-            other.append(node('span', `${localized(OUTCOMES[key])} ${valueLabel(row.outcomes[key])}`, `tag ${key}`));
-          }
-        }
-        return [node('span', row.feature, 'feature-name'), adapterLabel(row.adapter), ...results,
-          valueLabel(completed), other.childElementCount ? other : '—', latencyCell(row)];
-      });
-      const headers = [...labels(['feature', 'codingAgent']), ...COMPLETED_OUTCOMES.map(key => localized(OUTCOMES[key])),
-        ...labels(['completed', 'otherOutcomes', 'latency'])];
-      target.replaceChildren(table(headers, rows, { numeric: [2, 3, 4, 5], rowHeader: true }));
-    }
-
     function drawBreakdown(report, id) {
       const target = element(`${id}-data`);
       const chart = updateViewRegion(target, id);
@@ -846,6 +758,7 @@
 
     function drawObservedActivity(activity) {
       element('observed-activity').hidden = !activity;
+      element('daily-addresses').hidden = !activity;
       element('agent-versions').hidden = !activity;
       if (!activity) return;
 
@@ -905,7 +818,6 @@
       drawAdoption(report, adoption);
       refreshVersionFilter(report.usage);
       drawFeatures(report);
-      drawReliability(report);
       const daily = visibleRows(report.daily).sort(byDay);
       const dates = [...new Set(daily.map(row => row.day))];
       drawChart(element('active-chart'), t('dailyActive'), 'active_installations', daily, dates);
@@ -920,6 +832,7 @@
       addTable(element('adoption'), t('installationActivity'), [t('metric'), ...adoption.map(row => adapterLabel(row.adapter))],
         metrics.map(([label, rows, key]) => [localized(label), ...adoption.map(item => valueLabel(rows.find(row => row.adapter === item.adapter)[key]))]),
         adoption.map((_, index) => index + 1));
+      element('adoption').append(node('p', t('activityDefinition'), 'subtle'));
 
       const retention = visibleRows(report.retention).sort((a, b) => a.adapter.localeCompare(b.adapter) || a.days_after_first_seen - b.days_after_first_seen);
       addTable(element('retention'), t('retention'), labels(['adapter', 'day', 'returned', 'eligible', 'rate']),
@@ -930,7 +843,6 @@
 
     let currentReport;
     let currentError;
-    let loadGeneration = 0;
     const languageButtons = document.querySelectorAll('[data-language]');
     const viewSwitches = document.querySelectorAll('[data-view-switch]');
     const languageStorageKey = 'trajviz-obs-usage-language';
@@ -941,19 +853,10 @@
       element('error').hidden = false;
     }
 
-    function showError(error, fallback = 'openFailed') {
-      currentError = error instanceof ReportError ? error : new ReportError(fallback);
-      updateError();
-    }
-
     function updateReportMeta() {
-      if (!currentReport) {
-        element('report-meta').textContent = t('viewer');
-        return;
-      }
       const { as_of: end, period_start: start, retention_days: days } = currentReport;
       const endLabel = date.format(dateMillis(end));
-      const range = start === end ? endLabel : `${date.format(dateMillis(start))} – ${endLabel}`;
+      const range = start === end ? endLabel : t('dateRange', { start: date.format(dateMillis(start)), end: endLabel });
       element('report-meta').textContent = t('period', { range, days: valueLabel(days) });
     }
 
@@ -970,43 +873,11 @@
       axisNumber = new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 });
       shortDate = new Intl.DateTimeFormat(locale, { timeZone: 'UTC', month: 'short', day: 'numeric' });
       date = new Intl.DateTimeFormat(locale, { timeZone: 'UTC', year: 'numeric', month: 'short', day: 'numeric' });
-      if (currentReport) render(currentReport);
-      updateReportMeta();
-      if (currentError) updateError();
-    }
-
-    function openReport(text) {
-      if (text.length > MAX_FILE_SIZE) throw new ReportError('oversized');
-      let data;
-      try { data = JSON.parse(text.replace(/^\uFEFF/, '')); }
-      catch { throw new ReportError('invalidJson'); }
-      const report = validate(data);
-      element('feature-filter').value = '';
-      element('feature-category').value = 'all';
-      element('feature-version').value = 'all';
-      element('features').replaceChildren();
-      element('reliability').replaceChildren();
-      expandedFeatures.clear();
-      render(report);
-      currentReport = report;
-      currentError = undefined;
-      element('error').hidden = true;
-      element('empty').hidden = true;
-      element('dashboard').hidden = false;
-      updateReportMeta();
-    }
-
-    async function openFile(files) {
-      const generation = ++loadGeneration;
-      if (!files?.length) return;
-      if (files.length !== 1) { showError(new ReportError('oneFile')); return; }
-      if (files[0].size > MAX_FILE_SIZE) { showError(new ReportError('oversized')); return; }
-      try {
-        const text = await files[0].text();
-        if (generation === loadGeneration) openReport(text);
-      } catch (error) {
-        if (generation === loadGeneration) showError(error);
+      if (currentReport) {
+        render(currentReport);
+        updateReportMeta();
       }
+      if (currentError) updateError();
     }
 
     for (const group of viewSwitches) {
@@ -1043,39 +914,26 @@
       });
     }
 
-    element('open-report').addEventListener('click', () => element('report-file').click());
-    element('report-file').addEventListener('change', event => {
-      void openFile(event.target.files);
-      event.target.value = '';
-    });
     element('adapter-filter').addEventListener('change', () => { if (currentReport) render(currentReport); });
     function updateFeatureFilter() {
       if (!currentReport) return;
       drawFeatures(currentReport);
-      drawReliability(currentReport);
     }
     element('feature-filter').addEventListener('input', updateFeatureFilter);
     element('feature-category').addEventListener('change', updateFeatureFilter);
     element('feature-version').addEventListener('change', updateFeatureFilter);
-    document.addEventListener('dragover', event => {
-      if (!event.dataTransfer?.types.includes('Files')) return;
-      event.preventDefault();
-      document.body.classList.add('dragging');
-    });
-    document.addEventListener('dragleave', event => {
-      if (!event.relatedTarget) document.body.classList.remove('dragging');
-    });
-    document.addEventListener('drop', event => {
-      if (!event.dataTransfer?.types.includes('Files')) return;
-      event.preventDefault();
-      document.body.classList.remove('dragging');
-      void openFile(event.dataTransfer.files);
-    });
 
-    const embedded = element('embedded-report').textContent.trim();
-    if (embedded.startsWith('{')) {
-      try { openReport(embedded); }
-      catch (error) { showError(error, 'embeddedFailed'); }
+    try {
+      const embedded = element('embedded-report').textContent.trim();
+      if (embedded.length > MAX_REPORT_SIZE) throw new ReportError('oversized');
+      const report = validate(JSON.parse(embedded));
+      render(report);
+      currentReport = report;
+      updateReportMeta();
+      element('dashboard').hidden = false;
+    } catch (error) {
+      currentError = error instanceof ReportError ? error : new ReportError('loadFailed');
+      updateError();
     }
   </script>
 </body>

@@ -76,18 +76,19 @@ python3 -m telemetry --database "$usage_db" publish \
 
 - `publish` requires `--html PATH`. It defaults to `--days 30` and a refresh every 3,600 seconds.
 - `report` defaults to 30 UTC days ending today. Set `--days N` or `--as-of YYYY-MM-DD` to change the window. Both the requested window and the rolling 30-day window must fit within retention. Use either `--html PATH` or `--json PATH`, or omit both for JSON on stdout.
-- Use **EN | 中** to switch between English and Simplified Chinese. The offline viewer opens report schemas 1–3, up to 5 MiB. Use the current viewer for schema 3 snapshots. [JSON viewer](viewer.html) [JSON schema](report.schema.json)
+- Use **EN | 中** to switch between English and Simplified Chinese in the live report or a saved HTML report. [JSON schema](report.schema.json)
 
 | Question | How the report counts it |
 | --- | --- |
 | Are people trying the plugin? | First-seen opt-in installations in the selected UTC period. The earliest recorded event date determines first seen. |
 | Do they come back? | Distinct active and returning installations in the trailing 7 and 30 UTC days. Active means at least one event, including activation. Returning means the collector first saw that installation before the window started and recorded activity in the window. |
 | What do they use? | Tracked command, dashboard, and pane actions in the selected period, filterable by coding agent and host version. Older uploads appear under **Unknown**. An installation may use multiple versions during a period. |
-| Where do they get stuck? | Success, error, and cancellation rates by feature. Each rate divides by the sum of those three outcomes. Empty results, rejections, confirmation prompts, and browser observations count as tracked events and stay out of that denominator. Features without eligible outcomes show unavailable rates. Browser interactions measure gestures. Native outcomes describe what the command reported. |
+
+The JSON export's `usage.features` includes success, error, and cancellation rates by feature and agent version. The denominator is the total of those three outcomes. Empty results, rejections, confirmation prompts, and browser observations count as tracked events and stay out of that denominator. Features without eligible outcomes have no rate. Browser interactions measure gestures. Native outcomes describe what the command reported. The top-level `features` rows retain the original denominator of success and error for older consumers.
 
 Installation IDs are scoped to the local state, adapter, and collector. OpenCode Desktop and terminal share an installation when they use the same server state. Clearing state or expiring inactive IDs can affect first-seen counts. Automatic refreshes and polls are excluded.
 
-Optional network counts are available in report details. They cover same-day uploads with address measurement enabled. Delayed and legacy events still contribute to installation activity. Shared networks can group multiple installations under one address, and an installation can upload from several addresses.
+The **IP counts** section shows distinct IPs and counts each pair of an IP and an installation. To collect these counts, set `TRAJVIZ_OBS_ADDRESS_KEY` on the collector and restart it. The collector measures IPs for new schema 2 uploads that arrive on the same UTC day as the event. Earlier, delayed, and legacy events still count toward installation activity. **Unavailable** means the collector has no IP data for that window. Open **Daily trends and breakdowns** for the daily chart and coding agent versions.
 
 Events include a UTC day, adapter, surface, allowlisted feature, outcome, latency bucket, plugin version, host version when available, and random installation and event IDs. Prompts, transcripts, paths, command arguments, account identifiers, and result text stay on the host. The collector stores a keyed digest for each measured address within the configured retention period. Raw addresses and address digests are omitted from exports and the built-in request logs. The offline HTML sends no usage events.
 
