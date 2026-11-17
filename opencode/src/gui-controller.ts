@@ -24,12 +24,13 @@ export type GuiHooks = {
   notice(text: string, error?: boolean): void
 }
 const display = (text: string) => { const clean = safeText(text); return clean.length > 64_000 ? clean.slice(0, 64_000) + '\n\nDisplay clipped. Export the full result with /obs json.' : clean }
-const pause = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+const pause = (signal: AbortSignal, milliseconds = 1000) => new Promise<void>((resolve, reject) => {
   signal.throwIfAborted()
   const abort = () => { clearTimeout(timer); reject(signal.reason) }
-  const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, 1000)
+  const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, milliseconds)
   signal.addEventListener('abort', abort, { once: true })
 })
+const rpcUnavailable = (error: unknown): boolean => typeof error === 'object' && error !== null && 'type' in error && error.type === 'rpc.unavailable'
 
 /** Browser-only coordinator; source reads and RPC always use the same authenticated server client. */
 export class GuiController {
@@ -102,9 +103,26 @@ export class GuiController {
     if (origin.id !== 'home') throw new Error('Session location is still loading. Try again when the session is ready.')
     return { directory: (await client.location.get(undefined, { signal })).directory }
   }
-  private async sync(client: OpenCodeClient, id: string, signal: AbortSignal): Promise<void> {
+  private checkClient(origin: GuiOrigin, client: OpenCodeClient, signal: AbortSignal): void {
+    signal.throwIfAborted()
+    if (origin.client() !== client) throw new Error('The server reconnected. Run the command again to refresh its result.')
+  }
+  private async waitForRpc<T>(origin: GuiOrigin, client: OpenCodeClient, signal: AbortSignal, call: () => Promise<T>): Promise<T> {
+    const delays = [200, 500, 1000]
+    for (let attempt = 0;; attempt++) {
+      this.checkClient(origin, client, signal)
+      try { return await call() }
+      catch (error) {
+        const delay = delays[attempt]
+        // The host rejected dispatch before the workspace plugin registered.
+        if (delay === undefined || !rpcUnavailable(error)) throw error
+        await pause(signal, delay)
+      }
+    }
+  }
+  private async sync(origin: GuiOrigin, client: OpenCodeClient, id: string, signal: AbortSignal): Promise<void> {
     const source = await captureSession(client, id, signal)
-    await client.rpc(Obs).sync({ source }, { location: { directory: source.directory }, signal })
+    await this.waitForRpc(origin, client, signal, () => client.rpc(Obs).sync({ source }, { location: { directory: source.directory }, signal }))
   }
   private cancelRemote(client: OpenCodeClient, runID: string, location?: LocationRef): void {
     try {
@@ -114,17 +132,17 @@ export class GuiController {
   private async remote(job: GuiJob, client: OpenCodeClient, input: RunInput,
                        options: { location: LocationRef; signal: AbortSignal }): Promise<CommandResult> {
     const rpc = client.rpc(Obs), { signal, location } = options
-    const check = () => {
-      signal.throwIfAborted()
-      if (job.origin.client() !== client) throw new Error('The server reconnected. Run the command again to refresh its result.')
-    }
+    const check = () => this.checkClient(job.origin, client, signal)
     let startError: unknown
     try {
-      // Every phase starts once. An ambiguous acknowledgement can be recovered
-      // by polling its existing identity, never by repeating paid work.
-      check()
-      try { await rpc.start(input, options) }
-      catch (error) { check(); startError = error }
+      // Retry rejected dispatch during registration. For an ambiguous acknowledgement,
+      // poll the existing phase identity instead of starting it again.
+      try { await this.waitForRpc(job.origin, client, signal, () => rpc.start(input, options)) }
+      catch (error) {
+        check()
+        if (rpcUnavailable(error)) throw error
+        startError = error
+      }
       for (;;) {
         check()
         const state = await rpc.poll({ sessionID: input.sessionID, runID: input.runID,
@@ -167,6 +185,9 @@ export class GuiController {
     let preflightOutcome: 'error' | 'rejected' = 'error'
     try {
       const location = await this.location(origin, client, signal), options = { location, signal }, parsed = parseArgs(args)
+      const resolve = (selector: string, captureSessionID?: string) => this.waitForRpc(origin, client, signal, () => rpc.resolve({
+        sessionID: origin.id, selector, ...(captureSessionID === undefined ? {} : { captureSessionID }),
+      }, options))
       const sessionless = isSessionlessCommand(parsed)
       const active = this.active.get(job.id)
       if (active) active.location = location
@@ -178,21 +199,21 @@ export class GuiController {
           throw new Error('Open a session first, or select a saved session with --session.')
         }
         if (typeof selector === 'string') {
-          const resolved = await rpc.resolve({ sessionID: origin.id, selector, ...(typeof captureID === 'string' ? { captureSessionID: captureID } : {}) }, options)
+          const resolved = await resolve(selector, typeof captureID === 'string' ? captureID : undefined)
           target = { id: resolved.sessionID, ...(resolved.path ? { selector: resolved.path, ...(typeof captureID === 'string' ? { captureSessionID: captureID } : {}) } : {}) }
         }
         key = this.key(origin, target); generation = this.claim(key)
-        if (!target.selector) await this.sync(client, target.id, signal)
+        if (!target.selector) await this.sync(origin, client, target.id, signal)
         if (parsed.sub === 'compare' || parsed.sub === 'scorecard') for (const other of parsed.positional) {
-          const resolved = await rpc.resolve({ sessionID: origin.id, selector: other }, options)
-          if (!resolved.path) await this.sync(client, resolved.sessionID, signal)
+          const resolved = await resolve(other)
+          if (!resolved.path) await this.sync(origin, client, resolved.sessionID, signal)
         }
       }
       if (parsed.sub === 'collect') {
         const collect = passArgs(args), selector = collect[1]
         if (collect[0] === 'opencode' && collect.length >= 2 && collect.length <= 3 && selector && selector !== 'help' && !selector.startsWith('-')) {
-          const resolved = await rpc.resolve({ sessionID: origin.id, selector }, options)
-          if (!resolved.path) await this.sync(client, resolved.sessionID, signal)
+          const resolved = await resolve(selector)
+          if (!resolved.path) await this.sync(origin, client, resolved.sessionID, signal)
         }
       }
       const input = { sessionID: origin.id, args, runID: job.id, model, useSynced: true, ...(paneSnapshot ? { paneSnapshot } : {}) }
@@ -243,8 +264,12 @@ export class GuiController {
     this.refreshes.set(key, controller); this.hooks.changed()
     try {
       const location = await this.location(origin, client, signal)
-      if (!target.selector) await this.sync(client, target.id, signal)
-      const snapshot = await client.rpc(Obs).snapshot({ sessionID: target.selector ? origin.id : target.id, useSynced: true, ...(target.selector ? { selector: target.selector, ...(target.captureSessionID ? { captureSessionID: target.captureSessionID } : {}) } : {}) }, { location, signal })
+      if (!target.selector) await this.sync(origin, client, target.id, signal)
+      const snapshot = await this.waitForRpc(origin, client, signal, () => client.rpc(Obs).snapshot({
+        sessionID: target.selector ? origin.id : target.id,
+        useSynced: true,
+        ...(target.selector ? { selector: target.selector, ...(target.captureSessionID ? { captureSessionID: target.captureSessionID } : {}) } : {}),
+      }, { location, signal }))
       if (this.closed || signal.aborted || origin.client() !== client || this.generations.get(key) !== generation) return 'cancelled'
       view.snapshots[target.id] = snapshot
       delete view.errors[target.id]
