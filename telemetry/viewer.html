@@ -29,7 +29,7 @@
     :focus-visible { outline: 3px solid #1076aa; outline-offset: 3px; }
     .frame { width: min(1260px, 100% - 48px); margin-inline: auto; }
     .masthead { padding: 36px 0 28px; background: #e8f0f4; border-bottom: 1px solid var(--line); }
-    .masthead-inner, .section-head, .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
+    .masthead-inner, .section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
     .section-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
     .view-switch, .language { display: inline-flex; align-items: center; gap: .15rem; padding: .2rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); }
     :is(.view-switch, .language) button { min-width: 2.35rem; min-height: 2rem; padding: .2rem .5rem; border: 0; border-radius: 5px; background: transparent; color: var(--accent); font-weight: 700; }
@@ -43,8 +43,7 @@
     .subtle, .meta { margin: 6px 0 0; color: var(--muted); font-size: .875rem; }
     main { padding-block: 22px 50px; }
     .error { margin: 0 0 16px; padding: .7rem .9rem; border-radius: 8px; background: #fff0f1; color: var(--negative); }
-    .toolbar { margin-bottom: 15px; }
-    .toolbar .subtle { margin: 0; }
+    .toolbar { display: flex; justify-content: flex-end; margin-bottom: 15px; }
     .field { display: flex; gap: .5rem; align-items: center; font-size: .875rem; font-weight: 650; }
     .field input, .field select { min-width: 0; padding: .43rem .55rem; border: 1px solid #aebfc9; border-radius: 7px; color: var(--ink); background: var(--surface); }
     .field input { width: min(10rem, 42vw); }
@@ -125,7 +124,6 @@
     <p id="error" class="error" role="alert" hidden></p>
     <div id="dashboard" hidden>
       <div class="toolbar">
-        <p class="subtle" data-copy="adapterHint">The report counts installations that enabled telemetry, separately for Claude Code and OpenCode.</p>
         <label class="field"><span data-copy="adapter">Coding agent</span> <select id="adapter-filter"><option value="all" data-copy="allAdapters">All agents</option><option value="claude-code">Claude Code</option><option value="opencode">OpenCode</option></select></label>
       </div>
       <div class="pair">
@@ -206,7 +204,6 @@
     const COPY = {
       title: ['Plugin usage', '插件使用统计'],
       language: ['Report language', '报告语言'],
-      adapterHint: ['The report counts installations that enabled telemetry, separately for Claude Code and OpenCode.', '只统计开启遥测的安装实例。Claude Code 和 OpenCode 分开计数。'],
       adapter: ['Coding agent', '编程智能体'],
       allAdapters: ['All agents', '全部智能体'],
       activeInstallations: ['Active installations', '活跃安装实例'],
@@ -520,6 +517,7 @@
     const visibleRows = rows => rows.filter(row => selectedAdapter() === 'all' || row.adapter === selectedAdapter());
     const sum = (rows, key) => rows.reduce((total, row) => total + BigInt(row[key]), 0n);
     const byDay = (left, right) => left.day.localeCompare(right.day) || left.adapter.localeCompare(right.adapter);
+    const newestDayFirst = (left, right) => right.day.localeCompare(left.day);
 
     function heading(target, title, detail) {
       target.replaceChildren(node('h2', title));
@@ -771,7 +769,7 @@
         { numeric, rowHeader: true }));
       drawChart(element('addresses-chart'), t('dailyAddresses'), 'distinct_addresses', daily, daily.map(row => row.day), { address: true });
       element('daily-network').replaceChildren(table(labels(['utcDay', ...ACTIVITY_COLUMNS]),
-        daily.map(row => [row.day, ...activityCells(row)]), { numeric, rowHeader: true }));
+        [...daily].sort(newestDayFirst).map(row => [row.day, ...activityCells(row)]), { numeric, rowHeader: true }));
 
       const target = element('agent-versions-data');
       const rows = visibleRows(activity.by_agent_version).sort((a, b) => b.events - a.events || a.adapter.localeCompare(b.adapter));
@@ -822,7 +820,8 @@
       const dates = [...new Set(daily.map(row => row.day))];
       drawChart(element('active-chart'), t('dailyActive'), 'active_installations', daily, dates);
       drawChart(element('actions-chart'), t('dailyActions'), 'invocations', daily, dates);
-      element('daily').replaceChildren(table([...labels(['utcDay', 'adapter']), ...Object.values(DAILY).map(localized)], daily.map(row => [
+      const dailyRows = [...daily].sort(newestDayFirst);
+      element('daily').replaceChildren(table([...labels(['utcDay', 'adapter']), ...Object.values(DAILY).map(localized)], dailyRows.map(row => [
         row.day, adapterLabel(row.adapter), ...Object.keys(DAILY).map(key => valueLabel(row[key])),
       ]), { numeric: [2, 3, 4, 5, 6], rowHeader: true }));
       drawObservedActivity(report.activity);
