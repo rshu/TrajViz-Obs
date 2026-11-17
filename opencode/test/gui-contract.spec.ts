@@ -57,6 +57,46 @@ async function fastPolling(run: (elapsed: () => number) => Promise<void>) {
 }
 
 describe('Desktop command coordination', () => {
+  test('waits for workspace RPC registration without running a command twice', async () => {
+    const h = connection(), { ui } = controller()
+    const unavailable = { type: 'rpc.unavailable', message: 'RPC is unavailable: trajviz-obs' }
+    h.rpc.sync.mockRejectedValueOnce(unavailable)
+    h.rpc.start.mockRejectedValueOnce(unavailable)
+    try {
+      const job = ui.start(h.origin, 'overview')
+      await job.done
+      expect(h.messages).toHaveBeenCalledTimes(1)
+      expect(h.rpc.sync).toHaveBeenCalledTimes(2)
+      expect(h.rpc.start.mock.calls.map(([input]) => input.runID)).toEqual([job.id, job.id])
+      expect(h.rpc.run).toHaveBeenCalledTimes(1)
+      expect(h.rpc.poll).toHaveBeenCalledTimes(1)
+      expect(ui.jobs.get(job.id)?.text).toBe('Done')
+
+      h.rpc.snapshot.mockRejectedValueOnce(unavailable)
+      expect(await ui.refresh(h.origin)).toBe('success')
+      expect(h.rpc.snapshot).toHaveBeenCalledTimes(2)
+    } finally { ui.dispose() }
+  })
+
+  test('cancelling during registration aborts the retry', async () => {
+    const h = connection(), { ui } = controller()
+    const rejected = Promise.withResolvers<void>()
+    h.rpc.start.mockImplementationOnce(async () => {
+      rejected.resolve()
+      throw { type: 'rpc.unavailable', message: 'RPC is unavailable: trajviz-obs' }
+    })
+    try {
+      const job = ui.start(h.origin, 'help')
+      await rejected.promise
+      await ui.cancel(h.origin)
+      await job.done
+      expect(h.rpc.start).toHaveBeenCalledTimes(1)
+      expect(h.rpc.run).not.toHaveBeenCalled()
+      expect(h.rpc.poll).not.toHaveBeenCalled()
+      expect(ui.jobs.get(job.id)?.text).toBe('Obs command cancelled.')
+    } finally { ui.dispose() }
+  })
+
   test('known commands that fail before Desktop dispatch report fixed outcomes once', async () => {
     const h = connection(), { ui } = controller()
     h.rpc.usageStatus.mockResolvedValue({ enabled: true })

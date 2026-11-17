@@ -43,6 +43,7 @@ type World = {
   env?: Record<string, string>
   settingsEnv?: Record<string, string>
   manifestVersion?: string
+  agentVersion?: string
   /** What a bridge child streams, by subcommand; absent: the URL line. A gate promise keeps the child alive until it resolves. */
   child?: Record<string, { chunks: ProcessSpawnChunk[]; code: number; gate?: Promise<void> }>
   /** Non-bridge commands by name; anything else cannot start. */
@@ -80,6 +81,7 @@ function host(on: On, world: World = {}): Host {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
   on('session.id', () => ({ value: 'abc' }))
+  if (world.agentVersion) on('session.version', () => ({ value: { version: world.agentVersion! } }))
   on('session.cwd', () => ({ value: CWD }))
   on('session.usage', () => ({ value: USAGE }))
   mock.env(on, { HOME, ...(world.env ?? {}) })
@@ -346,14 +348,15 @@ test('launch consent enables telemetry only for live dashboard and Converge chil
   const { ran, spawned } = host(on, {
     env: { TRAJVIZ_OBS_TELEMETRY: '1', TRAJVIZ_OBS_TELEMETRY_URL: 'https://collector.example/v1/events', TRAJVIZ_OBS_TELEMETRY_TOKEN: 'A'.repeat(43) },
     manifestVersion: '1.2.3',
+    agentVersion: '2.1.280',
     bridge: { dashboard: { exitCode: 0, stdout: JSON.stringify({ path: target }) } },
   })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await obs($, 'dashboard')
   await obs($, 'converge --data-root /runs')
   expect(children(spawned)).toEqual([
-    ['dashboard', '--transcript', DERIVED, '--window', '1000000', '--usage-adapter', 'claude-code', '--usage-version', '1.2.3'],
-    ['converge', '--data-root', '/runs', '--usage-adapter', 'claude-code', '--usage-version', '1.2.3'],
+    ['dashboard', '--transcript', DERIVED, '--window', '1000000', '--usage-adapter', 'claude-code', '--usage-version', '1.2.3', '--usage-agent-version', '2.1.280'],
+    ['converge', '--data-root', '/runs', '--usage-adapter', 'claude-code', '--usage-version', '1.2.3', '--usage-agent-version', '2.1.280'],
   ])
   expect((await obs($, `dashboard --html "${target}"`)).text).toContain(target)
   expect(ran.filter(argv => argv[3] === 'dashboard').map(argv => argv.slice(3))).toEqual([

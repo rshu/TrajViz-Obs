@@ -16,6 +16,6 @@ const types = await readFile(path.join(root, 'types/index.d.ts'), 'utf8')
 await writeFile(path.join(root, 'opencode/src/types.ts'), '// Shared bridge snapshot contract. Generated from types/index.d.ts by the package build.\n' + types.slice(types.indexOf('export type TranscriptInfo'), types.indexOf("export type SessionState")))
 
 await mkdir(path.join(root, 'opencode/src/shared'), { recursive: true })
-for (const name of ['args.ts', 'delivery-status.ts']) {
+for (const name of ['args.ts', 'delivery-status.ts', 'telemetry-version.ts']) {
   await cp(path.join(root, 'hooks/lib', name), path.join(root, 'opencode/src/shared', name))
 }

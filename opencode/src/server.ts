@@ -25,7 +25,7 @@ export default Plugin.define({
   id: 'trajviz-obs',
   async setup(ctx) {
     const backend = new Backend(ctx, optionsSchema.parse(ctx.options))
-    const report = createUsageReporter(backend.runtime)
+    const report = createUsageReporter(backend.runtime, ctx.app?.version)
     const awaiting = new Map<string, { confirmationID: string; feature: string; durationMs: number; surface: UsageSurface }>()
     const jobs = new Map<string, AbortController>()
     const asyncJobs = new CommandJobs({ cancelWork: runID => { jobs.get(runID)?.abort(); cancelModel(backend, runID) } })

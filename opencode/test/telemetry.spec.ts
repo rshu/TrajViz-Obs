@@ -52,12 +52,12 @@ test.skipIf(!python)('the reporter requires launch opt-in and spawns with only t
   const runtime = { bridge, telemetryPython: () => { probes++; return interpreter } }
   try {
     for (const [name, value] of entries) process.env[name] = value
-    const report = createUsageReporter(runtime)
+    const report = createUsageReporter(runtime, '2.2.5')
     const activation = { feature: 'activation', surface: 'unknown', outcome: 'success', durationMs: 0 } as const
     expect(report.enabled()).toBe(false)
     report(activation)
     await report.flush()
-    expect(dashboardUsageArgs()).toEqual([])
+    expect(dashboardUsageArgs('2.2.5')).toEqual([])
     process.env.TRAJVIZ_OBS_TELEMETRY = '1'
     delete process.env.TRAJVIZ_OBS_TELEMETRY_URL
     expect(report.enabled()).toBe(false)
@@ -66,7 +66,10 @@ test.skipIf(!python)('the reporter requires launch opt-in and spawns with only t
     expect(dashboardUsageArgs()).toEqual([])
     expect(probes).toBe(0)
     process.env.TRAJVIZ_OBS_TELEMETRY_URL = endpoint
-    expect(dashboardUsageArgs()).toEqual(['--usage-adapter', 'opencode', '--usage-version', expect.stringMatching(/^\d+\.\d+\.\d+/)])
+    const browserArgs = ['--usage-adapter', 'opencode', '--usage-version', expect.stringMatching(/^\d+\.\d+\.\d+/)]
+    expect(dashboardUsageArgs('2.2.5')).toEqual([...browserArgs, '--usage-agent-version', '2.2.5'])
+    expect(dashboardUsageArgs('2.2.5-private-build')).toEqual(browserArgs)
+    expect(dashboardUsageArgs('2.2.5\n')).toEqual(browserArgs)
 
     await writeFile(path.join(bridge, 'telemetry_client.py'), [
       'import json, os, sys',
@@ -102,8 +105,8 @@ test.skipIf(!python)('the reporter requires launch opt-in and spawns with only t
     const version = expect.stringMatching(/^\d+\.\d+\.\d+/)
     expect(captured).toHaveLength(2)
     expect(captured).toEqual(expect.arrayContaining([
-      { ...common, argv: ['--adapter', 'opencode', '--surface', 'unknown', '--feature', 'activation', '--outcome', 'success', '--duration-ms', '0', '--version', version] },
-      { ...common, argv: ['--adapter', 'opencode', '--surface', 'desktop', '--feature', 'dashboard.html', '--outcome', 'success', '--duration-ms', '13', '--version', version] },
+      { ...common, argv: ['--adapter', 'opencode', '--surface', 'unknown', '--feature', 'activation', '--outcome', 'success', '--duration-ms', '0', '--version', version, '--agent-version', '2.2.5'] },
+      { ...common, argv: ['--adapter', 'opencode', '--surface', 'desktop', '--feature', 'dashboard.html', '--outcome', 'success', '--duration-ms', '13', '--version', version, '--agent-version', '2.2.5'] },
     ]))
   } finally {
     for (const [name, value] of previous) {

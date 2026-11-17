@@ -19,6 +19,7 @@ type Settings = {
   consent?: string; endpoint?: string; token?: string; settingsEnv?: Record<string, string>;
   status?: unknown; withoutRuntime?: boolean; stateDirectory?: string; savedConsent?: 'on' | 'off';
   waitForSnapshot?: Promise<void>; savedDestination?: string; destinationError?: string; destinationCredentialInvalid?: boolean;
+  agentVersion?: string;
 }
 
 function host(on: On, settings: Settings, sender?: Promise<void>) {
@@ -48,6 +49,7 @@ function host(on: On, settings: Settings, sender?: Promise<void>) {
   on('classic.SessionStart', () => ({}))
   on('session.id', () => ({ value: 'test-session' }))
   on('session.cwd', () => ({ value: '/workspace' }))
+  if (settings.agentVersion) on('session.version', () => ({ value: { version: settings.agentVersion! } }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 100_000, percent: 0 }, rateLimits: [] } }))
   on('ui.toast', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
@@ -140,14 +142,14 @@ test('launch consent requires the exact opt-in and an endpoint before any runtim
 test('Claude records fixed feature names and outcomes without waiting for the sender', async ($, on) => {
   let release: () => void = () => {}
   const sender = new Promise<void>(resolve => { release = resolve })
-  const world = host(on, { consent: '1', endpoint: ENDPOINT, token: TOKEN }, sender)
+  const world = host(on, { consent: '1', endpoint: ENDPOINT, token: TOKEN, agentVersion: '2.1.280' }, sender)
   try {
     await $.session.start({ cwd: '/workspace', surface: 'desktop', isInteractive: true })
     const start = await world.call(1)
     expect(start.argv[0]).toBe(PYTHON)
     expect(start.argv.slice(3)).toEqual([
       '--adapter', 'claude-code', '--surface', 'desktop', '--feature', 'activation',
-      '--outcome', 'success', '--duration-ms', '0', '--version', '1.2.3',
+      '--outcome', 'success', '--duration-ms', '0', '--version', '1.2.3', '--agent-version', '2.1.280',
     ])
     expect(start.env).toEqual({ TRAJVIZ_OBS_TELEMETRY: '1', TRAJVIZ_OBS_TELEMETRY_URL: ENDPOINT, TRAJVIZ_OBS_TELEMETRY_TOKEN: TOKEN })
     expect(JSON.stringify(start.argv)).not.toContain(TOKEN)

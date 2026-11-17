@@ -68,22 +68,24 @@ _JS = r"""(actions, insight) => {
 
 
 class DashboardUsage:
-    def __init__(self, adapter: str, version: str) -> None:
+    def __init__(self, adapter: str, version: str, agent_version: str | None = None) -> None:
         self.adapter = adapter
         self.version = version
+        self.agent_version = agent_version
         self._lock = Lock()
         self._requested = False
         self._running = False
 
     @classmethod
-    def from_environment(cls, adapter: str | None, version: str | None) -> DashboardUsage | None:
+    def from_environment(cls, adapter: str | None, version: str | None,
+                         agent_version: str | None = None) -> DashboardUsage | None:
         # Only the host supplies these hidden arguments after checking consent.
         if adapter is None or version is None:
             return None
         # An opted-in dashboard can wait for a destination or credential correction while open.
         if usage_settings(os.environ, adapter).configuration == "disabled":
             return None
-        return cls(adapter, version)
+        return cls(adapter, version, agent_version)
 
     def _target(self) -> tuple[str, Path, str | None] | None:
         settings = usage_settings(os.environ, self.adapter)
@@ -97,7 +99,8 @@ class DashboardUsage:
             return
         endpoint, directory, _token = target
         if not queue_usage(endpoint, directory, adapter=self.adapter, surface="browser", feature=feature,
-                           outcome="observed", duration_ms=0, version=self.version, env=os.environ):
+                           outcome="observed", duration_ms=0, version=self.version, agent_version=self.agent_version,
+                           env=os.environ):
             return
         with self._lock:
             self._requested = True

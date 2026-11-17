@@ -158,7 +158,7 @@ Run `/obs telemetry_destination` to see the collector. Change it during a sessio
 
 For an authenticated collector, supply its token as `TRAJVIZ_OBS_TELEMETRY_TOKEN` in the host’s launch environment. In Claude Code, append `--use-launch-token` to associate the token with a new destination. In OpenCode, the server sends its launch token only to the exact endpoint configured in `TRAJVIZ_OBS_TELEMETRY_URL`. To change that endpoint, update the server’s launch environment, restart the server, and run `/obs telemetry_destination default` if a saved destination overrides it. Remote collectors require HTTPS. For local HTTP on a custom port, use a URL such as `http://127.0.0.1:8765`. Reopen dashboards that were started before telemetry was enabled to track browser actions.
 
-The sender reports the adapter, surface, plugin version, UTC day, allowlisted features, outcomes, coarse timing, and random installation and event IDs. Prompts, transcripts, paths, and command arguments stay on the host. Collector and HTML reporting development is tracked on `codex/telemetry-service`.
+The sender reports the adapter, surface, plugin version, UTC day, allowlisted features, outcomes, coarse timing, and random installation and event IDs. Compatible collectors also receive the coding agent version when available. Prompts, transcripts, paths, and command arguments stay on the host. Collector and HTML reporting development is tracked on `codex/telemetry-service`.
 
 ## Troubleshooting and limits
 

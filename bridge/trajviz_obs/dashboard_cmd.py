@@ -420,6 +420,7 @@ def _port(text: str) -> int:
 def _usage_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--usage-adapter", choices=ADAPTERS, help=argparse.SUPPRESS)
     parser.add_argument("--usage-version", help=argparse.SUPPRESS)
+    parser.add_argument("--usage-agent-version", help=argparse.SUPPRESS)
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -448,7 +449,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
 
 @register("dashboard")
 def _serve_dashboard(args: argparse.Namespace) -> dict | None:
-    usage = DashboardUsage.from_environment(args.usage_adapter, args.usage_version) if args.html is None else None
+    usage = DashboardUsage.from_environment(args.usage_adapter, args.usage_version, args.usage_agent_version) if args.html is None else None
     # The same directory selector accepted by /obs and /obs view must preload
     # its real parent file, so Gradio keeps its sibling subagent discovery.
     path = resolve_input_path(args.transcript)
@@ -505,7 +506,7 @@ def _write_html(run, source: Path, destination: Path, *, labels: Path | None, da
 
 @register("converge")
 def _serve_converge(args: argparse.Namespace) -> None:
-    usage = DashboardUsage.from_environment(args.usage_adapter, args.usage_version)
+    usage = DashboardUsage.from_environment(args.usage_adapter, args.usage_version, args.usage_agent_version)
     _dashboard()
     root = Path(args.data_root).resolve()
     if not root.is_dir():

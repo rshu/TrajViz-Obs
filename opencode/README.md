@@ -127,6 +127,8 @@ Run `/obs enable_telemetry` to opt in or `/obs disable_telemetry` to turn it off
 
 Run `/obs telemetry` to check delivery or `/obs telemetry_destination` to see the collector. `/obs telemetry_destination https://telemetry.example.com` changes it immediately on the connected server and adds `/v1/events` automatically. `default` restores the server’s launch setting or the loopback collector. For authenticated delivery, set `TRAJVIZ_OBS_TELEMETRY_TOKEN` and the full `/v1/events` URL in `TRAJVIZ_OBS_TELEMETRY_URL` in the server’s launch environment. The server uses that token only for this exact endpoint, including when a client specifies `--use-launch-token`. [Telemetry setup](https://github.com/rshu/TrajViz-Obs#usage-telemetry)
 
+Desktop and terminal clients on a shared OpenCode server share its telemetry installation ID. Agent version, when available, is the connected OpenCode server version.
+
 ## Development
 
 From the checkout's `opencode` directory (packaging also requires Node.js/npm):

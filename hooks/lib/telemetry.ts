@@ -3,6 +3,7 @@ import { SUBCOMMANDS, valueArgv, type Parsed } from './args'
 import { DELIVERY_STATUS_UNAVAILABLE, DESTINATION_STATUS_UNAVAILABLE, deliveryStatusText, destinationStatusText } from './delivery-status'
 import { isWindows } from './paths'
 import { findPython, pythonOverride, readEnvState } from './python'
+import { TELEMETRY_WORKER_TIMEOUT_MS, telemetryAgentVersion } from './telemetry-version'
 
 export type TelemetryOutcome = 'success' | 'error' | 'cancelled' | 'empty' | 'rejected' | 'confirmation'
 export type OutcomeTracker = { outcome: TelemetryOutcome }
@@ -96,12 +97,19 @@ export async function telemetryConsentAtStart($: EngineInterface): Promise<boole
   catch { return false }
 }
 
-async function launchTelemetry($: EngineInterface): Promise<(LaunchSettings & { version: string }) | undefined> {
+async function hostVersion($: EngineInterface): Promise<string | undefined> {
+  try { return telemetryAgentVersion((await $.session.version()).version) }
+  catch { return undefined }
+}
+
+async function launchTelemetry($: EngineInterface): Promise<(LaunchSettings & { version: string; agentVersion?: string }) | undefined> {
   const settings = await launchSettings($)
   if (!settings) return
   const manifest = JSON.parse(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)) as { version?: unknown }
   const version = manifest.version
-  if (typeof version === 'string' && /^\d+\.\d+\.\d+(?:[-+][\w.+-]+)?$/.test(version)) return { ...settings, version }
+  if (typeof version === 'string' && /^\d+\.\d+\.\d+(?:[-+][\w.+-]+)?$/.test(version)) {
+    return { ...settings, version, agentVersion: await hostVersion($) }
+  }
 }
 
 async function telemetryPython($: EngineInterface, options: PluginOptions): Promise<string | undefined> {
@@ -188,11 +196,15 @@ export async function telemetryDestination($: EngineInterface, options: PluginOp
   } catch { return { text: DESTINATION_STATUS_UNAVAILABLE } }
 }
 
-/** Live dashboards inherit the launch environment and need only the adapter and version. */
+/** Live dashboards inherit the launch environment and get their event labels from the host. */
 export async function dashboardUsageArgs($: EngineInterface): Promise<string[]> {
   try {
     const launch = await launchTelemetry($)
-    if (launch) return ['--usage-adapter', 'claude-code', '--usage-version', launch.version]
+    if (launch) {
+      const args = ['--usage-adapter', 'claude-code', '--usage-version', launch.version]
+      if (launch.agentVersion) args.push('--usage-agent-version', launch.agentVersion)
+      return args
+    }
   } catch {
     // Browser telemetry must never prevent launching a dashboard.
   }
@@ -210,8 +222,9 @@ async function sendTelemetry($: EngineInterface, options: PluginOptions, feature
     await $.process.run([
       python, '-I', `${root}/bridge/telemetry_client.py`, '--adapter', 'claude-code', '--surface', hostSurface,
       '--feature', feature, '--outcome', outcome, '--duration-ms', String(Math.max(0, elapsedMs)), '--version', launch.version,
+      ...(launch.agentVersion ? ['--agent-version', launch.agentVersion] : []),
     ], {
-      cwd: root, timeoutMs: 8_000,
+      cwd: root, timeoutMs: TELEMETRY_WORKER_TIMEOUT_MS,
       env: await telemetryEnv($, launch),
     })
   } catch {
