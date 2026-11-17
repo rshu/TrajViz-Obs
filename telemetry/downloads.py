@@ -16,6 +16,7 @@ _PACKAGE = re.compile(r"(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*")
 _MAX_RESPONSE = 4 * 1024 * 1024
 _RELEASE_PAGE_SIZE = 100
 _MAX_RELEASE_PAGES = 10
+_NPM_PERIOD_DAYS = {"last-day": 1, "last-week": 7, "last-month": 30}
 
 
 def _read_json(url: str):
@@ -108,13 +109,14 @@ def npm_downloads(package: str, period: str) -> dict:
     """Read daily package downloads for one standard registry reporting period."""
     if not _PACKAGE.fullmatch(package) or len(package) > 214:
         raise ValueError("expected an npm package name")
-    if period not in {"last-day", "last-week", "last-month"}:
+    if period not in _NPM_PERIOD_DAYS:
         raise ValueError("invalid npm reporting period")
+    expected_days = _NPM_PERIOD_DAYS[period]
     try:
         data = _read_json(f"https://api.npmjs.org/downloads/range/{period}/{quote(package, safe='')}")
         start, end = _day(data["start"]), _day(data["end"])
         rows = data["downloads"]
-        if start > end or not isinstance(rows, list) or len(rows) != (end - start).days + 1:
+        if (end - start).days + 1 != expected_days or not isinstance(rows, list) or len(rows) != expected_days:
             raise ValueError("invalid npm download range")
         counts = {}
         for row in rows:
@@ -151,7 +153,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default="rshu/TrajViz-Obs")
     parser.add_argument("--package", default="trajviz-obs-opencode")
-    parser.add_argument("--period", default="last-month", choices=("last-day", "last-week", "last-month"))
+    parser.add_argument("--period", default="last-month", choices=_NPM_PERIOD_DAYS)
     parser.add_argument("--github-traffic", action="store_true", help="Read 14-day repository clones via authenticated gh")
     parser.add_argument("--claude-directory-installs", nargs=3, metavar=("START", "END", "COUNT"),
                         help="Attach the install count from a live listing's Usage tab for an inclusive UTC date range")

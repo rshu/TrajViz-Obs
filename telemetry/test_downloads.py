@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import urllib.error
+from datetime import date, timedelta
 
 import pytest
 
@@ -19,8 +20,8 @@ def test_public_sources_report_downloads_separately(monkeypatch):
                 {"name": "draft.zip", "state": "open", "download_count": 20},
             ]}]
         assert url.endswith("/last-week/%40scope%2Fplugin")
-        return {"start": "2026-11-09", "end": "2026-11-10", "downloads": [
-            {"day": "2026-11-10", "downloads": 3}, {"day": "2026-11-09", "downloads": 0},
+        return {"start": "2026-11-09", "end": "2026-11-15", "downloads": [
+            {"day": f"2026-11-{day:02d}", "downloads": 3 if day == 10 else 0} for day in range(15, 8, -1)
         ]}
 
     monkeypatch.setattr(downloads, "_read_json", read)
@@ -29,18 +30,43 @@ def test_public_sources_report_downloads_separately(monkeypatch):
     assert npm["downloads"] == 3 and npm["daily"][0]["downloads"] == 0
 
 
-@pytest.mark.parametrize("days", [
-    ["2026-11-09", "2026-11-09"],  # Duplicate
-    ["2026-11-09"],  # Incomplete
-    ["2026-11-09", "2026-11-11"],  # Outside the returned period
-    ["2026-11-09", "2026-11-31"],  # Impossible date
+@pytest.mark.parametrize("last_day", [
+    "2026-11-09",  # Duplicate
+    None,  # Incomplete
+    "2026-11-16",  # Outside the returned period
+    "2026-11-31",  # Impossible date
 ])
-def test_inconsistent_npm_range_is_unavailable(monkeypatch, days):
+def test_inconsistent_npm_range_is_unavailable(monkeypatch, last_day):
+    days = [f"2026-11-{day:02d}" for day in range(9, 15)]
+    if last_day is not None:
+        days.append(last_day)
     monkeypatch.setattr(downloads, "_read_json", lambda _url: {
-        "start": "2026-11-09", "end": "2026-11-10",
+        "start": "2026-11-09", "end": "2026-11-15",
         "downloads": [{"day": day, "downloads": 3} for day in days],
     })
     assert downloads.npm_downloads("trajviz-obs-opencode", "last-week") == {
+        "status": "unavailable", "reason": "source_error",
+    }
+
+
+@pytest.mark.parametrize(("period", "expected_days", "wrong_days"), [
+    ("last-day", 1, 2), ("last-week", 7, 2), ("last-month", 30, 7),
+])
+def test_npm_range_matches_requested_period(monkeypatch, period, expected_days, wrong_days):
+    start = date(2026, 10, 31)
+
+    def response(days):
+        return {"start": start.isoformat(), "end": (start + timedelta(days=days - 1)).isoformat(), "downloads": [
+            {"day": (start + timedelta(days=offset)).isoformat(), "downloads": 0} for offset in range(days)
+        ]}
+
+    monkeypatch.setattr(downloads, "_read_json", lambda _url: response(expected_days))
+    measured = downloads.npm_downloads("trajviz-obs-opencode", period)
+    assert measured["status"] == "available"
+    assert measured["downloads"] == 0 and len(measured["daily"]) == expected_days
+
+    monkeypatch.setattr(downloads, "_read_json", lambda _url: response(wrong_days))
+    assert downloads.npm_downloads("trajviz-obs-opencode", period) == {
         "status": "unavailable", "reason": "source_error",
     }
 
