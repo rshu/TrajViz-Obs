@@ -22,12 +22,13 @@ from .credentials import issue_credential
 from .report import report
 
 
-@pytest.mark.parametrize(("kind", "adapter", "enabled"), [
-    ("dashboard", "claude-code", True),
-    ("converge", "opencode", True),
-    ("dashboard", "opencode", False),
+@pytest.mark.parametrize("kind, actions", [
+    ("dashboard", ("render", "tab", "inspect", "load", "export", "compare", "analyze", "attribution")),
+    ("converge", ("render", "tab", "compare")),
 ])
-def test_dashboard_usage_callbacks(tmp_path, client_bridge, kind, adapter, enabled):
+@pytest.mark.parametrize("adapter", ["claude-code", "opencode"])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_dashboard_usage_callbacks(tmp_path, client_bridge, kind, actions, adapter, enabled):
     source = native_run(tmp_path / "private-test-path.jsonl", "aaaaaaaa-0000-4000-8000-000000000001")
     database = tmp_path / "usage.sqlite3"
     queue_path = tmp_path / "sender"
@@ -64,7 +65,8 @@ def test_dashboard_usage_callbacks(tmp_path, client_bridge, kind, adapter, enabl
                                  if str(item["api_name"]).startswith("obs_usage_")}
                     assert not report(database, today=utc_day(), days=1)["features"]
                     if enabled:
-                        for action in ("render", "tab", "compare"):
+                        assert callbacks.keys() == {f"obs_usage_{action}" for action in actions}
+                        for action in actions:
                             name = f"obs_usage_{action}"
                             callback = callbacks[name]
                             assert callback["inputs"] == [] and callback["api_visibility"] == "private"
@@ -76,18 +78,18 @@ def test_dashboard_usage_callbacks(tmp_path, client_bridge, kind, adapter, enabl
                         deadline = monotonic() + 6
                         while True:
                             stats = report(database, today=utc_day(), days=1)
-                            if len(stats["features"]) >= 3 or monotonic() >= deadline:
+                            if len(stats["features"]) >= len(actions) or monotonic() >= deadline:
                                 break
                             sleep(0.05)
                         assert {entry["feature"] for entry in stats["features"]} == {
-                            f"{kind}.render", f"{kind}.tab", f"{kind}.compare",
+                            f"{kind}.{action}" for action in actions
                         }
                         for entry in stats["features"]:
                             assert entry["adapter"] == adapter
                             assert entry["outcomes"] == {"observed": 1}
                             assert entry["executed"] == 0 and entry["p95_duration_bucket"] is None
                         assert stats["surfaces"] == [{"adapter": adapter, "surface": "browser",
-                                                     "invocations": 3, "installations": 1}]
+                                                     "invocations": len(actions), "installations": 1}]
                     else:
                         assert not callbacks
                         assert not queue_path.exists()
