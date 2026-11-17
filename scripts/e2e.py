@@ -30,6 +30,7 @@ from optional_matrix import prepare_inputs as prepare_collectors
 ROOT = Path(__file__).resolve().parents[1]
 FAILURE = 'intentional observability smoke-test failure'
 OPENER = build_opener(ProxyHandler({}))
+OVERVIEW_PROVENANCE = r'^obs snapshot \d+ · .*assistant steps'
 
 
 def require(condition, message: str) -> None:
@@ -206,7 +207,7 @@ def exercise_comparisons(turn, output: Path) -> dict:
                     'Native intervention missed the known before/after improvement')
         turn('/obs converge-cli ' + arguments + ' --output summary', f'native Converge {mode} text',
              expected=r'Converge (?:Comparison Summary|Batch Comparison Summary|Intervention Report)')
-    turn('/obs', 'return to current session after comparisons', expected=r'obs snapshot \d+')
+    turn('/obs', 'return to current session after comparisons', expected=OVERVIEW_PROVENANCE)
     return {'anchored_comparisons': 2, 'scorecards': 2, 'converge_modes': 3}
 
 
@@ -231,7 +232,7 @@ def exercise_collectors(turn, output: Path, fixtures: dict) -> dict:
     turn(f'/obs --session "{legacy}"', 'native legacy CodeArts archive unsupported notice',
          expected=r'legacy message schema is not yet supported.*Re-export.*SQLite')
     require(source_hashes(output / 'collectors' / 'inputs') == before, 'A collector modified its source store')
-    turn('/obs', 'return to current session after collectors', expected=r'obs snapshot \d+')
+    turn('/obs', 'return to current session after collectors', expected=OVERVIEW_PROVENANCE)
     return {'collectors': 3, 'formats_reloaded': 3, 'legacy_archive_refused_as_trajectory': True,
             'source_stores_unchanged': True}
 
@@ -355,7 +356,7 @@ def exercise_command_matrix(turn, output: Path, session_id: str) -> dict:
              expected=rf'^obs view {re.escape(vid)} · ')
     commands = [
         ('/obs help', r'^/obs \[subcommand\]'),
-        ('/obs overview', r'obs snapshot \d+'),
+        ('/obs overview', OVERVIEW_PROVENANCE),
         ('/obs view', r'\d+ TrajViz views'),
         ('/obs issues --limit 1', r'^obs view issues'),
         ('/obs patterns', r'^obs view '), ('/obs agents', r'^obs view agents'),
@@ -365,7 +366,7 @@ def exercise_command_matrix(turn, output: Path, session_id: str) -> dict:
         (f'/obs --session {session_id[:8]}', r'obs snapshot \d+'),
         (f'/obs --session "{output / "export/trajectory.json"}"', r'obs snapshot \d+'),
         (f'/obs --session "{saved}"', r'\b23 assistant steps\b'),
-        ('/obs', r'obs snapshot \d+'),
+        ('/obs', OVERVIEW_PROVENANCE),
         ('/obs pane', r'obs pane (?:opened|is open but not drawn)'),
         ('/obs watch off', r'obs: watch off'), ('/obs watch on', r'obs: watch on'),
         ('/obs statusline on', r'obs: statusline on'), ('/obs statusline off', r'obs: statusline off'),
@@ -551,7 +552,9 @@ Use the tools to do this work; do not merely describe commands.'''
                                 'real native subagent turn', timeout=240)
                 check('native subagent completion',
                       lambda: wait_native_subagent(work, ledger['session_id'], env))
-            overview = turn('/obs', 'current-session overview', expected=r'obs snapshot \d+ · .*assistant steps')
+            # Bare /obs returns an overview when the stream-JSON host has no pane.
+            turn('/obs', 'headless overview fallback', expected=OVERVIEW_PROVENANCE)
+            overview = turn('/obs overview', 'current-session overview', expected=OVERVIEW_PROVENANCE)
             require(FAILURE in overview['result'], 'Overview did not identify the intentional failure')
             turn('/obs health', 'health view', expected=r'obs view health.*\n[\s\S]*Tool Success')
             turn('/obs view tool_usage', 'tool usage view', expected=r'obs view tool_usage.*\n[\s\S]*python')
@@ -576,7 +579,7 @@ Use the tools to do this work; do not merely describe commands.'''
                         'Native attribution lost the known objective diagnosis')
                 ledger['checks'].append({'label': 'real attribution native diagnosis', 'status': 'passed',
                                          'mode': 'offline objective detectors, no model judging'})
-                turn('/obs', 'current session after attribution', expected=r'obs snapshot \d+')
+                turn('/obs', 'current session after attribution', expected=OVERVIEW_PROVENANCE)
                 check('native bundle contains the parent and real subagent',
                       lambda: validate_bundle(output / 'session.zip', ledger['session_id'], subagents=bool(subagent)))
             extras = ['app'] if not args.skip_dashboard else []

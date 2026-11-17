@@ -341,10 +341,10 @@ test('manual overview and pane refresh keep the enabled status line current, inc
   const empty = { schema_version: 1, empty: true, reason: 'no_steps', transcript: { path: DERIVED } }
   const h = host(on, [SNAPSHOT, changed, refreshed, empty])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  await obs($, '')
+  await obs($, 'overview')
   await h.clock.settle()
   expect(h.statuses.at(-1)).toBe(LINE)
-  await obs($, '')
+  await obs($, 'overview')
   await h.clock.settle()
   expect(h.statuses.at(-1)).toContain('42 tools')
   const ui = await $.ui.mount({ plugin: 'trajviz-obs', surface: 'terminal', component: 'Pane', requestId: 'obs', props: {
@@ -362,14 +362,14 @@ test('manual overview and pane refresh keep the enabled status line current, inc
 test('session reload restores the configured status line after a manual override', { options: { statusline: false } }, async ($, on) => {
   const h = host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  await obs($, '')
+  await obs($, 'overview')
   await obs($, 'statusline on')
   expect(h.statuses.at(-1)).toBe(LINE)
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await h.clock.settle()
   expect(h.statuses.at(-1)).toBeUndefined()
   const cleared = h.statuses.length
-  await obs($, '')
+  await obs($, 'overview')
   await h.clock.settle()
   expect(h.statuses).toHaveLength(cleared)
 })
@@ -377,7 +377,7 @@ test('session reload restores the configured status line after a manual override
 test('setup finishes while restoring live usage is blocked, and a later off toggle keeps the line cleared', { options: { statusline: true } }, async ($, on) => {
   const h = host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  await obs($, '')
+  await obs($, 'overview')
   await h.clock.settle()
   h.statuses.length = 0
   const gate = blockUsage(h)
@@ -398,7 +398,7 @@ test('a session change prevents setup from restoring its old summary after a del
   on('classic.SessionStart', () => ({}))
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await $.classic.SessionStart({ source: 'startup', transcript_path: DERIVED, session_id: 'abc' })
-  await obs($, '')
+  await obs($, 'overview')
   await h.clock.settle()
   h.statuses.length = 0
   const gate = blockUsage(h)
@@ -417,7 +417,7 @@ test('a session change prevents setup from restoring its old summary after a del
 test('session reload redraws a configured status line without waiting for live usage', { options: { statusline: true } }, async ($, on) => {
   const h = host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  await obs($, '')
+  await obs($, 'overview')
   await obs($, 'statusline off')
   const blocked = blockUsage(h)
   const reload = $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
@@ -432,7 +432,7 @@ test('session reload redraws a configured status line without waiting for live u
 test('a blocked status-line usage read does not hold up export session selection', { options: { statusline: true, openBrowser: false } }, async ($, on) => {
   const h = host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  await obs($, '')
+  await obs($, 'overview')
   const gate = blockUsage(h)
   const drawing = obs($, 'statusline on')
   await gate.started
@@ -452,7 +452,7 @@ test('a blocked status-line usage read does not hold up export session selection
 test('a newer status-line draw wins when an older usage read finishes later', { options: { statusline: true } }, async ($, on) => {
   const h = host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  await obs($, '')
+  await obs($, 'overview')
   await h.clock.settle()
   h.statuses.length = 0
   const gate = blockUsage(h, { ...USAGE, context: { ...USAGE.context, percent: 99 } })
@@ -474,7 +474,7 @@ test('a newer status-line draw wins when an older usage read finishes later', { 
 test('turning the status line off while its usage read is blocked keeps it cleared', { options: { statusline: true } }, async ($, on) => {
   const h = host(on, [SNAPSHOT])
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  await obs($, '')
+  await obs($, 'overview')
   await h.clock.settle()
   h.statuses.length = 0
   const gate = blockUsage(h)
@@ -495,7 +495,7 @@ test('/clear completes while a status-line usage read is blocked and prevents it
   on('classic.SessionStart', () => ({}))
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await $.classic.SessionStart({ source: 'startup', transcript_path: DERIVED, session_id: 'abc' })
-  await obs($, '')
+  await obs($, 'overview')
   await h.clock.settle()
   h.statuses.length = 0
   const gate = blockUsage(h)
@@ -543,7 +543,7 @@ test('above 32 MB the watch degrades to manual and says so once', { options: { s
   expect(h.toasts).toEqual([LARGE_SESSION_TEXT])
   expect(h.statuses).toEqual([LARGE_SESSION_TEXT, LARGE_SESSION_TEXT])
   // `/obs` still computes.
-  expect((await obs($, '')).split('\n')[0]).toMatch(/^obs snapshot 1 · /)
+  expect((await obs($, 'overview')).split('\n')[0]).toMatch(/^obs snapshot 1 · /)
   expect(h.ran.map(r => r[3])).toEqual(['snapshot'])
 })
 

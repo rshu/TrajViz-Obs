@@ -3,39 +3,29 @@ import { captureSnapshot, isEmpty } from '../lib/snapshot'
 import { readLatest, readSession } from '../lib/state'
 import { markOutcome, type OutcomeTracker } from '../lib/telemetry'
 import { syncStatusLine } from '../lib/watch'
-import { openPane, PANE_ID, placePane } from '../render/pane'
+import { PANE_ID, placePane } from '../render/pane'
 import type { CommandContext } from './index'
-import { EMPTY_TEXT, captureSessionSpec, observedError, sessionSpec } from './overview'
-
-/** The fullscreen width from which `/obs` docks the pane unasked. */
-export const AUTO_OPEN_COLUMNS = 140
+import { EMPTY_TEXT, captureSessionSpec, observedError, overview, sessionSpec } from './overview'
 
 export const PANE_OPENED_TEXT = 'obs pane opened.'
 export const PANE_CLOSED_TEXT = 'obs pane closed.'
 
 /**
- * Opens the pane beside a fullscreen transcript wide enough for it
- * (`presentation.isFullscreen && columns >= 140`, docked `56` columns wide,
- * without taking the keyboard); answers whether it is drawn.
- */
-export async function maybeOpenPane($: EngineInterface, ctx: CommandContext): Promise<boolean> {
-  const p = ctx.presentation
-  if (!p?.isFullscreen || p.columns < AUTO_OPEN_COLUMNS) return false
-  return openPane($, { inline: false })
-}
-
-/**
  * One more snapshot for the pane (the `r` key, or `/obs pane` before any):
  * through the bridge for `spec`, else the session `--session` selected,
- * else the current one; stored as the latest, which redraws the pane. No
- * transcript row. An empty session is not stored, as `/obs` stores none.
- * Answers the row to show when nothing was stored (the error's, or the
- * empty state's), null when a snapshot was.
+ * else the current one. Publishing the result redraws the pane, including
+ * when an empty snapshot replaces older data. Returns text for an empty
+ * result or an error, and null for a populated snapshot.
  */
 export async function refreshPane($: EngineInterface, options: PluginOptions, spec?: string, captureSessionId?: string, telemetry?: OutcomeTracker): Promise<string | null> {
   const selected = (await readSession($)).selected
   const target = spec ?? selected?.path ?? undefined
   const capture = captureSessionId ?? (spec === undefined ? selected?.captureSessionId : undefined)
+  return updatePaneSnapshot($, options, target, capture, telemetry)
+}
+
+/** Capture exactly the requested session. An absent selector returns to the current session. */
+async function updatePaneSnapshot($: EngineInterface, options: PluginOptions, target?: string, capture?: string, telemetry?: OutcomeTracker): Promise<string | null> {
   let snap
   let generation
   try {
@@ -58,7 +48,17 @@ export async function pane($: EngineInterface, ctx: CommandContext): Promise<Com
     await $.ui.close({ id: PANE_ID })
     return { text: PANE_CLOSED_TEXT }
   }
-  const placed = await placePane($, { focus: true, inline: ctx.presentation?.isFullscreen !== true })
+  const inline = ctx.presentation?.isFullscreen !== true
+  if (ctx.args.trim() === '') {
+    try {
+      if (!(await placePane($, { inline })).isPlaced) return overview($, ctx)
+    } catch {
+      return overview($, ctx)
+    }
+    const error = await updatePaneSnapshot($, ctx.options, undefined, undefined, ctx.telemetry)
+    return error === null ? {} : { text: error }
+  }
+  const placed = await placePane($, { focus: true, inline })
   let text = placed.isPlaced ? PANE_OPENED_TEXT : `obs pane is open but not drawn: ${placed.reason}`
   const spec = sessionSpec(ctx)
   if (spec !== undefined || (await readLatest($)) === null) {

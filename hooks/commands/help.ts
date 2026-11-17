@@ -4,10 +4,10 @@ import type { CommandContext } from './index'
 /** The grouped command table, under 30 lines. */
 export const HELP_TEXT = [
   '/obs [subcommand] [options]  TrajViz observability; session commands take --session <id|prefix|path>',
-  'Start here: /obs for a quick summary; /obs dashboard for the full interactive view.',
+  'Start here: /obs opens the live pane. /obs overview prints a summary. /obs dashboard opens the browser.',
   'Captured sessions: sessions --session PATH lists IDs; add --session-id ID to a session command.',
   'Look',
-  '  overview (default)   health, KPIs, sparklines, top issues    pane | pane close   open/close the live pane',
+  '  pane | pane close   focus/close the live pane (1–7 tabs, d dashboard, r refresh, w watch)',
   '  issues | health | patterns | agents | context | timeline   diagnostic shortcuts (same options as view)',
   '  view [<id>] [k=v]... [--limit N] [--offset N] [--json]   the catalog, or one view (full data to views/<id>.json)',
   '    view and shortcuts: --limit 1–500 (default 25), --offset N (default 0), --json; k=v only for view.',

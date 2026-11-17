@@ -2,7 +2,7 @@
 // in register.tsx from the latest snapshot. A tab bar of plain Buttons with
 // hotkeys `1`–`7` (writing `paneTab`), an action row (`r` refresh, `w`
 // watch, `d` dashboard), the open tab's body sized to
-// `e.props.bodyColumns`, and a footer naming the snapshot. `openPane` and
+// `e.props.bodyColumns`, and a footer naming the snapshot. `placePane` and
 // `renderPane` are function declarations taking `$` (validate follows `$`
 // across an import only into one); state is reached through state.ts.
 import type { EngineInterface, HookFailure, PaneOpenArgs, PluginOptions, RenderElement, RenderInput, SessionUsage, Timer, UiOpenResult } from 'claude-code'
@@ -105,11 +105,6 @@ export async function placePane($: EngineInterface, opts: { focus?: boolean; inl
   if (opts.inline) args.rows = INLINE_ROWS
   else args.columns = DOCK_COLUMNS
   return $.ui.open(args)
-}
-
-/** `placePane`, answering whether the pane is drawn. */
-export async function openPane($: EngineInterface, opts: { focus?: boolean; inline: boolean }): Promise<boolean> {
-  return (await placePane($, opts)).isPlaced
 }
 
 /** Live usage, with a Context breakdown; the captured figures keep a delayed host usable. */

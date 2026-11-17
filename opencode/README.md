@@ -72,7 +72,7 @@ opencode
 
 For standalone sessions, close and rerun `opencode --standalone`. With `--server`, restart the connected server and reconnect the TUI instead. Complete an assistant response, then run `/obs` and `/obs dashboard`.
 
-In either interface, the first `/obs` installs a private TrajViz runtime and needs network access. Opening a dashboard adds its dependencies. Use `/obs doctor` to check setup or `/obs help` to list commands.
+In either interface, the first `/obs` prepares a private TrajViz runtime and needs network access. The live dashboard needs the optional `app` dependencies. Use `/obs doctor` to check setup or `/obs help` to list commands.
 
 ### Update or remove
 
@@ -82,7 +82,7 @@ To disable the adapter, remove its entry from the configuration you edited and r
 
 ## Use
 
-After an assistant response, run `/obs` for a summary, `/obs pane` for the live panel, or `/obs dashboard` for the browser dashboard. Use **Open dashboard** in Desktop or **Open URL** in the terminal; remote servers need port forwarding.
+After an assistant response, run `/obs` or `/obs overview` for a summary. Open the live panel with `/obs pane`, or start the browser dashboard with `/obs dashboard`. Use **Open dashboard** in Desktop or **Open URL** in the terminal. For a remote server, forward its displayed port.
 
 The [browser dashboard guide](https://github.com/rshu/TrajViz-Obs#browser-dashboard) covers per-step charts, Workflow, the execution timeline, and Deep Dive. For a saved session, use the stop command shown in the launch result. It includes the session selector and any capture session ID.
 
@@ -96,7 +96,7 @@ Focus the panel to switch tabs with **1–7**. In Desktop, use **Expand** for a 
 
 Use `/obs help` for all commands. Diagnostics, exports, comparisons, analysis, fixes, step labeling, and attribution follow the [shared usage guide](https://github.com/rshu/TrajViz-Obs#use). `/obs sessions` lists this project's saved sessions; session commands accept `--session <id|prefix|path>`.
 
-For a saved OTLP capture, use `/obs sessions --session /path/to/capture`, then `/obs --session /path/to/capture --session-id <id>`. Each selected session has separate artifacts and model history. Refresh imported sessions manually after their inputs change. TrajViz **0.5.1** provides all **36 views**, including `/obs view data_quality`.
+For a saved OTLP capture, use `/obs sessions --session /path/to/capture`, then `/obs overview --session /path/to/capture --session-id <id>`. Each selected session has separate artifacts and model history. Refresh imported sessions manually after their inputs change. TrajViz **0.5.1** provides all **36 views**, including `/obs view data_quality`.
 
 ## Options
 

@@ -8,6 +8,10 @@
 - Set dashboard ports and telemetry destinations from `/obs` while a session is running.
 - Add opt-in usage telemetry, with local consent controls and delivery status for both plugins.
 
+## Claude Code 0.3.9 — 2026-11-13
+
+- Open the live pane from Claude Code’s `/obs` without printing an overview card. Use `/obs overview` for a transcript summary.
+
 ## OpenCode 0.5.4 / Claude Code 0.3.8 — 2026-11-11
 
 - Keep browser Issues, AI analysis, and issue exports aligned with the recorded findings.
