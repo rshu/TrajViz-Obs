@@ -1,6 +1,6 @@
 # TrajViz-Obs telemetry service
 
-Telemetry is off by default. When enabled, Claude Code and OpenCode queue allowlisted usage events locally and send them in the background during plugin activity. The collector validates and deduplicates uploads in SQLite. A separate publisher reads aggregate statistics and refreshes a self-contained HTML report on a schedule.
+Telemetry is off by default. When enabled, Claude Code and OpenCode queue allowlisted usage events locally and send them in the background during plugin activity. The collector validates and deduplicates uploads in SQLite. The local service saves a JSON snapshot of the report. The separate publisher refreshes HTML and JSON on a schedule.
 
 Run the collector commands from the service checkout with Python 3.11 or newer. The quickstart uses a plugin build that supports `/obs enable_telemetry`.
 
@@ -12,7 +12,7 @@ Run the collector commands from the service checkout with Python 3.11 or newer. 
    python3 -m telemetry --database "$HOME/.local/state/trajviz-obs/usage.sqlite3" serve
    ```
 
-2. Open [the local report](http://127.0.0.1:8765/) in a browser. It shows the most recent 30 UTC days and reads fresh data on each reload.
+2. Open [the local report](http://127.0.0.1:8765/) in a browser. It shows the most recent 30 UTC days. The server writes `usage.sqlite3.report.json` next to the database at startup and refreshes it when you reload the report.
 
 3. In Claude Code or OpenCode, run `/obs enable_telemetry`, then `/obs help` and `/obs telemetry` to check delivery. The enable command uses the local collector on port 8765 when no endpoint is configured. For a custom port, run `/obs telemetry_destination http://127.0.0.1:PORT`.
 
@@ -45,7 +45,7 @@ application = create_production_app("/var/lib/trajviz-obs/usage.sqlite3")
 | --- | --- |
 | `--database PATH` | Required before the subcommand, except for `credentials`. Use the same SQLite file for collection, reporting, and maintenance. Pass the path as `database` to the WSGI factory. |
 | `--retention-days DAYS` | Defaults to 365 days (one year), accepts 32–365. Place before the subcommand and use the same value throughout, including the WSGI factory’s `retention_days`. |
-| `serve --port PORT` | The local service binds to `127.0.0.1:8765` by default. Use `0` to pick a free port. Startup prints the upload endpoint and the browser report URL. |
+| `serve --port PORT` | The local service binds to `127.0.0.1:8765` by default. Use `0` to pick a free port. Startup prints the upload endpoint, browser report URL, and local JSON path. |
 | `TRAJVIZ_OBS_ADDRESS_KEY` | Enables network address measurement. Supply 32 random bytes as 64 hexadecimal digits in the collector environment, or pass the same value as `address_key=` to the WSGI factory. Keep the key out of reports, logs, and backups of the database. |
 | `serve --credentials PATH` and `--require-auth` | The absolute path overrides `TRAJVIZ_OBS_INGEST_CREDENTIALS`. A configured registry authenticates uploads to `/v1/events`. `--require-auth` makes startup fail if no registry is configured. The browser report is available to local users. |
 | `serve --requests-per-minute N` and `--global-requests-per-minute N` | Defaults to 60 per credential and 600 overall per UTC minute for authenticated uploads. Set `1 ≤ per credential ≤ global ≤ 60,000`. The factory accepts the same settings as `requests_per_minute` and `global_requests_per_minute`. |
@@ -67,15 +67,15 @@ For the following commands, set `usage_db` to the collector’s database path. R
 
 ## Reports
 
-To keep a standalone HTML snapshot up to date, run the publisher as a separate process. It writes immediately and replaces the HTML atomically after each successful refresh. If a refresh fails, it keeps the previous report and retries at the next interval. Stop it with Ctrl+C or SIGTERM.
+To refresh the report without opening it in a browser, run the publisher as a separate process. It writes both files immediately, then refreshes them from the same snapshot on each interval. Each file replaces its previous copy atomically. Stop the publisher with Ctrl+C or SIGTERM.
 
 ```sh
 python3 -m telemetry --database "$usage_db" publish \
   --html /tmp/trajviz-usage.html --interval-seconds 3600
 ```
 
-- `publish` requires `--html PATH`. It defaults to `--days 30` and a refresh every 3,600 seconds.
-- `report` defaults to 30 UTC days ending today. Set `--days N` or `--as-of YYYY-MM-DD` to change the window. Both the requested window and the rolling 30-day window must fit within retention. Use either `--html PATH` or `--json PATH`, or omit both for JSON on stdout.
+- `publish` requires `--html PATH`. An output named `report.html` also writes `report.json` in the same directory. The default is `--days 30` with a refresh every 3,600 seconds.
+- `report` defaults to 30 UTC days ending today. Set `--days N` or `--as-of YYYY-MM-DD` to change the window. Both the requested window and the rolling 30-day window must fit within retention. Use `--html PATH` to write HTML and a JSON copy, or `--json PATH` for JSON alone. Omit both to print JSON to stdout.
 - Use **EN | 中** to switch between English and Simplified Chinese in the live report or a saved HTML report. [JSON schema](report.schema.json)
 
 | Question | How the report counts it |

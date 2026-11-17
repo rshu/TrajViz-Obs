@@ -1,4 +1,4 @@
-"""Refresh an offline HTML report from the collector database."""
+"""Refresh local HTML and JSON reports from the collector database."""
 
 from __future__ import annotations
 

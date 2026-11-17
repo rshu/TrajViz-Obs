@@ -10,6 +10,7 @@ import sys
 from datetime import date
 from pathlib import Path
 from socketserver import ThreadingMixIn
+from threading import Lock
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 from wsgiref.types import WSGIApplication
 
@@ -25,7 +26,7 @@ from .collector import (
     utc_day,
 )
 from .credentials import issue_credential, list_credentials, revoke_credential
-from .export import export_report, render_html, report_json
+from .export import export_report, live_json_path, render_html, report_json
 from .publish import publish_reports
 from .report import report
 
@@ -49,7 +50,20 @@ class _QuietHandler(WSGIRequestHandler):
             pass
 
 
-def _with_local_report(ingest: WSGIApplication, database: Path, retention_days: int) -> WSGIApplication:
+def _with_local_report(ingest: WSGIApplication, database: Path, retention_days: int,
+                       credentials: Path | None) -> WSGIApplication:
+    destination = live_json_path(database)
+    report_lock = Lock()
+
+    def refresh(*, as_html: bool) -> bytes:
+        with report_lock:
+            snapshot = report(database, today=utc_day(), retention_days=retention_days)
+            body = render_html(snapshot).encode("utf-8") if as_html else b""
+            export_report(snapshot, destination, database=database, as_html=False, credentials=credentials)
+            return body
+
+    refresh(as_html=False)
+
     def app(environ, start_response):
         environ["wsgi.multithread"] = True
         if environ["PATH_INFO"] != "/":
@@ -65,8 +79,7 @@ def _with_local_report(ingest: WSGIApplication, database: Path, retention_days: 
             headers.append(("Allow", "GET, HEAD"))
         else:
             try:
-                snapshot = report(database, today=utc_day(), retention_days=retention_days)
-                body = render_html(snapshot).encode("utf-8")
+                body = refresh(as_html=True)
             except (OSError, sqlite3.Error, ValueError):
                 status, body = "503 Service Unavailable", b"The usage report is temporarily unavailable.\n"
             else:
@@ -127,9 +140,9 @@ def main(argv: list[str] | None = None) -> int:
     summary.add_argument("--as-of", type=_day, help="Report end date in UTC. Defaults to today.")
     output = summary.add_mutually_exclusive_group()
     output.add_argument("--json", type=Path, metavar="PATH", help="Write a portable JSON report to a file.")
-    output.add_argument("--html", type=Path, metavar="PATH", help="Write a self-contained offline HTML report.")
-    publish = commands.add_parser("publish", help="Refresh an offline HTML report periodically.")
-    publish.add_argument("--html", type=Path, required=True, metavar="PATH", help="HTML report destination.")
+    output.add_argument("--html", type=Path, metavar="PATH", help="Write a self-contained HTML report and a JSON copy.")
+    publish = commands.add_parser("publish", help="Refresh local HTML and JSON reports periodically.")
+    publish.add_argument("--html", type=Path, required=True, metavar="PATH", help="HTML report destination, with a sibling JSON copy.")
     publish.add_argument("--days", type=int, default=30, help="Number of UTC days to include.")
     publish.add_argument("--interval-seconds", type=int, default=3600,
                          help="Time between refresh attempts (default: %(default)s).")
@@ -182,10 +195,11 @@ def main(argv: list[str] | None = None) -> int:
             ingest = create_app(database, retention_days=args.retention_days, credentials=args.credentials,
                                 require_auth=args.require_auth, requests_per_minute=args.requests_per_minute,
                                 global_requests_per_minute=args.global_requests_per_minute)
-            app = _with_local_report(ingest, database, args.retention_days)
+            app = _with_local_report(ingest, database, args.retention_days, args.credentials)
             with make_server("127.0.0.1", args.port, app, server_class=_LocalServer, handler_class=_QuietHandler) as server:
                 address = f"http://127.0.0.1:{server.server_port}"
-                print(f"{address}{EVENTS_PATH}", f"{address}/", sep="\n", file=sys.stderr, flush=True)
+                print(f"{address}{EVENTS_PATH}", f"{address}/", f"JSON report: {live_json_path(database)}",
+                      sep="\n", file=sys.stderr, flush=True)
                 try:
                     server.serve_forever()
                 except KeyboardInterrupt:
