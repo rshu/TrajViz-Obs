@@ -4,7 +4,7 @@ Inspect session health, tools, subagents, context use, and step labels with `/ob
 
 ## Install
 
-Requires **OpenCode 2**, [Bun](https://bun.sh) **1.3.0+**, and either [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Tested on terminal **2.2.5** and Desktop **2.2.6**.
+Requires **OpenCode 2**, [Bun](https://bun.sh) **1.3.0+**, and either [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Tested on terminal **2.2.5** and Desktop **2.2.7** on macOS.
 
 ### 1. Build the adapter and find its path
 
@@ -40,7 +40,7 @@ For a new file, paste the following and replace the example path with your `pwd`
 
 Use **`plugins` (plural)** for OpenCode 2. In an existing file, preserve other settings and add this top-level field, or append the adapter path to its existing array. If TrajViz Obs is already listed, update that entry in place. Save in nano with **Ctrl+O**, **Enter**, then exit with **Ctrl+X**.
 
-Alternatively, enable it for **one project only** by putting the entry in `opencode.json` or `opencode.jsonc` in that project's root directory. See OpenCode's [configuration](https://opencode.ai/v2/docs/config) and [plugin](https://opencode.ai/v2/docs/plugins) guides.
+Alternatively, enable it for **one project only** by putting the entry in `opencode.json` or `opencode.jsonc` in that project's root directory. See OpenCode's [configuration](https://opencode.ai/docs/config) and [plugin](https://opencode.ai/docs/plugins) guides.
 
 ### 3. Restart and verify
 
@@ -55,11 +55,11 @@ Alternatively, enable it for **one project only** by putting the entry in `openc
 /obs dashboard
 ```
 
-`/obs` opens the summary. `/obs dashboard` starts the browser dashboard; click **Open dashboard** in its result to view it. Stop the server with `/obs dashboard stop`.
+`/obs` opens the summary. If Enter selects it from the slash-command picker, press Enter again to submit it. `/obs dashboard` starts the browser dashboard. Click **Open dashboard** in its result, and run `/obs dashboard stop` when done.
 
 For an optional live panel beside the conversation, run `/obs pane`; use **Expand** for a larger view.
 
-If the plugin is missing, check the global configuration and the absolute adapter path from step 1, then restart the app. If its Desktop UI fails to load, use **Reload** on the plugin's settings row. See OpenCode's [Desktop plugin guidance](https://opencode.ai/v2/docs/plugins#desktop).
+If the plugin is missing, check the global configuration and the absolute adapter path from step 1, then restart the app. If its Desktop UI fails to load, use **Reload** on the plugin's settings row. See OpenCode's [Desktop plugin guidance](https://opencode.ai/docs/plugins#desktop).
 
 #### OpenCode terminal
 
@@ -72,7 +72,7 @@ opencode
 
 For standalone sessions, close and rerun `opencode --standalone`. With `--server`, restart the connected server and reconnect the TUI instead. Complete an assistant response, then run `/obs` and `/obs dashboard`.
 
-In either interface, the first `/obs` installs a private TrajViz runtime and needs network access. Opening a dashboard adds its dependencies. Use `/obs doctor` to check setup or `/obs help` to list commands.
+In either interface, the first `/obs` prepares a private TrajViz runtime and needs network access. The live dashboard needs the optional `app` dependencies. Use `/obs doctor` to check setup or `/obs help` to list commands.
 
 ### Update or remove
 
@@ -82,11 +82,13 @@ To disable the adapter, remove its entry from the configuration you edited and r
 
 ## Use
 
-After an assistant response, run `/obs` for a summary, `/obs pane` for the live panel, or `/obs dashboard` for the browser dashboard. Use **Open dashboard** in Desktop or **Open URL** in the terminal; remote servers need port forwarding.
+After an assistant response, run `/obs` or `/obs overview` for a summary. Open the live panel with `/obs pane`, or start the browser dashboard with `/obs dashboard`. Use **Open dashboard** in Desktop or **Open URL** in the terminal. For a remote server, forward its displayed port.
+
+The [browser dashboard guide](https://github.com/rshu/TrajViz-Obs#browser-dashboard) covers per-step charts, Workflow, the execution timeline, and Deep Dive. For a saved session, use the stop command shown in the launch result. It includes the session selector and any capture session ID.
 
 Use `/obs dashboard --html session.html` to save an offline copy. Add `--dark` for dark charts, or `--inline-plotly` to a live dashboard command to make its browser HTML exports work offline.
 
-The panel has Overview, Tools, Issues, Patterns, Agents, Context, and Timeline tabs. See the [demo screenshots](../README.md#demo). `/obs pane close` closes it. `/obs watch off` disables automatic refresh; `/obs statusline on` adds a compact status summary. `/obs cancel` cancels a running command.
+The panel has Overview, Tools, Issues, Patterns, Agents, Context, and Timeline tabs. See the [demo screenshots](https://github.com/rshu/TrajViz-Obs#demo). `/obs pane close` closes it. `/obs watch off` disables automatic refresh; `/obs statusline on` adds a compact status summary. `/obs cancel` cancels a running command.
 
 Overview charts show tokens, context, and step time excluding recorded subagent waits. Tools ranks calls and outcomes; Agents shows activity by work step. Charts follow OpenCode's theme and distinguish missing measurements from zero. Set `NO_COLOR=1` for monochrome terminal charts.
 
@@ -94,7 +96,7 @@ Focus the panel to switch tabs with **1–7**. In Desktop, use **Expand** for a 
 
 Use `/obs help` for all commands. Diagnostics, exports, comparisons, analysis, fixes, step labeling, and attribution follow the [shared usage guide](https://github.com/rshu/TrajViz-Obs#use). `/obs sessions` lists this project's saved sessions; session commands accept `--session <id|prefix|path>`.
 
-For a saved OTLP capture, use `/obs sessions --session /path/to/capture`, then `/obs --session /path/to/capture --session-id <id>`. Each selected session has separate artifacts and model history. Refresh imported sessions manually after their inputs change. TrajViz **0.5.0** provides all **36 views**, including `/obs view data_quality`.
+For a saved OTLP capture, use `/obs sessions --session /path/to/capture`, then `/obs overview --session /path/to/capture --session-id <id>`. Each selected session has separate artifacts and model history. Refresh imported sessions manually after their inputs change. TrajViz **0.5.1** provides all **36 views**, including `/obs view data_quality`.
 
 ## Options
 
@@ -104,7 +106,7 @@ To set options, replace the adapter's existing string entry with an object:
 {
   "plugins": [{
     "package": "/absolute/path/TrajViz-Obs/opencode",
-    "options": { "watch": true, "statusline": false, "openBrowser": false }
+    "options": { "watch": true, "statusline": false, "openBrowser": false, "dashboardPort": 0 }
   }]
 }
 ```
@@ -115,9 +117,17 @@ Desktop remembers watch and statusline toggles in its own preferences, overridin
 
 `python` overrides interpreter discovery; `trajvizSource` overrides the TrajViz requirement. `cacheRoot` moves the private runtime and session artifacts. Dashboards bind to localhost and stop with `/obs dashboard stop`, `/obs converge stop`, or plugin unload.
 
+Use `/obs dashboard port` to see the effective default or `/obs dashboard port 7863` to change it on the connected server during a session. It applies to the next dashboard launch. `auto` selects a port automatically and `default` restores `dashboardPort` from the plugin options. `dashboardPort: 0` means automatic selection. `/obs dashboard --port N` overrides the default for one launch.
+
 Desktop and the TUI read full history from their connected server. Headless tool calls discover OpenCode's local service; custom servers can set `serverUrl` to a loopback URL on that server's host and `serverPasswordEnv` (default `OPENCODE_PASSWORD`). Set the named password variable in that server's launch environment. History before compaction is retained. Forks remain separate runs; confirmed subagent sessions appear in the parent trajectory.
 
 Live captures are limited to 32 MiB and 64 sessions in one family. For larger inputs, export the session and use `--session /path/to/export.json`.
+
+Run `/obs enable_telemetry` to opt in or `/obs disable_telemetry` to turn it off in Desktop or the terminal. Both save the preference on the connected OpenCode server, where it takes effect immediately and persists across restarts. Disabling pauses queued uploads. After enabling, reopen any existing dashboards to include browser interactions.
+
+Run `/obs telemetry` to check delivery or `/obs telemetry_destination` to see the collector. `/obs telemetry_destination https://telemetry.example.com` changes it immediately on the connected server and adds `/v1/events` automatically. `default` restores the server’s launch setting or the loopback collector. For authenticated delivery, set `TRAJVIZ_OBS_TELEMETRY_TOKEN` and the full `/v1/events` URL in `TRAJVIZ_OBS_TELEMETRY_URL` in the server’s launch environment. The server uses that token only for this exact endpoint, including when a client specifies `--use-launch-token`. [Telemetry setup](https://github.com/rshu/TrajViz-Obs#usage-telemetry)
+
+Desktop and terminal clients on a shared OpenCode server share its telemetry installation ID. Agent version, when available, is the connected OpenCode server version.
 
 ## Development
 

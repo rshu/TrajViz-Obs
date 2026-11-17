@@ -59,7 +59,7 @@ def _numbers(snap: dict) -> str:
     return " · ".join([
         _plural(counts.get("assistant_steps"), "assistant step"), _plural(counts.get("prompts"), "prompt"),
         _plural(counts.get("agents"), "agent"), f"{_num(tokens.get('total'))} tokens ({split})", calls,
-        f"wall clock {_duration(timing.get('wall_clock_s'))}",
+        f"wall clock {timing.get('wall_clock_fmt') or _duration(timing.get('wall_clock_s'))}",
     ])
 
 

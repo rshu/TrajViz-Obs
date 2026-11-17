@@ -33,7 +33,7 @@ const INSTALLING_APP = "obs: installing TrajViz's app extra (the dashboards, dow
 const DECLINED = "TrajViz's app extra is not installed (the dashboards need it); /obs setup --extras app installs it."
 
 const stateJson = (extras: string[]): string =>
-  JSON.stringify({ revision: 6, python: VENV_PY, trajviz: '0.5.0', extras, source: 'agent-trajviz==0.5.0', createdAt: 1 })
+  JSON.stringify({ revision: 6, python: VENV_PY, trajviz: '0.5.1', extras, source: 'agent-trajviz==0.5.1', createdAt: 1 })
 
 type RunAnswer = { exitCode: number; stdout: string; stderr?: string }
 
@@ -41,6 +41,9 @@ type World = {
   /** The extras `state.json` lists. */
   extras?: string[]
   env?: Record<string, string>
+  settingsEnv?: Record<string, string>
+  manifestVersion?: string
+  agentVersion?: string
   /** What a bridge child streams, by subcommand; absent: the URL line. A gate promise keeps the child alive until it resolves. */
   child?: Record<string, { chunks: ProcessSpawnChunk[]; code: number; gate?: Promise<void> }>
   /** Non-bridge commands by name; anything else cannot start. */
@@ -78,11 +81,17 @@ function host(on: On, world: World = {}): Host {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
   on('session.id', () => ({ value: 'abc' }))
+  if (world.agentVersion) on('session.version', () => ({ value: { version: world.agentVersion! } }))
   on('session.cwd', () => ({ value: CWD }))
   on('session.usage', () => ({ value: USAGE }))
   mock.env(on, { HOME, ...(world.env ?? {}) })
   mock.clock(on, { now: NOW })
-  on('fs.read', (_, e) => e.path in files ? { value: files[e.path] as string } : { deny: `ENOENT: ${e.path}` })
+  mock.store(on)
+  on('settings.read', () => ({ value: world.settingsEnv ? { env: world.settingsEnv } : {} }))
+  on('fs.read', (_, e) => {
+    if (world.manifestVersion && e.path.endsWith('/.claude-plugin/plugin.json')) return { value: JSON.stringify({ version: world.manifestVersion }) }
+    return e.path in files ? { value: files[e.path] as string } : { deny: `ENOENT: ${e.path}` }
+  })
   on('fs.write', (_, e) => {
     files[e.path] = e.text
     return { value: undefined }
@@ -144,7 +153,7 @@ function host(on: On, world: World = {}): Host {
     spawned.push({ argv: [...e.argv], cwd: e.cwd })
     if (e.argv.some(a => a.endsWith('/bridge/bootstrap.py'))) {
       const req = JSON.parse(e.argv[e.argv.indexOf('--request') + 1] as string)
-      const state = { revision: 6, python: VENV_PY, pythonOption: req.pythonOption, trajviz: '0.5.0', extras: [...new Set(['llm', 'charts', 'zstd', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
+      const state = { revision: 6, python: VENV_PY, pythonOption: req.pythonOption, trajviz: '0.5.1', extras: [...new Set(['llm', 'charts', 'zstd', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
       files[STATE_PATH] = JSON.stringify(state)
       timeline.push('pip')
       yield { stream: 'stderr' as const, text: 'Installed\n' }
@@ -212,7 +221,7 @@ test('dashboard asks, announces and installs the app extra, starts the bridge ch
   expect(asked).toEqual([ASK_APP])
   expect(rows).toEqual([INSTALLING_APP])
   expect(timeline).toEqual(['ask', 'row', 'pip', 'child', 'open'])
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.5.0', extras: ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app'] })
+  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.5.1', extras: ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app'] })
   expect(children(spawned)).toEqual([['dashboard', '--transcript', DERIVED, '--window', '1000000', '--port', '7777']])
   expect(spawned[1]?.argv.slice(0, 2)).toEqual([VENV_PY, '-I'])
   expect(spawned[1]?.argv[2]).toMatch(/\/bridge\/trajviz_obs_cli\.py$/)
@@ -255,6 +264,49 @@ test('a running dashboard is named again, kept in state, stopped by stop and by 
   release2()
 })
 
+test('the default dashboard port changes during a session and applies on the next launch', { options: { dashboardPort: 7881, openBrowser: false } }, async ($, on) => {
+  let release = () => {}
+  const world: World = { child: { dashboard: { chunks: [URL_CHUNK], code: 0, gate: new Promise<void>(r => (release = r)) } } }
+  const { spawned, dashboards } = host(on, world)
+  const session = { cwd: CWD, surface: 'terminal' as const, isInteractive: true }
+  try {
+    await $.session.start(session)
+    expect((await obs($, 'dashboard port')).text).toContain('7881 (configuration default)')
+    expect(spawned).toEqual([])
+    await obs($, 'dashboard')
+    expect(children(spawned).at(-1)?.slice(-2)).toEqual(['--port', '7881'])
+
+    expect((await obs($, 'dashboard port 7882')).text).toContain('7882 (saved preference)')
+    expect(spawned).toHaveLength(1)
+    expect(dashboards()?.insight).toEqual({ url: URL, port: 7860 })
+    await obs($, 'dashboard stop')
+    release()
+    world.child = undefined
+    await $.session.end(END)
+    await $.session.start(session)
+    expect((await obs($, 'dashboard port')).text).toContain('7882 (saved preference)')
+    await obs($, 'dashboard')
+    expect(children(spawned).at(-1)?.slice(-2)).toEqual(['--port', '7882'])
+    await obs($, 'dashboard --port 7883')
+    expect(children(spawned).at(-1)?.slice(-2)).toEqual(['--port', '7883'])
+
+    const denied = await $.command.run({ command: 'obs', args: 'dashboard port 7884', origin: { kind: 'sdk' },
+      presentation: { isFullscreen: false, columns: 80 } })
+    expect(denied.text).toContain('directly in the Claude Code composer')
+    for (const args of ['dashboard port 0', 'dashboard port 65536', 'dashboard port auto --port 7884']) {
+      expect((await obs($, args)).text).toContain('Usage: /obs dashboard port')
+    }
+    expect((await obs($, 'dashboard port')).text).toContain('7882 (saved preference)')
+    expect((await obs($, 'dashboard port auto')).text).toContain('Automatic (saved preference)')
+    await obs($, 'dashboard')
+    expect(children(spawned).at(-1)).not.toContain('--port')
+    expect((await obs($, 'dashboard port default')).text).toContain('7881 (configuration default)')
+  } finally {
+    await $.session.end(END)
+    release()
+  }
+})
+
 test('dashboard --session persists its resolved selection and sends only dashboard flags', async ($, on) => {
   const { spawned, selection } = host(on, { bridge: { resolve: { exitCode: 0, stdout: JSON.stringify({ path: '/outside/my run.jsonl', session_id: 'other', kind: 'file' }) } } })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
@@ -288,6 +340,45 @@ test('dashboard HTML export uses the selected source and writes a file without s
     ['dashboard', '--transcript', DERIVED, '--window', '1000000', '--dark', '--html', target],
   ])
   expect(spawned).toEqual([])
+  await $.session.end(END)
+})
+
+test('launch consent enables telemetry only for live dashboard and Converge children', { options: { openBrowser: false } }, async ($, on) => {
+  const target = '/tmp/a dashboard.html'
+  const { ran, spawned } = host(on, {
+    env: { TRAJVIZ_OBS_TELEMETRY: '1', TRAJVIZ_OBS_TELEMETRY_URL: 'https://collector.example/v1/events', TRAJVIZ_OBS_TELEMETRY_TOKEN: 'A'.repeat(43) },
+    manifestVersion: '1.2.3',
+    agentVersion: '2.1.280',
+    bridge: { dashboard: { exitCode: 0, stdout: JSON.stringify({ path: target }) } },
+  })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, 'dashboard')
+  await obs($, 'converge --data-root /runs')
+  expect(children(spawned)).toEqual([
+    ['dashboard', '--transcript', DERIVED, '--window', '1000000', '--usage-adapter', 'claude-code', '--usage-version', '1.2.3', '--usage-agent-version', '2.1.280'],
+    ['converge', '--data-root', '/runs', '--usage-adapter', 'claude-code', '--usage-version', '1.2.3', '--usage-agent-version', '2.1.280'],
+  ])
+  expect((await obs($, `dashboard --html "${target}"`)).text).toContain(target)
+  expect(ran.filter(argv => argv[3] === 'dashboard').map(argv => argv.slice(3))).toEqual([
+    ['dashboard', '--transcript', DERIVED, '--window', '1000000', '--html', target],
+  ])
+  await $.session.end(END)
+})
+
+test('project settings cannot supply telemetry credentials to either dashboard child', { options: { openBrowser: false } }, async ($, on) => {
+  const endpoint = 'https://project.example/v1/events'
+  const { spawned } = host(on, {
+    env: { TRAJVIZ_OBS_TELEMETRY: '1', TRAJVIZ_OBS_TELEMETRY_URL: endpoint, TRAJVIZ_OBS_TELEMETRY_TOKEN: 'A'.repeat(43) },
+    settingsEnv: { TRAJVIZ_OBS_TELEMETRY_TOKEN: 'A'.repeat(43) },
+    manifestVersion: '1.2.3',
+  })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  await obs($, 'dashboard')
+  await obs($, 'converge --data-root /runs')
+  expect(children(spawned)).toEqual([
+    ['dashboard', '--transcript', DERIVED, '--window', '1000000'],
+    ['converge', '--data-root', '/runs'],
+  ])
   await $.session.end(END)
 })
 
@@ -489,7 +580,7 @@ test('the app install is declined by Not now or a dismissed ask, and not asked o
   expect(asked).toHaveLength(2)
   expect(rows).toEqual([INSTALLING_APP])
   expect(timeline).toEqual(['ask', 'ask', 'row', 'pip', 'child', 'open'])
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.5.0', extras: ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app'] })
+  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.5.1', extras: ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app'] })
   expect(children(spawned)).toEqual([['dashboard', '--transcript', DERIVED, '--window', '1000000']])
   await $.session.end(END)
 })
@@ -518,7 +609,7 @@ test('converge asks, announces and installs the app extra once, and takes the da
   expect(asked).toEqual([ASK_APP])
   expect(rows).toEqual([INSTALLING_APP])
   expect(timeline).toEqual(['ask', 'row', 'pip', 'child', 'open'])
-  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.5.0', extras: ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app'] })
+  expect(setupRequests(spawned)[0]).toMatchObject({ source: 'agent-trajviz==0.5.1', extras: ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app'] })
   expect(children(spawned)).toEqual([['converge', '--data-root', PROJECT_DIR]])
   expect(out.text).toBe(`Converge dashboard at ${URL} over ${PROJECT_DIR}; opened in the browser. /obs converge stop ends it.`)
   expect(ran.filter(r => r[0] === 'open')).toEqual([['open', URL]])

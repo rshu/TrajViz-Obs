@@ -37,7 +37,8 @@ def native_ui_session(tmp_path):
             row["message"] = {"role": kind, "content": content}
             if kind == "assistant":
                 row["message"].update(id=f"message-{prefix}-{index}", model="claude-test",
-                                      usage={"input_tokens": 11, "output_tokens": 3})
+                                      usage={"input_tokens": 11, "output_tokens": 3,
+                                             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0})
         else:
             row["content"] = content
         return row
@@ -94,7 +95,7 @@ def test_native_local_command_filter_preserves_source_identity_and_tools(native_
             for item in (path, child_path):
                 archive.write(item, item.relative_to(path.parent))
     run = load_run(str(source))
-    assert run.raw["_trajviz_obs_ignored_ui_records"] == 8
+    assert run.raw["_trajviz_obs_ignored_ui_records"] == 10
     assert not any("Display only" in s["text_preview"] or "<command-message>" in s["text_preview"]
                    or "TrajViz artifacts" in s["text_preview"] for s in run.steps)
     for text in ("<request>", "<system-reminder>", "<task-notification>",
@@ -114,6 +115,174 @@ def test_native_local_command_filter_preserves_source_identity_and_tools(native_
     assert load_run(str(exported)).to_dict(include_raw=True) == run.to_dict(include_raw=True)
     # Native dashboard and Converge loads use the same process-wide converter.
     assert tv.load(str(source)).steps == run.steps
+
+
+def test_native_resume_and_local_commands_do_not_extend_work_clock(tmp_path):
+    from trajviz_obs.native_records import normalize_native_records
+
+    def event(kind, index, content, *, subtype=None, model="claude-test", **fields):
+        row = {"type": kind, "uuid": f"row-{index}", "parentUuid": f"row-{index - 1}", "sessionId": "resume",
+               "timestamp": f"2026-10-28T01:00:{index:02d}Z", **fields}
+        if kind == "system":
+            return {**row, "subtype": subtype, "content": content}
+        row["message"] = {"role": kind, "content": content}
+        if kind == "assistant":
+            row["message"].update(id=f"message-{index}", model=model, stop_reason="stop_sequence",
+                                  usage={"input_tokens": 0, "output_tokens": 0})
+        return row
+
+    command = "<command-name>/obs</command-name><command-message>obs</command-message>"
+    sentinel = [{"type": "text", "text": "No response requested."}]
+    tool = {"type": "tool_use", "id": "tool-call", "name": "Bash", "input": {"command": "pytest -q"}}
+    result = {"type": "tool_result", "tool_use_id": "tool-call", "content": "passed"}
+    note = {"type": "text", "text": "TrajViz artifacts for this session go under /tmp/session"}
+    events = [
+        event("user", 0, "<local-command-caveat>Display only</local-command-caveat>", isMeta=True),
+        event("user", 1, command),
+        event("system", 2, "opening status", subtype="local_command"),
+        event("user", 3, "Run the tests."),
+        event("assistant", 4, [tool]),
+        event("user", 5, [note, result], isMeta=True),
+        event("assistant", 6, sentinel),
+        event("assistant", 7, sentinel, model="<synthetic>", isApiErrorMessage=True),
+        event("user", 8, "[Request interrupted by user]"),
+        event("system", 9, "Checkpoint", subtype="compact_boundary", compactMetadata={"trigger": "manual"}),
+        event("system", 10, "", subtype="turn_duration", durationMs=6_000),
+        event("assistant", 40, sentinel, model="<synthetic>", isApiErrorMessage=False),
+        event("user", 41, "<local-command-caveat>Display only</local-command-caveat>", isMeta=True),
+        event("user", 42, command),
+        event("system", 43, "dashboard opened", subtype="local_command", parentUuid="row-42"),
+        event("system", 44, "dashboard stopped", subtype="local_command", parentUuid="row-42"),
+        event("user", 45, note["text"], isMeta=True),
+    ]
+    normalized, ignored = normalize_native_records(events)
+    assert ignored == 10
+    assert [(row["uuid"], row["parentUuid"]) for row in normalized] == [
+        (row["uuid"], row["parentUuid"]) for row in events]
+    assert [i for i, row in enumerate(normalized) if row["timestamp"] is None] == [0, 1, 2, 11, 12, 13, 14, 15, 16]
+    assert normalized[5]["message"]["content"] == [result]
+    assert normalized[6:11] == events[6:11]
+
+    transcript = tmp_path / "resume.jsonl"
+    transcript.write_text("".join(json.dumps(row) + "\n" for row in events))
+    digest = hashlib.sha256(transcript.read_bytes()).hexdigest()
+    run = load_run(str(transcript), current=True)
+    assert run.view("summary").data["wall_clock_s"] == 7
+    assert run.raw["timing"]["finished_at"] == events[10]["timestamp"]
+    assert run.raw["_claude_code_turn_durations"][0]["duration_ms"] == 6000
+    assert run.raw["_claude_code_control_events"][0]["kind"] == "request_interrupted"
+    assert [step["raw_index"] for step in run.steps] == [3, 4, 6, 7, 9]
+    assert [step["model_id"] for step in run.steps if step["role"] == "assistant"] == [
+        "claude-test", "claude-test", "<synthetic>"]
+    assert run.steps[1]["tool_calls"][0]["output"] == "passed"
+    assert hashlib.sha256(transcript.read_bytes()).hexdigest() == digest == run.sha256
+
+    export = tmp_path / "trajectory.json"
+    export.write_text(json.dumps(run.to_dict(include_raw=True)))
+    assert load_run(str(export)).to_dict(include_raw=True) == run.to_dict(include_raw=True)
+
+
+def test_native_claude_usage_uses_last_recorded_snapshot_after_block_merge(tmp_path):
+    from trajviz_obs.native_quality import dashboard_field_observed, project_analysis
+
+    all_zero = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0}
+
+    def event(i, message_id, **usage):
+        row = {"type": "assistant", "sessionId": "usage", "uuid": f"entry-{i}",
+               "timestamp": f"2026-10-28T01:00:{i:02d}Z"}
+        row["message"] = {"id": message_id, "role": "assistant", "model": "claude-test",
+                          "content": [{"type": "text", "text": f"response block {i}"}]}
+        if usage:
+            row["message"]["usage"] = usage
+        return row
+
+    transcript = tmp_path / "usage.jsonl"
+    # The earlier block occurs later in the file. Match the native timestamp-ordered merge.
+    rows = [
+        event(1, "no-usage"),
+        event(3, "partial-final", input_tokens=12, output_tokens=5),
+        event(2, "partial-final", **dict(all_zero, input_tokens=99)),
+        event(4, "partial-final"),  # A block with no usage does not erase the recorded snapshot.
+        {"type": "system", "subtype": "compact_boundary", "uuid": "checkpoint", "sessionId": "usage",
+         "timestamp": "2026-10-28T01:00:05Z", "compactMetadata": {"trigger": "manual"}},
+        event(6, "complete-final", input_tokens=34),
+        event(7, "complete-final", **all_zero),
+        event(8, "invalid", **dict(all_zero, cache_read_input_tokens=True, cache_creation_input_tokens=1.5)),
+    ]
+    transcript.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    raw = transcript.read_bytes()
+    run = load_run(str(transcript), current=True)
+    keys = ("total", "input", "output", "reasoning", "cache_read", "cache_write")
+
+    def observed(step):
+        return {key for key in keys if dashboard_field_observed(step, f"tokens.{key}")}
+
+    missing, partial, compact, zero, invalid = run.steps
+    assert observed(missing) == set()
+    assert observed(partial) == {"input", "output"}
+    assert (partial["tokens"]["input"], partial["tokens"]["output"]) == (12, 5)
+    assert partial["raw_index"] == 2
+    assert compact["role"] == "compaction" and compact["_metrics_unavailable_fields"] == []
+    assert observed(zero) == {"total", "input", "output", "cache_read", "cache_write"}
+    assert zero["tokens"]["total"] == 0 and zero["tokens"]["cache_read"] == 0
+    assert observed(invalid) == {"input", "output"}
+    projection = project_analysis(run)
+    assert [row["tokens_total"] for row in projection.message_rows if row["role"] == "assistant"] == [
+        None, None, 0, None]
+    assert [row["cache_read"] for row in projection.message_rows if row["role"] == "assistant"] == [
+        None, None, 0, None]
+    assert transcript.read_bytes() == raw and run.sha256 == hashlib.sha256(raw).hexdigest()
+
+    export = tmp_path / "usage-trajectory.json"
+    export.write_text(json.dumps(run.to_dict(include_raw=True)))
+    assert [observed(step) for step in load_run(str(export)).steps] == [observed(step) for step in run.steps]
+
+
+def test_native_claude_aggregates_exclude_unobserved_partial_totals(tmp_path):
+    from agent_trajviz.insight.session import session_from_run
+
+    from trajviz_obs.compat import _dashboard_overview_presenter
+    from trajviz_obs.native_quality import project_dashboard_session, project_view
+
+    transcript = tmp_path / "mixed-usage.jsonl"
+    rows = [
+        ("user", None),
+        ("assistant", {"input_tokens": 4, "output_tokens": 1, "cache_read_input_tokens": 20,
+                       "cache_creation_input_tokens": 5}),
+        ("assistant", {"input_tokens": 50, "output_tokens": 5}),
+    ]
+    with transcript.open("w") as file:
+        for index, (role, usage) in enumerate(rows):
+            message = {"id": f"message-{index}", "role": role, "content": [{"type": "text", "text": "Test."}]}
+            if usage is not None:
+                message.update(model="claude-test", usage=usage)
+            file.write(json.dumps({"type": role, "sessionId": "mixed-usage", "uuid": f"row-{index}",
+                                   "timestamp": f"2026-10-28T01:00:{index:02d}Z", "message": message}) + "\n")
+
+    run = load_run(str(transcript))
+    summary = project_view(run, run.view("summary")).data
+    metrics = project_view(run, run.view("metrics")).data
+    assert summary["tokens"] == metrics["tokens"] == {
+        "total": 30, "input": 54, "output": 6, "reasoning": None, "cache_read": 20, "cache_write": 5,
+    }
+    assert metrics["non_cache_tokens"] == 54 and metrics["non_cache_ratio"] is None
+    assert metrics["metric_coverage"]["tokens.total"] == "partial"
+    agent = project_view(run, run.view("agents")).data[0]
+    assert agent["total_tokens"] == 30 and agent["input_tokens"] == 54
+    assert agent["cache_efficiency_pct"] is None
+    agent_tokens = project_view(run, run.view("agent_tokens")).data["agents"][0]
+    assert agent_tokens["total"] == 30
+    assert agent_tokens["segments"] == {
+        "fresh": 54, "cache_read": 20, "cache_write": 5, "output": 6, "reasoning": None,
+    }
+
+    session = project_dashboard_session(session_from_run(run))
+    deep_dive = _dashboard_overview_presenter()(session)["metrics_text"]
+    assert session.metrics["tokens"] == summary["tokens"]
+    assert ">30</span>" in deep_dive and "Partial coverage: 1/2 recorded" in deep_dive
+    assert run.steps[-1]["tokens"]["total"] == 55
+    assert run.metrics["tokens"]["total"] == 85
 
 
 def test_native_filter_handles_inline_progress_without_erasing_other_meta():

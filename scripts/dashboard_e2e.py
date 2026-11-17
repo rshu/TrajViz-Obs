@@ -288,6 +288,8 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     for name in ("Token Usage", "Tool Call Frequency", "Tool Outcome Timeline", "Agent Swimlane", "Token Breakdown by Agent", "Context Window Pressure", "File Interaction Timeline"):
         require(plot_values[name]["data"], f"Overview {name} has no data for a fixture that should populate it")
     require(len(plot_values) == 12, "Overview stopped returning its full native chart set")
+    plan = app.get_output(loaded, label="Plan Progress Timeline")
+    require(plan.get("visible") is False, "A session without a recorded plan shows the Plan Progress Timeline")
     gantt = plot_values["Execution Timeline"]
     wallclock = figure(app.call("on_gantt_axis_change", "wallclock"))
     require(len(set(gantt["data"][0]["y"])) == 2, "Execution Gantt omitted a real timeline agent")
@@ -297,12 +299,18 @@ def exercise_insight(app: Dashboard, fixtures: dict, labels: dict, provider: Pro
     require(len(re.findall(r"class='tv-token-step-detail' data-step=", explanations)) == 11,
             "Token usage did not supply a decomposition for each step")
     require(any("token-summary-line" in str(value) for value in loaded.values()), "Missing Token Usage summary")
-    require(any("Top context-growth steps" in str(value) for value in loaded.values()), "Missing context-growth hotspots")
+    hotspots = next(value for value in loaded.values() if isinstance(value, str) and "### Message Hotspots" in value)
+    growth = hotspots.split("**Top context-growth steps**", 1)[-1]
+    require("| Step | Context Growth |" in growth and "#tv-step-9" in growth,
+            "The known context-growth hotspot omitted its Workflow step link")
+    messages = next(value for value in loaded.values() if isinstance(value, str) and "### Per-Message Diagnostics" in value)
+    require(set(re.findall(r"#tv-step-(\d+)", messages)) == set(details),
+            "Per-Message Diagnostics did not link every Workflow step in the fixture")
     full_json = json.loads(app.get_output(loaded, label="Full trajectory JSON"))
     require(full_json.get("metadata", {}).get("session_id") == fixtures["session_id"], "Raw Data belongs to another source")
     ledger["checks"].extend(["exact-path page preload", "1M context override", "sibling subagent merge", "Overview native chart set",
                              "Raw Data", "Workflow detail payload", "two-agent compressed and wall-clock Gantt",
-                             "token breakdown and summary", "context-growth hotspots"])
+                             "token breakdown and summary", "context-growth and per-message step links"])
 
     import httpx
 
@@ -483,6 +491,9 @@ def exercise_converge(app: Dashboard, fixtures: dict, ledger: dict) -> None:
             "Converge pairwise outcomes do not match the fixture")
     require(all(figure(chart)["data"] for chart in (milestones, segments, divergences, anchor)) and anchor.get("visible") is True,
             "Converge milestones, costs, divergences or anchor chart are missing")
+    ticks = figure(milestones)["layout"]["yaxis"]["ticktext"]
+    require(any(tick.replace("<br>", " ") == "Last Recognized Edit" for tick in ticks),
+            "The edit milestone does not distinguish recorded evidence from a final patch")
     batch = app.call("do_batch", handle_file(str(fixtures["before_manifest"])), 50, False)
     require("2 of 2 tasks compared" in batch and "Aggregate Metrics" in batch and "Pattern Frequency" in batch, "Converge batch did not aggregate both tasks")
     intervention = app.call("do_before_after", handle_file(str(fixtures["before_manifest"])), handle_file(str(fixtures["after_manifest"])), 50, True)

@@ -88,19 +88,108 @@ def _loaded_run(block, path, session_id=None):
     return next(value for value in values.values() if isinstance(value, tv.Trajectory))
 
 
+@pytest.mark.parametrize(("tokens", "expected"), [
+    ({"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+     ("0", "0", "0", "0", "0", "0")),
+    ({"input": 0, "output": 0, "reasoning": 34, "cache": {"read": 0, "write": 0}},
+     ("0", "0", "34", "0", "0", "0 (0.0%)")),
+    ({"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 34}},
+     ("0", "0", "0", "0", "34", "0 (0.0%)")),
+    ({"input": 4}, ("4", "N/A", "N/A", "N/A", "N/A", "4")),
+])
+def test_deep_dive_renders_recorded_token_components_and_tool_denominator(tmp_path, tokens, expected):
+    source = tmp_path / "usage.json"
+    source.write_text(json.dumps({
+        "source_format": "opencode_v2", "schema_version": 1, "session": {"id": "usage"},
+        "messages": [{"type": "assistant", "id": "assistant", "model": {"id": "Fresh input"},
+                      "tokens": tokens, "time": {"created": 1_790_000_000_000, "completed": 1_790_000_001_000},
+                      "content": [{"type": "text", "text": "Checked."}]}],
+    }))
+    app = build_preloaded_insight(str(source))
+    loader = next(entry for entry in app.fns.values() if entry.api_name == "_do_load")
+    outputs = loader.fn(str(source), False, "")
+    metrics = next(value for value in outputs.values() if isinstance(value, str) and value.startswith("### Timing"))
+
+    for label, value in zip(("Input", "Output", "Reasoning", "Cache read", "Cache write", "Fresh input"), expected, strict=True):
+        assert re.search(rf">{label}</span></span><span[^>]*>{re.escape(value)}</span>", metrics), label
+    assert re.search(r">Tok/tool call</span></span><span[^>]*>N/A</span>", metrics)
+    assert re.search(r">Fresh input</span><span[^>]*>1</span>", metrics)  # The literal model ID.
+    assert "### Tokens" in metrics and "### Efficiency" in metrics and "**Model breakdown**" in metrics
+
+
+def test_deep_dive_keeps_step_links_and_distinguishes_missing_from_zero(tmp_path):
+    from agent_trajviz.insight.report import _mixed_md_to_html
+
+    source = tmp_path / "opencode.json"
+    base = 1_790_000_000_000
+
+    def assistant(id_, **evidence):
+        return {"type": "assistant", "id": id_, "content": [{"type": "text", "text": "Checked."}], **evidence}
+
+    source.write_text(json.dumps({
+        "source_format": "opencode_v2", "schema_version": 1, "session": {"id": "deep-dive"},
+        "messages": [
+            {"type": "user", "id": "prompt", "time": {"created": base}, "text": "Review the tests."},
+            assistant("timed", time={"created": base + 100, "completed": base + 1_000}),
+            assistant("zero", time={"created": base + 1_100, "completed": base + 2_000},
+                      tokens={"total": 0, "input": 0, "output": 0, "cache": {"read": 0, "write": 0}}),
+            assistant("untimed", tokens={"total": 40, "input": 30, "output": 10}),
+        ],
+    }))
+    app = build_preloaded_insight(str(source))
+    loader = next(entry for entry in app.fns.values() if entry.api_name == "_do_load")
+    values = loader.fn(str(source), False, "")
+    hotspots, per_message = [values[block] for block in loader.outputs
+                            if "diagnostics-data-table" in (block.elem_classes or [])]
+
+    latency, token = hotspots.split("**Top token-load steps**")
+    assert "**Top latency steps**" in latency
+    assert re.search(r"#tv-step-1[^\n]+0\.90 \| N/A \|", latency)
+    assert re.search(r"#tv-step-2[^\n]+0\.90 \| 0 \|", latency)
+    assert re.search(r"#tv-step-3[^\n]+40 \| 0 \| N/A \|", token)
+    assert "#tv-step-0" not in token and " | None | " not in hotspots
+    assert "**Lowest cache read steps**\n\n*No cache-read shares could be ranked.*" in token
+    assert "**Top context-growth steps**\n\n*No positive context growth" in token
+    assert re.findall(r"#tv-step-([0-9]+)", per_message) == ["0", "1", "2", "3"]
+    metrics = next(value for value in values.values() if isinstance(value, str) and value.startswith("### Timing"))
+    assert "Requires complete assistant token and timing records." in metrics
+    assert "Partial coverage: 1/3 recorded" in metrics
+    html = _mixed_md_to_html(per_message)
+    assert "<td>0</td>" in html and "#tv-step-" not in html
+
+
+def test_deep_dive_does_not_deny_observed_cache_reads_without_a_total(tmp_path):
+    source = tmp_path / "partial-claude.jsonl"
+    source.write_text(json.dumps({
+        "type": "assistant", "sessionId": "partial", "uuid": "assistant", "timestamp": "2026-10-28T01:00:01Z",
+        "message": {"id": "reply", "role": "assistant", "model": "claude-test",
+                    "content": [{"type": "text", "text": "Checked."}],
+                    "usage": {"input_tokens": 12, "output_tokens": 5, "cache_read_input_tokens": 50}},
+    }) + "\n")
+    app = build_preloaded_insight(str(source))
+    loader = _loader(app)
+    values = loader.fn(str(source), False, "")
+    hotspots = next(value for value in values.values() if isinstance(value, str)
+                    and value.startswith("### Message Hotspots"))
+    metrics = next(value for value in values.values() if isinstance(value, str) and value.startswith("### Timing"))
+    assert re.search(r">Cache read</span></span><span[^>]*>50</span>", metrics)
+    assert re.search(r">Total tokens</span></span><span[^>]*>N/A</span>", metrics)
+    assert "**Lowest cache read steps**\n\n*No cache-read shares could be ranked.*" in hotspots
+
+
 def test_token_explanations_distinguish_missing_cache_counters_from_zero(tmp_path):
     source = tmp_path / "opencode.json"
     base = 1_790_000_000_000
-    usage = {"total": 50, "input": 45, "output": 5}
+    usage = {"total": 50, "input": 45, "output": 5, "reasoning": 0}
     source.write_text(json.dumps({
         "source_format": "opencode_v2", "schema_version": 1,
         "session": {"id": "tokens", "time": {"created": base, "updated": base + 3000}},
         "messages": [{
-            "id": f"message-{index}", "type": "assistant", "agent": "build",
+            "id": f"message-{index}", "type": "assistant", "agent": "build", "model": {"id": "<demo-model>"},
             "content": [{"type": "text", "text": "Recorded reply"}],
             "time": {"created": base + index * 1000, "completed": base + (index + 1) * 1000},
             "tokens": tokens,
-        } for index, tokens in enumerate([usage, {**usage, "reasoning": 0, "cache": {"read": 0, "write": 0}}])],
+        } for index, tokens in enumerate([{**usage, "cache": {"read": 0, "write": 0}}, usage])],
     }))
     app = build_preloaded_insight(str(source))
     outputs = _loader(app).fn(str(source), False, "")
@@ -113,10 +202,16 @@ def test_token_explanations_distinguish_missing_cache_counters_from_zero(tmp_pat
     summary = markup("token-summary-wrap")
     assert "0% cache hit" not in summary and "Largest step" in summary
     details = markup("token-step-explain")
-    partial, complete = details.split("data-step='1'", 1)
+    complete, partial = details.split("data-step='1'", 1)
     assert "Available token counts" in partial and "Some token counts are unavailable" in partial
-    assert "Total 50" in partial and "No prefix cache hits" not in partial
-    assert "No prefix cache hits" in complete
+    assert "&lt;demo-model&gt;" in partial and "tvGotoWorkflowStep(1)" in partial
+    assert "Open step in Workflow" in partial and "No prefix cache hits" not in partial
+    assert "Total" in partial and "</th><td>50</td>" in partial
+    assert "Reasoning" in partial and "</th><td>0</td>" in partial
+    assert "Cache read" in partial and "Unavailable" in partial
+    assert "No prefix cache hits" in complete and "Fresh Input" in complete
+    assert "Other input ≈ 45 tok" in complete and "System prompt and tool definitions ≈" not in complete
+    assert "How the estimates are calculated" in details and "provider’s count" in details
 
 
 @pytest.fixture
@@ -178,6 +273,31 @@ def test_dashboard_gantt_hover_distinguishes_missing_tokens_from_measured_zero(n
         hover = fig.data[0].hovertext
         assert hover[0].startswith("<b>Step 1</b>") and hover[0].endswith("Tokens unavailable")
         assert hover[1].startswith("<b>Step 3</b>") and hover[1].endswith("0 tokens")
+
+
+def test_dashboard_workflow_view_control_is_serialized_with_its_native_change_event(fixture_session):
+    config = build_preloaded_insight(str(fixture_session)).get_config_file()
+    components = {component["id"]: component for component in config["components"]}
+
+    def descendants(node):
+        for child in node.get("children", []):
+            yield child
+            yield from descendants(child)
+
+    workflow, = [node for node in descendants(config["layout"])
+                 if components[node["id"]]["props"].get("label") == "Workflow"]
+    toolbar, = [node for node in workflow["children"]
+                if "obs-workflow-filters" in (components[node["id"]]["props"].get("elem_classes") or [])]
+    view, = [components[node["id"]] for node in descendants(toolbar)
+             if components[node["id"]]["type"] == "radio"]
+    props = view["props"]
+    assert props["label"] == "View" and props["visible"] is True
+    assert props["choices"] == [("Cards", "Cards"), ("Expanded", "Expanded")]
+    assert props["value"] == "Cards" and "obs-workflow-view" in props["elem_classes"]
+
+    change, = [dependency for dependency in config["dependencies"]
+               if any(target == view["id"] and event == "change" for target, event in dependency["targets"])]
+    assert change["api_name"] == "do_filter_workflow" and view["id"] in change["inputs"]
 
 
 def test_dashboard_workflow_keeps_token_evidence_when_switching_modes(native_timed_parent_and_child):
@@ -264,6 +384,7 @@ def test_labels_preload_uses_all_native_charts_and_resets_for_other_trajectories
     assert reset.outputs[-1] is label_file and gradio.utils.is_static_file(str(dashboard_labels))
     native = next(block for block in app.fns.values() if getattr(block.fn, "__name__", "") == "do_load_labels")
     values = native.fn(str(dashboard_labels), False)
+    assert values[0]["visible"] and "coverage" in values[0]["value"].lower()
     assert all(values[index]["visible"] for index in (2, 5, 8))
     assert all(values[index].data for index in (3, 4, 6, 7, 9))
     assert any(target == (label_file._id, "change") for target in native.targets) or any(
@@ -318,7 +439,9 @@ def test_cached_labels_refuse_changed_step_identity(filtered_label_run, tmp_path
 
 
 def test_incompatible_cached_labels_show_notice_and_clear_on_another_trajectory(fixture_session,
-                                                                             fixture_run, tmp_path):
+                                                                             fixture_run, tmp_path, monkeypatch):
+    warnings = []
+    monkeypatch.setattr(gradio, "Warning", warnings.append)
     path = tmp_path / "labels.json"
     step = next(step for step in fixture_run.steps if step["role"] == "assistant")
     path.write_text(json.dumps({"steps": [dict(step, index=len(fixture_run.steps) + 1)]}))
@@ -328,7 +451,9 @@ def test_incompatible_cached_labels_show_notice_and_clear_on_another_trajectory(
     loaded = _loaded_run(_loader(app), fixture_session)
     outputs = reset.fn(str(fixture_session), None, loaded)
     assert outputs[-1]["value"] is None and "Run /obs label again" in outputs[1]
+    assert len(warnings) == 1 and "Run /obs label again" in warnings[0]
     assert "Run /obs label again" not in reset.fn(str(tmp_path / "another.jsonl"), None, loaded)[1]
+    assert len(warnings) == 1
     assert path.read_bytes() == before
 
 
@@ -844,3 +969,25 @@ def test_dashboard_server_exposes_only_display_file_and_cleans_temporary_export(
     dashboard_cmd.serve_insight(str(folder), None)
     assert json.loads(capsys.readouterr().out)["url"] == "http://127.0.0.1:1234/"
     assert not Path(allowed[0]).exists()
+
+
+@pytest.mark.parametrize("kind", ["dashboard", "converge"])
+def test_dashboard_still_launches_when_usage_attachment_fails(kind, fixture_session, tmp_path, monkeypatch, capsys):
+    from trajviz_obs import dashboard_cmd
+    from trajviz_obs.dashboard_usage import DashboardUsage
+
+    def broken_attach(_usage, _app, received_kind):
+        assert received_kind == kind
+        raise RuntimeError("instrumentation unavailable")
+
+    monkeypatch.setattr(DashboardUsage, "attach", broken_attach)
+    monkeypatch.setattr(gradio.Blocks, "launch", lambda _app, **_: (None, "http://127.0.0.1:1234/", None))
+    monkeypatch.setattr(dashboard_cmd, "_wait_for_shutdown", lambda **_: None)
+    usage = DashboardUsage("claude-code", "0.3.8")
+    if kind == "dashboard":
+        dashboard_cmd.serve_insight(str(fixture_session), None, usage=usage)
+    else:
+        dashboard_cmd.serve_converge(str(tmp_path), None, usage=usage)
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["url"] == "http://127.0.0.1:1234/"
+    assert "Could not attach usage telemetry (RuntimeError)." in captured.err

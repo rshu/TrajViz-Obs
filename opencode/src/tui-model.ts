@@ -147,7 +147,7 @@ export function metrics(snap: Snapshot): { label: string; value: string; detail?
     { label: 'Context', value: percent(snap.context.current_pct), detail: `peak ${percent(snap.context.peak_pct)} of ${compact(snap.context.window)}` },
     { label: cacheHealth ? 'Cache efficiency' : 'Cache read', value: cacheHealth ? cacheHealth.status === 'unavailable' ? 'unavailable' : cacheHealth.label : cacheTotal && snap.tokens.cache_read !== null ? percent(snap.tokens.cache_read / cacheTotal * 100) : '—', detail: `${compact(snap.tokens.cache_write)} written` },
     { label: 'Agents', value: compact(snap.counts.agents) },
-    { label: 'Elapsed', value: duration(snap.timing.wall_clock_s), detail: `p95 ${duration(snap.timing.p95_step_s)}` },
+    { label: 'Elapsed', value: snap.timing.wall_clock_fmt ?? duration(snap.timing.wall_clock_s), detail: `p95 ${duration(snap.timing.p95_step_s)}` },
     ...(snap.engine_usage?.cost && Number.isFinite(snap.engine_usage.cost.usd) ? [{ label: 'Cost', value: `$${snap.engine_usage.cost.usd.toFixed(2)}`, detail: 'reported by OpenCode' }] : []),
   ]
 }

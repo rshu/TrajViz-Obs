@@ -71,6 +71,16 @@ describe('native pane data', () => {
     expect(statusText({ schema_version: 1, empty: true, reason: 'Not yet', transcript: { path: '' } })).toContain('waiting')
   })
 
+  test('elapsed uses TrajViz formatting and falls back for older snapshots', () => {
+    const elapsed = (wall_clock_s: number | null, wall_clock_fmt?: string | null) =>
+      metrics({ ...SNAPSHOT, timing: { ...SNAPSHOT.timing, wall_clock_s, wall_clock_fmt } }).find(row => row.label === 'Elapsed')
+    expect(elapsed(1_225_440, '14d 4h')).toEqual({ label: 'Elapsed', value: '14d 4h', detail: 'p95 31s' })
+    expect(elapsed(104.714, '1m 45s')?.value).toBe('1m 45s')
+    expect(elapsed(104.714)?.value).toBe('1m45s')
+    expect(elapsed(null, null)?.value).toBe('—')
+    expect(elapsed(0, '0s')?.value).toBe('0s')
+  })
+
   test('partial evidence keeps unknown tool outcomes separate from zero observed failures in every view', () => {
     const original = JSON.stringify(PARTIAL_SNAPSHOT)
     const values = metrics(PARTIAL_SNAPSHOT)

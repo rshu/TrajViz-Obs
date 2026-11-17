@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import pytest
 from agent_trajviz import dashboard
 
-from trajviz_obs.dashboard_ui import _JS, decorate_dashboard, presentation
+from trajviz_obs.dashboard_ui import _JS, _repair_workflow_jump, decorate_dashboard, presentation
 
 
 @pytest.mark.parametrize("kind", ["insight", "converge"])
@@ -207,11 +207,16 @@ def test_health_and_findings_live_in_summary_without_burying_other_tabs():
     assert "obs-summary-status" in status.elem_classes
     token_row = next(child for child in summary.children if isinstance(child, gr.Row)
                      and any(plot.elem_id == "token-chart" for plot in child.children))
-    assert "token-step-explain" in token_row.children[1].elem_classes
-    assert summary.children[summary.children.index(token_row) + 1].elem_id == "duration-chart"
+    guide = next(child for child in summary.children if child.elem_id == "obs-summary-chart-guide")
+    assert summary.children.index(guide) < summary.children.index(token_row)
+    assert "<button type='button' class='section-guide-trigger' aria-describedby='obs-summary-chart-help'>" in guide.value
+    assert "</button><div class='section-guide-pop' role='tooltip' id='obs-summary-chart-help'>" in guide.value
+    assert "obs-summary-charts" in token_row.elem_classes
+    assert [chart.elem_id for chart in token_row.children] == ["token-chart", "duration-chart"]
+    assert "token-step-explain" in summary.children[summary.children.index(token_row) + 1].elem_classes
     gantt_row = next(child for child in summary.children if isinstance(child, gr.Row)
                      and any(plot.elem_id == "gantt-chart" for plot in child.children))
-    axis_form = summary.children[summary.children.index(gantt_row) - 1]
+    axis_form = summary.children[summary.children.index(gantt_row) + 1]
     assert any(isinstance(control, gr.Radio) and control.label == "Timeline axis" for control in axis_form.children)
 
 
@@ -310,7 +315,7 @@ const window = {
 };
 const document = {
   documentElement: {style: {}, classList: {remove() {}}},
-  body: {classList: {remove() {}}}, querySelector: () => root,
+  body: {classList: {remove() {}}}, querySelector: () => root, addEventListener() {},
 };
 class Observer { observe() {} disconnect() {} }
 vm.runInNewContext('(' + JSON.parse(process.argv[1]) + ')()', {
@@ -332,3 +337,102 @@ window.tvPushTabReturnPoint('Overview');
 assert.equal(nativeReturnPoints, 1);
 """
     subprocess.run([node, "-e", script, json.dumps(_JS)], check=True, capture_output=True, text=True, timeout=10)
+
+
+def test_chart_guide_can_be_dismissed_and_reopened_without_intercepting_modified_links():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required to execute the dashboard browser script")
+    script = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const clicks = [];
+const callbacks = {};
+let dismissed = false;
+const pop = {getClientRects: () => dismissed ? [] : [{}]};
+const tip = {
+  addEventListener() {},
+  classList: {add: () => { dismissed = true; }, remove: () => { dismissed = false; }},
+  querySelector: selector => selector === 'button' ? trigger : pop,
+};
+const trigger = {parentElement: tip, getClientRects: () => [{}], focus: () => clicks.push('focus')};
+const guide = {querySelector: () => tip, scrollIntoView: () => clicks.push('scroll')};
+const root = {
+  dataset: {}, style: {}, addEventListener: (type, callback) => { callbacks[type] = callback; },
+  querySelector: selector => selector.endsWith(' .section-guide-tip') ? tip
+    : selector === '#obs-summary-chart-guide' ? guide : null,
+  querySelectorAll: () => [],
+};
+const document = {
+  documentElement: {style: {}, classList: {remove() {}}}, body: {classList: {remove() {}}},
+  querySelector: () => root, addEventListener: (type, callback) => { callbacks['document:' + type] = callback; },
+};
+class Observer { observe() {} disconnect() {} }
+vm.runInNewContext('(' + JSON.parse(process.argv[1]) + ')()', {
+  document, window: {tvClickMainTab: label => clicks.push(label)}, performance: {now: () => 0},
+  ResizeObserver: Observer, MutationObserver: Observer, requestAnimationFrame: callback => callback(),
+});
+function activate(target, options = {}) {
+  callbacks.click({button: 0, target, preventDefault: () => clicks.push('prevented'), ...options});
+}
+const anchor = {closest: selector => selector === '.obs-guide-charts' ? {} : null};
+for (const options of [{ctrlKey: true}, {metaKey: true}, {shiftKey: true}, {altKey: true}, {button: 1}]) {
+  activate(anchor, options);
+}
+assert.deepEqual(clicks, []);
+activate(anchor);
+assert.deepEqual(clicks, ['prevented', 'Overview', 'scroll', 'focus']);
+callbacks['document:keydown']({key: 'Escape'});
+assert.equal(dismissed, true);
+assert.equal(clicks.at(-1), 'focus');
+activate({closest: selector => selector.endsWith(' button') ? trigger : null});
+assert.equal(dismissed, false);
+"""
+    subprocess.run([node, "-e", script, json.dumps(_JS)], check=True, capture_output=True, text=True, timeout=10)
+
+
+def test_workflow_jump_clears_a_search_with_no_matching_cards():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required to execute the dashboard browser script")
+    app = dashboard.insight_app()
+    _repair_workflow_jump(app)
+    script = next(entry.js for entry in app.fns.values() if "window.tvGotoWorkflowStep = function" in (entry.js or ""))
+    jump = script[script.index("window.tvGotoWorkflowStep = function"):script.index("if (!window.__tvHistoryBound)")]
+    harness = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const scheduled = [];
+const search = {value: 'impossible query'};
+const target = {};
+const calls = [];
+let filtered = true;
+let now = 0;
+const reset = {click: () => { calls.push('reset'); filtered = false; }};
+const window = {
+  tvActiveMainTab: () => 'Overview', tvPushTabReturnPoint() {}, tvClickMainTab() {},
+  tvWorkflowStepUrl: idx => '#step-' + idx, location: {hash: ''},
+  tvFocusWorkflowCard: card => calls.push(card),
+  tvSetGradioText: (selector, value) => {
+    assert.equal(selector, '.wf-toolbar-search');
+    search.value = value;
+  },
+};
+const document = {
+  getElementById: id => id === 'wf-filter-bar' ? {} : id === 'wf-card-7' && !filtered && !search.value ? target : null,
+  querySelector: selector => selector.includes('reset-filters') ? reset : selector.includes('wf-toolbar-search') ? search : null,
+};
+vm.runInNewContext(JSON.parse(process.argv[1]), {
+  window, document, history: {pushState() {}}, Date: {now: () => now},
+  setTimeout: callback => scheduled.push(callback),
+});
+window.tvGotoWorkflowStep(7);
+scheduled.shift()();
+assert.deepEqual(calls, []);
+now = 401;
+scheduled.shift()();
+scheduled.shift()();
+assert.equal(search.value, '');
+assert.deepEqual(calls, ['reset', target]);
+"""
+    subprocess.run([node, "-e", harness, json.dumps(jump)], check=True, capture_output=True, text=True, timeout=10)

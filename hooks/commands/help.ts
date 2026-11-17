@@ -4,10 +4,10 @@ import type { CommandContext } from './index'
 /** The grouped command table, under 30 lines. */
 export const HELP_TEXT = [
   '/obs [subcommand] [options]  TrajViz observability; session commands take --session <id|prefix|path>',
-  'Start here: /obs for a quick summary; /obs dashboard for the full interactive view.',
+  'Start here: /obs opens the live pane. /obs overview prints a summary. /obs dashboard opens the browser.',
   'Captured sessions: sessions --session PATH lists IDs; add --session-id ID to a session command.',
   'Look',
-  '  overview (default)   health, KPIs, sparklines, top issues    pane | pane close   open/close the live pane',
+  '  pane | pane close   focus/close the live pane (1–7 tabs, d dashboard, r refresh, w watch)',
   '  issues | health | patterns | agents | context | timeline   diagnostic shortcuts (same options as view)',
   '  view [<id>] [k=v]... [--limit N] [--offset N] [--json]   the catalog, or one view (full data to views/<id>.json)',
   '    view and shortcuts: --limit 1–500 (default 25), --offset N (default 0), --json; k=v only for view.',
@@ -16,7 +16,7 @@ export const HELP_TEXT = [
   '  bundle [-o PATH]   ZIP for a hosted dashboard               schemas [DIR]   the JSON Schema of every view',
   'Browser',
   '  dashboard [--port N] [--dark] [--inline-plotly] | dashboard stop   the local Insight dashboard',
-  '  dashboard --html PATH [--dark]                         save a standalone HTML dashboard',
+  '  dashboard --html PATH [--dark]   save standalone HTML   dashboard port [auto|default|N]   default port',
   '  converge [--data-root DIR] [--port N] | converge stop   the Converge comparison dashboard',
   'Compare',
   '  compare <session|path> [--anchor-patch P] [--fuzzy-commands] [--reverse]',
@@ -28,6 +28,8 @@ export const HELP_TEXT = [
   '    llm=env also accepts --delay SEC (0–3600) and --temperature N (or LABEL_TEMPERATURE).',
   'Setup',
   '  setup [--extras ...] [--source ...]   doctor   sessions [N]   watch [on|off]   statusline [on|off]',
+  '  enable_telemetry | disable_telemetry   change usage telemetry consent    telemetry   check delivery',
+  '  telemetry_destination [URL [--use-launch-token] | default]   show or save the collector',
   '  attribution [--reference-root DIR] [--agent A] [--instance I]   collect <cursor|opencode|codearts> ...',
   '  help   this table',
 ].join('\n')

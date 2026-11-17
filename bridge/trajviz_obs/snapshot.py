@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_trajviz import Trajectory
+from agent_trajviz.insight.metrics import format_duration_seconds
 
 from .cli import register
 from .compat import TRAJVIZ_VERSION, EmptySession, input_path, load_run, project_view, window_info
@@ -351,6 +352,7 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
     built = {view_id: project_view(run, view) for view_id, view in run.views(only=VIEWS).items()}
     views = {view_id: view.data for view_id, view in built.items()}
     summary, session, metrics = views["summary"], views["session"], views["metrics"]
+    wall_clock = summary.get("wall_clock_s")
     pressure = views["context_pressure"]
     context, context_series = _context(run, pressure, max_points)
     tokens, durations = views["token_usage"]["steps"], views["step_durations"]["steps"]
@@ -378,7 +380,9 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
                    "tool_calls": summary["tool_calls"], "issues": len(views["issues"])},
         "tokens": {k: summary["tokens"].get(k) for k in
                    ("total", "input", "output", "cache_read", "cache_write", "reasoning")},
-        "timing": {"wall_clock_s": summary.get("wall_clock_s"), "started_at": session.get("started_at"),
+        "timing": {"wall_clock_s": wall_clock,
+                   "wall_clock_fmt": format_duration_seconds(wall_clock) if wall_clock is not None else None,
+                   "started_at": session.get("started_at"),
                    "finished_at": session.get("finished_at"), "avg_step_s": metrics.get("avg_duration"),
                    "p95_step_s": metrics.get("p95_duration"),
                    "output_tokens_per_sec": metrics.get("output_tokens_per_sec"),

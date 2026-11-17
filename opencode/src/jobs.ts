@@ -5,7 +5,7 @@ type Record = { input: RunInput; signature: string; progress?: string; result?: 
 type Retired = { runID: string; sessionID: string; expires: number }
 const key = (input: { runID: string; confirmationID?: string }) => JSON.stringify([input.runID, input.confirmationID ?? null])
 const signature = (input: RunInput) => JSON.stringify([input.sessionID, input.args, input.useSynced === true,
-  input.model?.providerID, input.model?.id, input.model?.variant])
+  input.paneSnapshot === true, input.model?.providerID, input.model?.id, input.model?.variant])
 
 /** Short authenticated RPC requests observe server-owned work without replaying it. */
 export class CommandJobs {

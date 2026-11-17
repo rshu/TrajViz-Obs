@@ -17,6 +17,8 @@ test('published package contains only the adapter, shared runtime, license and f
     expect(names).toContain('dist/gui-experimental.cjs')
     expect(names).toContain('dist/tui.js')
     expect(names).toContain('runtime/bridge/trajviz_obs/opencode.py')
+    expect(names).toContain('runtime/bridge/telemetry_client.py')
+    expect(names).toContain('runtime/bridge/telemetry_protocol.py')
     expect(names).toContain('LICENSE')
     for (const name of names) expect(name).toMatch(/^(?:src\/.+\.(?:ts|tsx)|dist\/(?:gui-experimental\.cjs|tui\.js)|runtime\/bridge\/.+\.py|README\.md|LICENSE|package\.json)$/)
   } finally { await rm(cache,{recursive:true,force:true}) }

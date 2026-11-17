@@ -4,7 +4,8 @@ import { runBridge } from '../lib/bridge'
 import { fmtBytes, fmtInt } from '../lib/format'
 import { ensureReady, sessionArgv } from '../lib/snapshot'
 import type { CommandContext } from './index'
-import { EMPTY_TEXT, errorRow, captureSessionSpec, sessionSpec } from './overview'
+import { EMPTY_TEXT, observedError, captureSessionSpec, sessionSpec } from './overview'
+import { markOutcome } from '../lib/telemetry'
 
 const VIEW_TIMEOUT_MS = 120_000
 
@@ -93,7 +94,7 @@ export async function inline($: EngineInterface, ctx: CommandContext): Promise<C
   const id = sub === 'view' ? positional[0] : TAB_VIEWS[sub]
   const options = sub === 'view' ? positional.slice(1) : positional
   const page = pageArgv(flags)
-  if (typeof page === 'string') return { text: page }
+  if (typeof page === 'string') return { text: markOutcome(ctx.telemetry, 'rejected', page) }
   const spec = sessionSpec(ctx)
   try {
     await ensureReady($, ctx.options)
@@ -104,10 +105,10 @@ export async function inline($: EngineInterface, ctx: CommandContext): Promise<C
     call.push(...page)
     if (flags['json'] !== undefined) call.push('--json')
     const doc = await runBridge<ViewDoc>($, call, { timeoutMs: VIEW_TIMEOUT_MS })
-    if ('empty' in doc) return { text: EMPTY_TEXT }
+    if ('empty' in doc) return { text: markOutcome(ctx.telemetry, 'empty', EMPTY_TEXT) }
     if ('views' in doc) return { text: catalogText(doc.views) }
     return { text: viewText(doc), context: [viewNote(doc)] }
   } catch (e) {
-    return { text: errorRow(e, spec) }
+    return { text: observedError(ctx.telemetry, e, spec) }
   }
 }

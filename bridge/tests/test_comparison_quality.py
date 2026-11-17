@@ -227,7 +227,7 @@ def test_cli_and_scorecard_preserve_zero_elapsed_without_assistant_duration(nati
                               out_dir=tmp_path / "artifacts")
     assert result["summary"]["outcome"]["reference_duration_s"] == 0
     assert result["summary"]["outcome"]["reference_duration_s_observed"] is True
-    assert "| wall clock | 0.0s | 0.0s |" in result["text"]
+    assert "| wall clock | 0s | 0s |" in result["text"]
     rows = project_scorecard(tv.compare_runs([run, run]), [run, run])["rows"]
     assert all(row["wall_clock_s"] == 0 and row["wall_clock_fmt"] != "?" for row in rows)
 

@@ -22,6 +22,7 @@ from typing import Any
 
 import agent_trajviz as tv
 from agent_trajviz import Trajectory
+from agent_trajviz.insight.metrics import format_duration_seconds
 
 from . import paths
 from .cli import register
@@ -69,9 +70,12 @@ def _outcome_table(outcome: dict) -> str:
         return [render(outcome.get(f"{side}_{key}") if outcome.get(f"{side}_{key}_observed") is not False else None)
                 for side in ("reference", "compared")]
 
+    def clock(value):
+        return format_duration_seconds(value) if value is not None else "?"
+
     return _md_table(["", "reference", "compared"], [
         ["finished", *pair("success", _yes_no)], ["steps", *pair("steps", _num)], ["tokens", *pair("tokens", _num)],
-        ["wall clock", *pair("duration_s", _duration)], ["tool calls", *pair("tool_calls", _num)],
+        ["wall clock", *pair("duration_s", clock)], ["tool calls", *pair("tool_calls", _num)],
     ])
 
 

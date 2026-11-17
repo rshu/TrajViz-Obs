@@ -1,5 +1,7 @@
 import type { CommandPresentation, CommandRunResult, EngineInterface, HookFailure, PluginOptions } from 'claude-code'
-import { BOOLEAN_FLAGS, parseArgs, selectionError, suggest, type Parsed } from '../lib/args'
+import { BOOLEAN_FLAGS, parseArgs, selectionError, suggest, TELEMETRY_DESTINATION_USAGE, type Parsed } from '../lib/args'
+import { readFlags } from '../lib/state'
+import { commandFeature, markOutcome, reportTelemetry, setTelemetryConsent, telemetryConsentAtStart, telemetryDestination, telemetryStatus, type OutcomeTracker } from '../lib/telemetry'
 import { browser } from './browser'
 import { compare } from './compare'
 import { exportCmd } from './exports'
@@ -18,6 +20,8 @@ export type CommandContext = {
   parsed: Parsed
   options: PluginOptions
   presentation?: CommandPresentation
+  personRequested?: boolean
+  telemetry?: OutcomeTracker
 }
 
 export type Handler = ($: EngineInterface, ctx: CommandContext) => Promise<CommandRunResult>
@@ -40,11 +44,32 @@ const COMMAND_FLAGS: Record<string, readonly string[]> = {
   dashboard: ['port', 'html', 'dark', 'inline-plotly'], converge: ['data-root', 'port'],
   compare: ['anchor-patch', 'fuzzy-commands', 'reverse'], scorecard: ['fuzzy-commands', 'labels', 'no-self'], labels: [],
   fixes: ['limit'], label: [...OUTPUT_FLAGS, 'assistant-only', 'model', 'max-steps', 'taxonomy', 'max-content-chars', 'delay', 'user-phase', 'user-action', 'max-tokens', 'temperature'],
-  attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [], setup: ['extras', 'source'], doctor: [], help: [],
+  attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [], setup: ['extras', 'source'], doctor: [],
+  telemetry: [], telemetry_destination: ['use-launch-token'], enable_telemetry: [], disable_telemetry: [], help: [],
 }
 
-const NO_POSITIONALS = ['overview', 'help', 'doctor', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline']
+const NO_POSITIONALS = ['overview', 'help', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline']
 const SESSION_COMMANDS = ['overview', 'pane', 'view', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution', 'sessions']
+
+export async function dispatch($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
+  // Keep the shared parser's text default for OpenCode and for callers without a pane.
+  if (ctx.args.trim() === '' && ctx.personRequested && (await readFlags($)).isInteractive) {
+    ctx = { ...ctx, parsed: { ...ctx.parsed, sub: 'pane' } }
+  }
+  const feature = commandFeature(ctx.parsed)
+  if (!feature) return route($, ctx)
+  const started = Date.now()
+  const consentAtStart = telemetryConsentAtStart($)
+  const telemetry: OutcomeTracker = { outcome: 'success' }
+  try {
+    return await route($, { ...ctx, telemetry })
+  } catch (error) {
+    telemetry.outcome = 'error'
+    throw error
+  } finally {
+    void reportTelemetry($, ctx.options, feature, telemetry.outcome, Date.now() - started, consentAtStart)
+  }
+}
 
 /** Reject grammar that would otherwise be ignored, before setup or external work. */
 function argumentError(ctx: CommandContext): string | undefined {
@@ -68,24 +93,26 @@ function argumentError(ctx: CommandContext): string | undefined {
  * one), so every subcommand is one `case` here calling its handler by name,
  * and every handler is an `export async function name($, ctx)`.
  */
-export async function dispatch($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
+async function route($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
   const { sub } = ctx.parsed
   const session = ctx.parsed.flags['session']
   if (sub !== 'collect' && sub !== 'converge-cli') {
     const invalidSelection = selectionError(ctx.parsed.flags, sub === 'analyze' ? ctx.args : undefined)
-    if (invalidSelection) return { text: invalidSelection }
+    if (invalidSelection) return { text: markOutcome(ctx.telemetry, 'rejected', invalidSelection) }
   }
   // The two CLI passthroughs own their flags; analyze reads its question raw.
   if (sub !== 'collect' && sub !== 'converge-cli' && sub !== 'analyze' && (session === true || (typeof session === 'string' && !session.trim()))) {
-    return { text: SESSION_USAGE }
+    return { text: markOutcome(ctx.telemetry, 'rejected', SESSION_USAGE) }
   }
   const invalidArguments = argumentError(ctx)
-  if (invalidArguments) return { text: invalidArguments }
+  if (invalidArguments) return { text: markOutcome(ctx.telemetry, 'rejected', invalidArguments) }
   const allowed = COMMAND_FLAGS[sub]
   if (allowed) {
     for (const [flag, value] of Object.entries(ctx.parsed.flags)) {
-      if (flag !== 'session' && flag !== 'session-id' && !allowed.includes(flag)) return { text: `Unknown option '--${flag}' for /obs ${sub}. /obs help lists the supported options.` }
-      if (BOOLEAN_FLAGS.includes(flag) && value !== true) return { text: `--${flag} does not take a value.` }
+      if (flag !== 'session' && flag !== 'session-id' && !allowed.includes(flag)) {
+        return { text: markOutcome(ctx.telemetry, 'rejected', `Unknown option '--${flag}' for /obs ${sub}. /obs help lists the supported options.`) }
+      }
+      if (BOOLEAN_FLAGS.includes(flag) && value !== true) return { text: markOutcome(ctx.telemetry, 'rejected', `--${flag} does not take a value.`) }
     }
   }
   switch (sub) {
@@ -122,6 +149,23 @@ export async function dispatch($: EngineInterface, ctx: CommandContext): Promise
     case 'setup':
     case 'doctor':
       return misc($, ctx)
+    case 'telemetry':
+      return telemetryStatus($, ctx.options)
+    case 'telemetry_destination': {
+      const [destination, ...rest] = ctx.parsed.positional
+      const bindLaunchToken = ctx.parsed.flags['use-launch-token'] === true
+      if (rest.length || destination === '' || (bindLaunchToken && (destination === undefined || destination === 'default'))) {
+        return { text: TELEMETRY_DESTINATION_USAGE }
+      }
+      if (destination !== undefined && !ctx.personRequested) {
+        return { text: 'Run /obs telemetry_destination directly in the Claude Code composer to change the collector.' }
+      }
+      return telemetryDestination($, ctx.options, destination, bindLaunchToken)
+    }
+    case 'enable_telemetry':
+    case 'disable_telemetry':
+      if (!ctx.personRequested) return { text: `Run /obs ${sub} directly in the Claude Code composer to change usage telemetry.` }
+      return setTelemetryConsent($, ctx.options, sub === 'enable_telemetry' ? 'on' : 'off')
     case 'sessions':
       return sessions($, ctx)
     case 'watch':

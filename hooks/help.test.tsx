@@ -78,13 +78,13 @@ test('extra arguments and unsupported session selectors fail before any external
   on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
-  for (const args of ['overview extra', 'help extra', 'doctor extra', 'setup extra', 'json extra', 'bundle extra', 'fixes extra', 'label extra', 'attribution extra', 'issues extra', 'health extra', 'patterns extra', 'agents extra', 'context extra', 'timeline extra', 'pane unknown', 'pane close extra', 'schemas first second', 'view steps junk', 'json -- ignored']) {
+  for (const args of ['overview extra', 'help extra', 'doctor extra', 'telemetry extra', 'setup extra', 'json extra', 'bundle extra', 'fixes extra', 'label extra', 'attribution extra', 'issues extra', 'health extra', 'patterns extra', 'agents extra', 'context extra', 'timeline extra', 'pane unknown', 'pane close extra', 'schemas first second', 'view steps junk', 'json -- ignored']) {
     const result = await $.command.run({ command: 'obs', args } as never)
     expect(result.text).toContain('Unexpected arguments')
   }
   expect((await $.command.run({ command: 'obs', args: 'overview --session-id A' } as never)).text).toBe('--session-id requires --session <capture path>.')
   expect((await $.command.run({ command: 'obs', args: 'overview --session x --session-id' } as never)).text).toBe('--session-id needs an exact session id inside the capture.')
-  for (const sub of ['help', 'doctor', 'setup', 'schemas', 'converge', 'labels', 'watch', 'statusline']) {
+  for (const sub of ['help', 'doctor', 'telemetry', 'setup', 'schemas', 'converge', 'labels', 'watch', 'statusline']) {
     expect((await $.command.run({ command: 'obs', args: `${sub} --session other` } as never)).text).toBe(`--session is not supported by /obs ${sub}.`)
   }
 })

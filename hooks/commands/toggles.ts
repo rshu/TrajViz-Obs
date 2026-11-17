@@ -1,5 +1,6 @@
 import type { CommandRunResult, EngineInterface } from 'claude-code'
 import { readFlags, readLatest, setFlag } from '../lib/state'
+import { markOutcome } from '../lib/telemetry'
 import { drawStatusLine, setStatusLineEnabled } from '../lib/watch'
 import type { CommandContext } from './index'
 
@@ -11,11 +12,10 @@ import type { CommandContext } from './index'
 export async function toggles($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
   const name = ctx.parsed.sub === 'watch' ? 'watch' : 'statusline'
   const arg = ctx.parsed.positional[0]
-  if (ctx.parsed.positional.length > 1) return { text: `Usage: /obs ${name} [on|off]` }
-  let on: boolean
-  if (arg === undefined) on = !(await readFlags($))[name]
-  else if (arg === 'on' || arg === 'off') on = arg === 'on'
-  else return { text: `Usage: /obs ${name} [on|off]` }
+  if (ctx.parsed.positional.length > 1 || (arg !== undefined && arg !== 'on' && arg !== 'off')) {
+    return { text: markOutcome(ctx.telemetry, 'rejected', `Usage: /obs ${name} [on|off]`) }
+  }
+  const on = arg === undefined ? !(await readFlags($))[name] : arg === 'on'
   await setFlag($, name, on)
   if (name === 'statusline') {
     setStatusLineEnabled(on)

@@ -3,9 +3,9 @@ import { BridgeError } from '../lib/bridge'
 import { artifactsDir } from '../lib/paths'
 import { isProcessWithheld } from '../lib/python'
 import { captureSnapshot, isEmpty, provenanceLine } from '../lib/snapshot'
+import { markOutcome, type OutcomeTracker } from '../lib/telemetry'
 import { syncStatusLine } from '../lib/watch'
 import type { CommandContext } from './index'
-import { maybeOpenPane } from './pane'
 
 /**
  * The rows of the spec's "Error and degraded states" table that `/obs`
@@ -60,7 +60,17 @@ export function errorRow(e: unknown, spec?: string): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-/** `/obs [overview] [--session …]`: the snapshot's text under its provenance line, and the note for the model. */
+export function observedError(tracker: OutcomeTracker | undefined, e: unknown, spec?: string): string {
+  const text = errorRow(e, spec)
+  if (e instanceof BridgeError) {
+    if (e.code === 'not_found' && !spec) return markOutcome(tracker, 'empty', text)
+    if (e.code === 'declined' || e.code === 'session_changed') return markOutcome(tracker, 'cancelled', text)
+    if (e.code === 'bad_option' || e.code === 'ambiguous') return markOutcome(tracker, 'rejected', text)
+  }
+  return markOutcome(tracker, 'error', text)
+}
+
+/** `/obs overview [--session …]`: the snapshot's text under its provenance line, and the note for the model. */
 export async function overview($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
   const spec = sessionSpec(ctx)
   let snap
@@ -69,12 +79,11 @@ export async function overview($: EngineInterface, ctx: CommandContext): Promise
   try {
     ;({ snap, id, generation } = await captureSnapshot($, ctx.options, spec, undefined, captureSessionSpec(ctx)))
   } catch (e) {
-    return { text: errorRow(e, spec) }
+    return { text: observedError(ctx.telemetry, e, spec) }
   }
   void syncStatusLine($, snap, generation)
-  if (isEmpty(snap)) return { text: EMPTY_TEXT }
+  if (isEmpty(snap)) return { text: markOutcome(ctx.telemetry, 'empty', EMPTY_TEXT) }
   const at = new Date(snap.generated_at)
   const text = `${provenanceLine(id, snap, Number.isNaN(at.getTime()) ? new Date() : at)}\n${snap.text}`
-  await maybeOpenPane($, ctx)
   return { text, context: [contextNote(snap.artifacts.dir ?? await artifactsDir($, snap.transcript.session_id, snap.transcript.capture_session_id, spec ? snap.transcript.path : undefined))] }
 }

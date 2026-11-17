@@ -10,7 +10,6 @@ from __future__ import annotations
 import copy
 import math
 from bisect import bisect_left
-from datetime import datetime
 
 from agent_trajviz import Trajectory
 
@@ -28,24 +27,6 @@ def _number(value) -> bool:
         return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
     except OverflowError:
         return False
-
-
-def _elapsed_seconds(run: Trajectory) -> float | None:
-    """An observed elapsed clock, independent of complete assistant durations."""
-    elapsed = project_analysis(run).metrics.get("wall_clock")
-    if _number(elapsed) and elapsed >= 0:
-        return float(elapsed)
-    timing = run.raw.get("timing")
-    if not isinstance(timing, dict):
-        return None
-    started, finished = timing.get("started_at"), timing.get("finished_at")
-    if not isinstance(started, str) or not isinstance(finished, str):
-        return None
-    try:
-        elapsed = (datetime.fromisoformat(finished) - datetime.fromisoformat(started)).total_seconds()
-    except (ValueError, TypeError, OverflowError):
-        return None
-    return elapsed if math.isfinite(elapsed) and elapsed >= 0 else None
 
 
 def _tool_clocks(run: Trajectory) -> list[bool]:
@@ -78,9 +59,10 @@ def _coverage(observed: int, total: int) -> dict:
 
 def metric_coverage(run: Trajectory) -> dict:
     """Native token totals, elapsed clock and canonical tool-latency coverage."""
+    analysis = project_analysis(run)
     clocks = _tool_clocks(run)
-    return {"tokens.total": copy.deepcopy(project_analysis(run).data_quality["fields"]["tokens.total"]),
-            "duration": _coverage(int(_elapsed_seconds(run) is not None), 1),
+    return {"tokens.total": copy.deepcopy(analysis.data_quality["fields"]["tokens.total"]),
+            "duration": _coverage(int(analysis.metrics.get("wall_clock") is not None), 1),
             "tool_timing": _coverage(sum(clocks), len(clocks))}
 
 
@@ -97,12 +79,13 @@ def project_report(report: dict, reference: Trajectory, compared: Trajectory) ->
     for side, run in (("reference", reference), ("compared", compared)):
         fields = metric_coverage(run)
         tokens = fields["tokens.total"]["status"] == "observed"
-        elapsed = _elapsed_seconds(run)
+        metrics = project_analysis(run).metrics
+        elapsed = metrics.get("wall_clock")
         timing = fields["tool_timing"]["status"] == "observed"
         coverage[side] = {"tokens": tokens, "elapsed": elapsed is not None, "tool_timing": timing,
                           "costs": tokens and timing}
         outcome = result.setdefault("outcome", {})
-        outcome[f"{side}_tokens"] = project_analysis(run).metrics["tokens"]["total"] if tokens else None
+        outcome[f"{side}_tokens"] = metrics["tokens"]["total"] if tokens else None
         outcome[f"{side}_duration_s"] = elapsed
     complete = all(side["costs"] for side in coverage.values())
     result["_obs_cost_coverage"] = coverage
@@ -180,7 +163,7 @@ def project_scorecard(result: dict, sources: list[Trajectory | str]) -> dict:
             row.update(tokens=None, peak_occupancy=None, peak_pct=None)
         if fields["tool_outcomes"]["status"] != "observed" or not row.get("tool_calls"):
             row["tool_success_pct"] = None
-        elapsed = _elapsed_seconds(run)
+        elapsed = analysis.metrics.get("wall_clock")
         if elapsed is None:
             row.update(wall_clock_s=None, wall_clock_fmt="?")
         elif row.get("wall_clock_s") != elapsed:

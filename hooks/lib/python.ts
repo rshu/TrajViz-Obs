@@ -9,7 +9,7 @@ import { cacheRoot, isWindows } from './paths'
 import { readSession, updateSession } from './state'
 
 /** The manifest's default `trajvizSource`. */
-export const DEFAULT_SOURCE = 'agent-trajviz==0.5.0'
+export const DEFAULT_SOURCE = 'agent-trajviz==0.5.1'
 
 /** The interpreters tried on PATH, in order, when no override is set. */
 export const PYTHON_CANDIDATES: readonly string[] = ['python3.13', 'python3.12', 'python3.11', 'python3', 'python']
@@ -144,8 +144,8 @@ export async function statePath($: EngineInterface): Promise<string> {
   return `${await cacheRoot($)}/state.json`
 }
 
-/** The recorded environment, null when `state.json` is missing or not an EnvState. */
-export async function readEnvState($: EngineInterface): Promise<EnvState | null> {
+/** The recorded environment, null when `state.json` is missing or not an EnvState. Pass false to skip pinning. */
+export async function readEnvState($: EngineInterface, pin = true): Promise<EnvState | null> {
   const pinned = (await readSession($)).environment
   if (pinned && isEnvState(pinned) && await usableState($, pinned)) return pinned
   let text: string
@@ -163,7 +163,7 @@ export async function readEnvState($: EngineInterface): Promise<EnvState | null>
   try {
     const v: unknown = JSON.parse(text)
     if (!isEnvState(v) || !await usableState($, v)) return null
-    return pinEnv($, v)
+    return pin ? pinEnv($, v) : v
   } catch {
     return null
   }

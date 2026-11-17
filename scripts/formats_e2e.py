@@ -45,7 +45,8 @@ def stamp(index: int) -> str:
 def fixtures(root: Path) -> dict[str, Path]:
     """Every format contains one failed Bash call, a final answer and exactly 25 logged tokens."""
     result = {}
-    usage = {'input_tokens': 12, 'output_tokens': 8}
+    usage = {'input_tokens': 12, 'output_tokens': 8, 'cache_read_input_tokens': 0,
+             'cache_creation_input_tokens': 0}
     result['claude_code'] = write(root / 'claude.jsonl', [
         {'type': 'user', 'sessionId': 'claude', 'uuid': 'u', 'parentUuid': None, 'timestamp': stamp(0),
          'message': {'role': 'user', 'content': 'Run the synthetic check'}},
@@ -57,7 +58,7 @@ def fixtures(root: Path) -> dict[str, Path]:
                                                'content': 'synthetic failure', 'is_error': True}]}},
         {'type': 'assistant', 'sessionId': 'claude', 'uuid': 'f', 'parentUuid': 't', 'timestamp': stamp(3),
          'message': {'role': 'assistant', 'id': 'f', 'content': [{'type': 'text', 'text': 'Failure preserved'}],
-                     'usage': {'input_tokens': 3, 'output_tokens': 2}, 'stop_reason': 'end_turn'}},
+                     'usage': {**usage, 'input_tokens': 3, 'output_tokens': 2}, 'stop_reason': 'end_turn'}},
     ], jsonl=True)
     object_messages = [
         {'info': {'role': 'user', 'id': 'u', 'time': {'created': BASE_MS}},

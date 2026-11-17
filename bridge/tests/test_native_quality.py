@@ -11,6 +11,8 @@ import pytest
 
 from trajviz_obs.compat import load_run, project_analysis, project_brief, project_view
 from trajviz_obs.native_quality import _recent_outcome_lines, project_dashboard_session
+from trajviz_obs.sidecars import scan_transcript
+from trajviz_obs.snapshot import build_snapshot
 
 BASE = 1790000000000
 
@@ -162,6 +164,107 @@ def test_measured_native_zero_remains_zero(native_run):
     assert "tokens_total: 0" in project_brief(run)
 
 
+def test_native_duration_aggregates_skip_reversed_intervals_but_keep_measured_zero(native_run):
+    _, run = native_run([message(str(completed), usage(), completed=completed)
+                         for completed in (0, 99, 100, 2100)])
+    assert run.metrics["total_duration"] == 1.9
+    projected = project_analysis(run)
+    metrics = projected.metrics
+    assert metrics["total_duration"] == 2.0
+    assert metrics["avg_duration"] == metrics["median_duration"] == 1.0
+    assert metrics["p95_duration"] == metrics["max_duration"] == 2.0
+    assert metrics["wall_clock"] == run.metrics["wall_clock"] == 2.0
+    assert metrics["tokens_per_second"] is None
+    assert projected.data_quality["fields"]["duration"]["observed"] == 2
+    assert [row["duration"] for row in projected.message_rows] == [None, None, 0.0, 2.0]
+    assert projected.agent_summaries[0]["total_duration_s"] == 2.0
+    chart = project_view(run, run.view("step_durations")).data
+    assert chart["average_s"] == 1.0
+    assert [row["duration_s"] for row in chart["steps"]] == [None, None, 0.0, 2.0]
+
+    # Legacy or imported steps may have durations without calendar stamps.
+    untimestamped = replace(run, steps=[{**step, "time_created_ms": None, "time_completed_ms": None}
+                                       for step in run.steps], raw={})
+    assert untimestamped.metrics["wall_clock"] == 1.9
+    assert project_analysis(untimestamped).metrics["wall_clock"] == 2.0
+
+
+def test_compaction_time_cannot_fill_missing_assistant_duration(native_run):
+    compact = {"id": "compact", "type": "compaction", "status": "completed", "reason": "manual",
+               "summary": "Controlled summary", "time": {"created": BASE + 800, "completed": BASE + 1300}}
+    _, run = native_run([message(tokens=usage(), completed=None), compact], session_time=False)
+    projected = project_analysis(run)
+    assert run.metrics["avg_duration"] == 0.5
+    assert projected.metrics["avg_duration"] is None
+    assert projected.metrics["wall_clock"] == run.metrics["wall_clock"] == 1.2
+    assert projected.data_quality["fields"]["duration"]["observed"] == 0
+    assert projected.agent_summaries[0]["total_duration_s"] is None
+    chart = project_view(run, run.view("step_durations")).data
+    assert chart["average_s"] is None
+    assert [row["duration_s"] for row in chart["steps"]] == [None, None]
+
+
+def test_duration_aggregation_keeps_native_rounding_and_percentile_for_valid_records(native_run):
+    _, run = native_run([message(str(completed), usage(), completed=completed)
+                         for completed in (100, 1000, 2100)])
+    metrics = project_analysis(run).metrics
+    for key in ("total_duration", "avg_duration", "median_duration", "p95_duration", "max_duration",
+                "wall_clock", "tokens_per_second", "median_tokens_per_second", "model_breakdown"):
+        assert metrics[key] == run.metrics[key]
+
+
+def test_total_processed_throughput_uses_unrounded_valid_durations(native_run):
+    _, run = native_run([message(tokens=usage(input=100, output=0, reasoning=0, read=0), completed=2100),
+                         {"type": "skill", "id": "skill", "name": "demo",
+                          "time": {"created": BASE + 2000, "completed": BASE + 1000}}])
+    assert run.metrics["tokens_per_second"] == 100.0
+    projected = project_analysis(run)
+    assert projected.data_quality["fields"]["duration"]["status"] == "observed"
+    assert projected.metrics["total_duration"] == 2.0
+    assert projected.metrics["tokens_per_second"] == 50.0
+
+    # Claude's per-message transcript intervals can have millisecond precision.
+    short = replace(run, steps=[{**run.steps[0], "duration": 0.004,
+                                "time_completed_ms": run.steps[0]["time_created_ms"] + 4}])
+    assert project_analysis(short).metrics["total_duration"] == 0.0
+    assert project_analysis(short).metrics["tokens_per_second"] == 25_000.0
+
+
+@pytest.mark.parametrize("compaction_tokens", [usage(input=90, output=10, reasoning=0, read=0), None])
+def test_processed_throughput_uses_assistant_tokens_and_duration_only(native_run, compaction_tokens):
+    assistant = message(tokens=usage(input=40, output=10, reasoning=0, read=50), completed=2100)
+    compact = {"id": "compact", "type": "compaction", "status": "completed", "reason": "manual",
+               "summary": "Controlled summary", "time": {"created": BASE + 2200, "completed": BASE + 2700}}
+    if compaction_tokens is not None:
+        compact["tokens"] = compaction_tokens
+    _, run = native_run([assistant, compact])
+    assert run.metrics["total_duration"] == 2.5
+    metrics = project_analysis(run).metrics
+    assert metrics["tokens"]["total"] == (200 if compaction_tokens else 100)
+    assert metrics["total_duration"] == 2.0
+    assert metrics["tokens_per_second"] == 50.0
+
+
+def test_model_breakdown_counts_assistant_work_instead_of_prompt_or_checkpoint_metadata(native_run):
+    def compaction(mid, model, tokens=None):
+        return {"type": "compaction", "id": mid, "model": {"id": model}, "status": "completed",
+                "summary": "Controlled summary", **({"tokens": tokens} if tokens is not None else {})}
+
+    _, run = native_run([
+        {"type": "user", "id": "prompt", "text": "Question", "model": {"id": "first"}},
+        {"type": "skill", "id": "skill", "name": "demo", "model": {"id": "second"}},
+        {**message("observed", usage()), "model": {"id": "first"}},
+        {**message("unmetered"), "model": {"id": "second"}},
+        {**message("synthetic"), "model": {"id": "<synthetic>"}},
+        compaction("checkpoint", "second"),
+    ])
+    assert run.metrics["model_breakdown"] == {"first": 2, "second": 3, "<synthetic>": 1}
+    assert project_analysis(run).metrics["model_breakdown"] == {"first": 1, "second": 1}
+
+    _, compacted = native_run([message(tokens=usage()), compaction("generated", "compactor", usage(0, 0, 0, 0, 0))])
+    assert project_analysis(compacted).metrics["model_breakdown"] == {"controlled": 1, "compactor": 1}
+
+
 def test_compaction_usage_keeps_real_totals_without_changing_assistant_throughput_population(native_run):
     compact = {"id": "compact", "type": "compaction", "status": "completed", "reason": "manual",
                "summary": "Controlled summary", "tokens": usage(1, 1, 0, 0, 0), "time": {"created": BASE + 1200}}
@@ -188,6 +291,35 @@ def test_missing_native_clock_is_unknown_instead_of_a_zero_duration(native_run):
     summary = project_view(run, run.view("summary"))
     assert summary.data["wall_clock_s"] is None
     jsonschema.validate(summary.to_dict(), tv.view_schema("summary"))
+
+
+def test_lone_claude_timestamp_does_not_measure_elapsed(fixture_session, tmp_path):
+    records = [json.loads(line) for line in fixture_session.read_text().splitlines() if line]
+    assistant = next(record for record in records if record.get("type") == "assistant")
+    path = tmp_path / "single-timestamp.jsonl"
+    path.write_text(json.dumps(assistant) + "\n")
+    run = load_run(str(path))
+    assert run.raw["timing"]["started_at"] == run.raw["timing"]["finished_at"]
+    assert project_analysis(run).metrics["wall_clock"] is None
+
+
+def test_full_elapsed_clock_matches_trajviz_even_when_dashboard_caps_steps(native_run, monkeypatch):
+    from agent_trajviz.insight import session
+
+    elapsed = 340 * 3600 + 24 * 60
+    path, run = native_run([
+        message("start", completed=None),
+        {**message("middle", completed=None), "time": {"created": BASE + 1100}},
+        {**message("end", completed=None), "time": {"created": BASE + 100 + elapsed * 1000}},
+    ], session_time=False)
+    monkeypatch.setattr(session, "MAX_STEPS", 2)
+    browser = project_dashboard_session(session.session_from_run(run))
+    snapshot = build_snapshot(run, transcript_path=str(path), facts=scan_transcript(str(path)),
+                              agents_meta={}, artifacts=None)
+    assert browser.truncated and len(browser.steps) == browser.metrics["total_steps"] == 2
+    assert browser.metrics["wall_clock"] == snapshot["timing"]["wall_clock_s"] == run.metrics["wall_clock"] == elapsed
+    assert browser.wall_clock == snapshot["timing"]["wall_clock_fmt"] == run._analysis.wall_clock == "14d 4h"
+    assert "wall clock 14d 4h" in snapshot["text"]
 
 
 def test_generation_rates_use_the_same_timed_steps_for_both_tokens_and_seconds(native_run):
@@ -520,7 +652,9 @@ def test_pending_native_brief_formats_generated_unknowns_without_rewriting_sourc
     assert run.to_dict(include_raw=True) == original and path.read_bytes() == source
 
 
-def test_brief_preserves_a_measured_zero_elapsed_without_assistant_completion(native_run):
+def test_measured_zero_elapsed_without_assistant_completion_reaches_every_overview(native_run):
+    from agent_trajviz.insight.session import session_from_run
+
     path, _ = native_run([message(tokens=usage(0, 0, 0, 0, 0), completed=None)])
     document = json.loads(path.read_text())
     document["session"]["time"]["updated"] = BASE
@@ -528,6 +662,12 @@ def test_brief_preserves_a_measured_zero_elapsed_without_assistant_completion(na
     path.write_text(json.dumps(document))
     run = load_run(str(path))
     brief = project_brief(run)
+    browser = project_dashboard_session(session_from_run(run))
+    snapshot = build_snapshot(run, transcript_path=str(path), facts=scan_transcript(str(path)),
+                              agents_meta={}, artifacts=None)
+    assert browser.metrics["wall_clock"] == snapshot["timing"]["wall_clock_s"] == 0
+    assert browser.wall_clock == snapshot["timing"]["wall_clock_fmt"] == "0s"
+    assert "wall clock 0s" in snapshot["text"]
     assert "wall_clock: 0s" in brief and "tokens_total: 0" in brief
     assert "avg_duration_s: unknown" in brief  # Elapsed and per-model timing have separate evidence.
 

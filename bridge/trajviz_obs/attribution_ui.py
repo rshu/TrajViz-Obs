@@ -25,8 +25,8 @@ def _public_caption(value: str, chinese: bool) -> str:
     return _LOCALIZED_ENGINE.sub("归因", value) if chinese else attribution_message(value)
 
 
-def public_translation_head(head: str) -> str:
-    """Translate the bridge's attribution captions with the native browser catalog."""
+def public_translation_head(head: str, *, extra: dict[str, str] | None = None) -> str:
+    """Use the native browser catalog for attribution and plugin captions."""
     marker = "window.__tvTranslations="
     prefix, found, tail = head.partition(marker)
     if not found:
@@ -39,6 +39,7 @@ def public_translation_head(head: str) -> str:
         # The same caption can appear inside an HTML data attribute, where
         # attribution_message preserves the middle-of-sentence capitalization.
         translations[attribution_message('"' + key)[1:]] = caption
+    translations.update(extra or {})
     return prefix + marker + json.dumps(translations, ensure_ascii=False).replace("<", "\\u003c") + tail[end:]
 
 

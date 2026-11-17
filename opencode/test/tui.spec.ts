@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'bun:test'
 import type { Plugin } from '@opencode/plugin/tui'
 import { SNAPSHOT } from '../../hooks/testdata/snapshot.js'
-import type { CommandResult } from '../src/rpc.js'
+import type { CommandResult, RunInput, UsageInteraction } from '../src/rpc.js'
 import { setup } from '../src/tui.js'
 
 function host(options: Record<string, unknown> = {}, onSession = true) {
@@ -16,8 +16,10 @@ function host(options: Record<string, unknown> = {}, onSession = true) {
     sync: mock(async (_input: unknown, _options?: unknown) => ({ sessionID: 'ses_current' })),
     resolve: mock(async (_input: unknown, _options?: unknown): Promise<{ sessionID: string; path?: string }> => ({ sessionID: 'ses_other' })),
     snapshot: mock(async (_input: unknown, _options?: unknown) => structuredClone(SNAPSHOT)),
-    run: mock(async (_input: { sessionID: string; args: string; runID: string; confirmationID?: string; model?: unknown }, _options?: unknown): Promise<CommandResult> => ({ text: 'Done', snapshot: structuredClone(SNAPSHOT), sessionID: 'ses_current' })),
+    run: mock(async (_input: RunInput, _options?: unknown): Promise<CommandResult> => ({ text: 'Done', snapshot: structuredClone(SNAPSHOT), sessionID: 'ses_current' })),
     cancel: mock(async (_input: unknown, _options?: unknown) => ({ cancelled: true })),
+    usageStatus: mock(async (_input: object, _options?: unknown) => ({ enabled: false })),
+    usageInteraction: mock(async (_input: UsageInteraction, _options?: unknown) => ({})),
     events: { on: (name: string, callback: (event: { data: Record<string, string> }) => void) => { listeners.set(name, callback); return () => { unsubscribed.push(name); listeners.delete(name) } } },
   }
   const sessionGet = mock(async (input: { sessionID: string }, _options?: unknown) => ({ id: input.sessionID, location: { directory: '/test-project' } }))
@@ -54,6 +56,72 @@ function host(options: Record<string, unknown> = {}, onSession = true) {
 }
 
 describe('OpenCode command adapter', () => {
+  test('known commands that fail before dispatch report only the allowlisted outcome', async () => {
+    const h = host()
+    h.rpc.usageStatus.mockResolvedValue({ enabled: true })
+    try {
+      await h.command('help --private-flag "private argument"')
+      await h.command('private-unknown-command')
+      h.rpc.resolve.mockRejectedValueOnce(new Error('private resolve error'))
+      await h.command('issues --session "/private/missing.json"')
+      expect(h.rpc.run).not.toHaveBeenCalled()
+      await h.command('help')
+      expect(h.rpc.run).toHaveBeenCalledTimes(1)
+      expect(h.rpc.usageInteraction.mock.calls.map(([{ feature, surface, outcome }]) => ({ feature, surface, outcome }))).toEqual([
+        { feature: 'help', surface: 'terminal', outcome: 'rejected' },
+        { feature: 'issues', surface: 'terminal', outcome: 'error' },
+      ])
+      expect(JSON.stringify(h.rpc.usageInteraction.mock.calls.map(([input]) => input))).not.toContain('private')
+    } finally { h.cleanup() }
+  })
+
+  test('enabling during terminal preflight does not report a command started while off', async () => {
+    const h = host()
+    const resolving = Promise.withResolvers<{ sessionID: string }>()
+    h.rpc.resolve.mockReturnValueOnce(resolving.promise)
+    try {
+      const command = h.command('issues --session missing')
+      await Bun.sleep(0)
+      expect(h.rpc.usageStatus).toHaveBeenCalledTimes(1)
+      h.rpc.usageStatus.mockResolvedValue({ enabled: true })
+      resolving.reject(new Error('Missing session'))
+      await command
+      expect(h.rpc.usageInteraction).not.toHaveBeenCalled()
+    } finally { h.cleanup() }
+  })
+
+  test('pane gestures require server consent and skip the snapshot used to render the pane', async () => {
+    const off = host(), on = host()
+    on.rpc.usageStatus.mockResolvedValue({ enabled: true })
+    try {
+      await off.command('pane')
+      await off.command('pane close')
+      await Bun.sleep(0)
+      expect(off.rpc.usageStatus.mock.calls.map(([input]) => input)).toEqual([{}, {}])
+      expect(off.rpc.usageInteraction).not.toHaveBeenCalled()
+      off.rpc.usageStatus.mockResolvedValue({ enabled: true })
+      await off.command('pane')
+      await Bun.sleep(0)
+      expect(off.rpc.usageStatus).toHaveBeenCalledTimes(3)
+      expect(off.rpc.usageInteraction).toHaveBeenCalledTimes(1)
+      off.rpc.usageStatus.mockResolvedValue({ enabled: false })
+      await off.command('pane close')
+      await Bun.sleep(0)
+      expect(off.rpc.usageInteraction).toHaveBeenCalledTimes(1)
+      await on.command('pane --session "/private/session.json"')
+      await on.command('watch on')
+      await on.command('statusline off')
+      await on.command('pane close')
+      await Bun.sleep(0)
+      expect(on.rpc.run.mock.calls[0]?.[0]).toMatchObject({ args: 'overview --session "/private/session.json"', paneSnapshot: true })
+      expect(on.rpc.usageInteraction.mock.calls.map(([{ durationMs, ...event }]) => {
+        expect(durationMs).toBeGreaterThanOrEqual(0)
+        return event
+      })).toEqual((['pane', 'watch', 'statusline', 'pane.close'] as const).map(feature => ({ feature, surface: 'terminal', outcome: 'success' })))
+      expect(JSON.stringify(on.rpc.usageInteraction.mock.calls.map(([input]) => input))).not.toContain('private')
+    } finally { off.cleanup(); on.cleanup() }
+  })
+
   test('completed results retain their captured facts after later live refreshes', async () => {
     const h = host()
     try {
@@ -117,9 +185,19 @@ describe('OpenCode command adapter', () => {
     try {
       await h.command('help')
       expect(h.rpc.run.mock.calls[0]?.[0].sessionID).toBe('home')
+      await h.command('telemetry')
+      expect(h.rpc.run.mock.calls[1]?.[0]).toMatchObject({ sessionID: 'home', args: 'telemetry' })
+      await h.command('enable_telemetry')
+      await h.command('disable_telemetry')
+      expect(h.rpc.run.mock.calls[2]?.[0]).toMatchObject({ sessionID: 'home', args: 'enable_telemetry' })
+      expect(h.rpc.run.mock.calls[3]?.[0]).toMatchObject({ sessionID: 'home', args: 'disable_telemetry' })
+      await h.command('telemetry_destination https://collector.example --use-launch-token')
+      await h.command('dashboard port 8400')
+      expect(h.rpc.run.mock.calls[4]?.[0]).toMatchObject({ sessionID: 'home', args: 'telemetry_destination https://collector.example --use-launch-token' })
+      expect(h.rpc.run.mock.calls[5]?.[0]).toMatchObject({ sessionID: 'home', args: 'dashboard port 8400' })
       expect(h.rpc.sync).toHaveBeenCalledTimes(0)
       await h.command('issues')
-      expect(h.rpc.run).toHaveBeenCalledTimes(1)
+      expect(h.rpc.run).toHaveBeenCalledTimes(6)
       const state = [...h.memory.values()][0] as { jobs: Record<string, { text: string }> }
       expect(Object.values(state.jobs).some(job => job.text.includes('Open a session'))).toBe(true)
     } finally { h.cleanup() }

@@ -1,8 +1,10 @@
 import type { OpenCodeClient, LocationRef } from '@opencode/client'
 import { captureSession } from './collect.js'
-import { Obs, type CommandResult, type RunInput } from './rpc.js'
+import { createInteractionReporter } from './interaction.js'
+import { Obs, type CommandResult, type RunInput, type UsageInteraction } from './rpc.js'
 import { analyzeSelection, parseArgs, passArgs, quoteOption } from './shared/args.js'
-import { validateArguments } from './command-args.js'
+import { isSessionlessCommand, validateArguments } from './command-args.js'
+import { usageFeature } from './usage-features.js'
 import { commandText, errorMessage as message, safeText, TABS } from './tui-model.js'
 import type { Snapshot, EmptySnapshot } from './types.js'
 
@@ -21,14 +23,14 @@ export type GuiHooks = {
   confirm(confirmation: NonNullable<CommandResult['confirmation']>, signal: AbortSignal): Promise<boolean>
   notice(text: string, error?: boolean): void
 }
-const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
 const display = (text: string) => { const clean = safeText(text); return clean.length > 64_000 ? clean.slice(0, 64_000) + '\n\nDisplay clipped. Export the full result with /obs json.' : clean }
-const pause = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+const pause = (signal: AbortSignal, milliseconds = 1000) => new Promise<void>((resolve, reject) => {
   signal.throwIfAborted()
   const abort = () => { clearTimeout(timer); reject(signal.reason) }
-  const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, 1000)
+  const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, milliseconds)
   signal.addEventListener('abort', abort, { once: true })
 })
+const rpcUnavailable = (error: unknown): boolean => typeof error === 'object' && error !== null && 'type' in error && error.type === 'rpc.unavailable'
 
 /** Browser-only coordinator; source reads and RPC always use the same authenticated server client. */
 export class GuiController {
@@ -39,6 +41,7 @@ export class GuiController {
   private readonly generations = new Map<string, number>()
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly dirty = new Set<string>()
+  private readonly report = createInteractionReporter('desktop')
   private closed = false
   constructor(readonly hooks: GuiHooks, readonly lifetime?: AbortSignal) {}
   view(origin: GuiOrigin): GuiView {
@@ -49,7 +52,29 @@ export class GuiController {
   target(origin: GuiOrigin): GuiTarget { return this.view(origin).selected ?? { id: origin.id } }
   snapshot(origin: GuiOrigin) { return this.view(origin).snapshots[this.target(origin).id] }
   error(origin: GuiOrigin) { return this.view(origin).errors[this.target(origin).id] }
-  selectTab(origin: GuiOrigin, tab: number) { this.view(origin).tab = Math.max(0, Math.min(TABS.length - 1, tab)); this.hooks.changed() }
+  resetInteractionConsent(client: OpenCodeClient): void { this.report.reset(client) }
+  private beginInteraction(origin: GuiOrigin, started: number) {
+    if (this.closed || this.lifetime?.aborted) return
+    try {
+      const client = origin.client()
+      const finish = this.report(client, origin.location(), started)
+      return (feature: UsageInteraction['feature'], outcome: UsageInteraction['outcome']): void => {
+        try { if (!this.closed && !this.lifetime?.aborted && origin.client() === client) void finish?.(feature, outcome) }
+        catch { /* The UI can be reloading or between connections. */ }
+      }
+    } catch { /* The UI can be reloading or between connections. */ }
+  }
+  interaction(origin: GuiOrigin, feature: UsageInteraction['feature'], outcome: UsageInteraction['outcome'], started: number): void {
+    this.beginInteraction(origin, started)?.(feature, outcome)
+  }
+  selectTab(origin: GuiOrigin, tab: number) {
+    const view = this.view(origin), next = Math.max(0, Math.min(TABS.length - 1, tab))
+    if (view.tab === next) return
+    const started = performance.now()
+    view.tab = next
+    this.hooks.changed()
+    this.interaction(origin, 'pane.tab', 'success', started)
+  }
   restoreResult(origin: GuiOrigin, id: string): boolean {
     const job = this.jobs.get(id)
     if (this.closed || !job || job.pending || !job.target || job.origin.key !== origin.key) return false
@@ -59,7 +84,7 @@ export class GuiController {
   }
   follow(origin: GuiOrigin, args: string): string {
     const parsed = parseArgs(args)
-    if (SESSIONLESS.has(parsed.sub) || ['watch', 'statusline', 'cancel'].includes(parsed.sub) || parsed.flags.session !== undefined || parsed.sub === 'analyze' && analyzeSelection(args).session !== undefined) return args
+    if (isSessionlessCommand(parsed) || ['watch', 'statusline', 'cancel'].includes(parsed.sub) || parsed.flags.session !== undefined || parsed.sub === 'analyze' && analyzeSelection(args).session !== undefined) return args
     const target = this.target(origin)
     return target.selector ? `${args} ${quoteOption('session', target.selector)}${target.captureSessionID ? ` ${quoteOption('session-id', target.captureSessionID)}` : ''}`
       : target.id !== origin.id ? `${args} ${quoteOption('session', target.id)}` : args
@@ -78,9 +103,26 @@ export class GuiController {
     if (origin.id !== 'home') throw new Error('Session location is still loading. Try again when the session is ready.')
     return { directory: (await client.location.get(undefined, { signal })).directory }
   }
-  private async sync(client: OpenCodeClient, id: string, signal: AbortSignal): Promise<void> {
+  private checkClient(origin: GuiOrigin, client: OpenCodeClient, signal: AbortSignal): void {
+    signal.throwIfAborted()
+    if (origin.client() !== client) throw new Error('The server reconnected. Run the command again to refresh its result.')
+  }
+  private async waitForRpc<T>(origin: GuiOrigin, client: OpenCodeClient, signal: AbortSignal, call: () => Promise<T>): Promise<T> {
+    const delays = [200, 500, 1000]
+    for (let attempt = 0;; attempt++) {
+      this.checkClient(origin, client, signal)
+      try { return await call() }
+      catch (error) {
+        const delay = delays[attempt]
+        // The host rejected dispatch before the workspace plugin registered.
+        if (delay === undefined || !rpcUnavailable(error)) throw error
+        await pause(signal, delay)
+      }
+    }
+  }
+  private async sync(origin: GuiOrigin, client: OpenCodeClient, id: string, signal: AbortSignal): Promise<void> {
     const source = await captureSession(client, id, signal)
-    await client.rpc(Obs).sync({ source }, { location: { directory: source.directory }, signal })
+    await this.waitForRpc(origin, client, signal, () => client.rpc(Obs).sync({ source }, { location: { directory: source.directory }, signal }))
   }
   private cancelRemote(client: OpenCodeClient, runID: string, location?: LocationRef): void {
     try {
@@ -90,17 +132,17 @@ export class GuiController {
   private async remote(job: GuiJob, client: OpenCodeClient, input: RunInput,
                        options: { location: LocationRef; signal: AbortSignal }): Promise<CommandResult> {
     const rpc = client.rpc(Obs), { signal, location } = options
-    const check = () => {
-      signal.throwIfAborted()
-      if (job.origin.client() !== client) throw new Error('The server reconnected. Run the command again to refresh its result.')
-    }
+    const check = () => this.checkClient(job.origin, client, signal)
     let startError: unknown
     try {
-      // Every phase starts once. An ambiguous acknowledgement can be recovered
-      // by polling its existing identity, never by repeating paid work.
-      check()
-      try { await rpc.start(input, options) }
-      catch (error) { check(); startError = error }
+      // Retry rejected dispatch during registration. For an ambiguous acknowledgement,
+      // poll the existing phase identity instead of starting it again.
+      try { await this.waitForRpc(job.origin, client, signal, () => rpc.start(input, options)) }
+      catch (error) {
+        check()
+        if (rpcUnavailable(error)) throw error
+        startError = error
+      }
       for (;;) {
         check()
         const state = await rpc.poll({ sessionID: input.sessionID, runID: input.runID,
@@ -117,49 +159,65 @@ export class GuiController {
       throw error
     }
   }
-  start(origin: GuiOrigin, raw: string, model?: RunInput['model']): { id: string; done: Promise<void> } {
+  start(origin: GuiOrigin, raw: string, model?: RunInput['model'], paneSnapshot?: true): { id: string; done: Promise<void> } {
     if (this.closed) throw new Error('TrajViz Obs is reloading.')
-    const args = raw.trim(), invalid = validateArguments(args)
-    if (invalid) throw new Error(invalid)
+    const started = performance.now(), args = raw.trim(), invalid = validateArguments(args)
     const view = this.view(origin)
-    if (view.running) throw new Error('An obs command is running. Cancel it before starting another.')
+    const refusal = invalid ?? (view.running ? 'An obs command is running. Cancel it before starting another.' : undefined)
+    if (refusal) {
+      const feature = paneSnapshot ? undefined : usageFeature(args)
+      if (feature) this.interaction(origin, feature, 'rejected', started)
+      throw new Error(refusal)
+    }
     const id = crypto.randomUUID(), controller = this.controller(), client = origin.client()
     const job: GuiJob = { id, args, origin, text: `Running /obs ${args || 'overview'}…`, pending: true }
     this.jobs.set(id, job); this.active.set(id, { controller, client }); view.running = id; view.latest = id
     if (!args) delete view.selected
     this.hooks.changed()
-    return { id, done: this.execute(job, controller, client, model) }
+    return { id, done: this.execute(job, controller, client, model, paneSnapshot) }
   }
-  private async execute(job: GuiJob, controller: AbortController, client: OpenCodeClient, model?: RunInput['model']): Promise<void> {
+  private async execute(job: GuiJob, controller: AbortController, client: OpenCodeClient, model?: RunInput['model'], paneSnapshot?: true): Promise<void> {
     const { origin, args } = job, view = this.view(origin), signal = this.signal(controller), rpc = client.rpc(Obs)
+    const started = performance.now(), feature = paneSnapshot ? undefined : usageFeature(args)
+    const finishUsage = feature ? this.beginInteraction(origin, started) : undefined
     let target: GuiTarget = { id: origin.id }, key: string | undefined, generation: number | undefined
+    let dispatched = false
+    let preflightOutcome: 'error' | 'rejected' = 'error'
     try {
       const location = await this.location(origin, client, signal), options = { location, signal }, parsed = parseArgs(args)
+      const resolve = (selector: string, captureSessionID?: string) => this.waitForRpc(origin, client, signal, () => rpc.resolve({
+        sessionID: origin.id, selector, ...(captureSessionID === undefined ? {} : { captureSessionID }),
+      }, options))
+      const sessionless = isSessionlessCommand(parsed)
       const active = this.active.get(job.id)
       if (active) active.location = location
-      if (!SESSIONLESS.has(parsed.sub)) {
+      if (!sessionless) {
         const analyze = parsed.sub === 'analyze' ? analyzeSelection(args) : undefined
         const selector = analyze ? analyze.session : parsed.flags.session, captureID = analyze ? analyze.captureSessionId : parsed.flags['session-id']
-        if (origin.id === 'home' && typeof selector !== 'string') throw new Error('Open a session first, or select a saved session with --session.')
+        if (origin.id === 'home' && typeof selector !== 'string') {
+          preflightOutcome = 'rejected'
+          throw new Error('Open a session first, or select a saved session with --session.')
+        }
         if (typeof selector === 'string') {
-          const resolved = await rpc.resolve({ sessionID: origin.id, selector, ...(typeof captureID === 'string' ? { captureSessionID: captureID } : {}) }, options)
+          const resolved = await resolve(selector, typeof captureID === 'string' ? captureID : undefined)
           target = { id: resolved.sessionID, ...(resolved.path ? { selector: resolved.path, ...(typeof captureID === 'string' ? { captureSessionID: captureID } : {}) } : {}) }
         }
         key = this.key(origin, target); generation = this.claim(key)
-        if (!target.selector) await this.sync(client, target.id, signal)
+        if (!target.selector) await this.sync(origin, client, target.id, signal)
         if (parsed.sub === 'compare' || parsed.sub === 'scorecard') for (const other of parsed.positional) {
-          const resolved = await rpc.resolve({ sessionID: origin.id, selector: other }, options)
-          if (!resolved.path) await this.sync(client, resolved.sessionID, signal)
+          const resolved = await resolve(other)
+          if (!resolved.path) await this.sync(origin, client, resolved.sessionID, signal)
         }
       }
       if (parsed.sub === 'collect') {
         const collect = passArgs(args), selector = collect[1]
         if (collect[0] === 'opencode' && collect.length >= 2 && collect.length <= 3 && selector && selector !== 'help' && !selector.startsWith('-')) {
-          const resolved = await rpc.resolve({ sessionID: origin.id, selector }, options)
-          if (!resolved.path) await this.sync(client, resolved.sessionID, signal)
+          const resolved = await resolve(selector)
+          if (!resolved.path) await this.sync(origin, client, resolved.sessionID, signal)
         }
       }
-      const input = { sessionID: origin.id, args, runID: job.id, model, useSynced: true }
+      const input = { sessionID: origin.id, args, runID: job.id, model, useSynced: true, ...(paneSnapshot ? { paneSnapshot } : {}) }
+      dispatched = true
       let result = await this.remote(job, client, input, options)
       if (result.confirmation) {
         job.text = display(result.text); this.hooks.changed()
@@ -173,12 +231,15 @@ export class GuiController {
       if (this.closed) return
       if (origin.client() !== client) throw new Error('The server reconnected. Run the command again to refresh its result.')
       if (result.sessionID) target = { ...target, id: result.sessionID }
-      if (!SESSIONLESS.has(parsed.sub)) { view.selected = target; job.target = target }
+      if (!sessionless) { view.selected = target; job.target = target }
       if (result.snapshot && key && this.generations.get(key) === generation) { view.snapshots[target.id] = result.snapshot; delete view.errors[target.id] }
       job.text = display(commandText(result)); job.url = result.url; job.path = result.path; job.data = result.data; job.snapshot = result.snapshot
       if (result.tab) { const tab = TABS.findIndex(name => name.toLowerCase() === result.tab?.toLowerCase()); if (tab >= 0) view.tab = tab }
       if (parsed.sub === 'label' && result.path) void this.refresh(origin)
     } catch (error) {
+      if (!dispatched && feature) {
+        finishUsage?.(feature, signal.aborted ? 'cancelled' : preflightOutcome)
+      }
       if (!this.closed) job.text = signal.aborted ? 'Obs command cancelled.' : message(error)
     } finally {
       this.active.delete(job.id); job.pending = false
@@ -190,19 +251,32 @@ export class GuiController {
       }
     }
   }
-  async refresh(origin: GuiOrigin): Promise<void> {
-    if (this.closed || origin.id === 'home') return
+  async refreshPane(origin: GuiOrigin): Promise<void> {
+    const finishUsage = this.beginInteraction(origin, performance.now())
+    const outcome = await this.refresh(origin)
+    finishUsage?.('pane.refresh', outcome)
+  }
+  async refresh(origin: GuiOrigin): Promise<UsageInteraction['outcome']> {
+    if (this.closed || origin.id === 'home') return 'cancelled'
     const target = { ...this.target(origin) }, key = this.key(origin, target)
-    if (this.refreshes.has(key)) { this.dirty.add(key); return }
+    if (this.refreshes.has(key)) { this.dirty.add(key); return 'cancelled' }
     const generation = this.claim(key), controller = this.controller(), signal = this.signal(controller), client = origin.client(), view = this.view(origin)
     this.refreshes.set(key, controller); this.hooks.changed()
     try {
       const location = await this.location(origin, client, signal)
-      if (!target.selector) await this.sync(client, target.id, signal)
-      const snapshot = await client.rpc(Obs).snapshot({ sessionID: target.selector ? origin.id : target.id, useSynced: true, ...(target.selector ? { selector: target.selector, ...(target.captureSessionID ? { captureSessionID: target.captureSessionID } : {}) } : {}) }, { location, signal })
-      if (!this.closed && !signal.aborted && origin.client() === client && this.generations.get(key) === generation) { view.snapshots[target.id] = snapshot; delete view.errors[target.id] }
+      if (!target.selector) await this.sync(origin, client, target.id, signal)
+      const snapshot = await this.waitForRpc(origin, client, signal, () => client.rpc(Obs).snapshot({
+        sessionID: target.selector ? origin.id : target.id,
+        useSynced: true,
+        ...(target.selector ? { selector: target.selector, ...(target.captureSessionID ? { captureSessionID: target.captureSessionID } : {}) } : {}),
+      }, { location, signal }))
+      if (this.closed || signal.aborted || origin.client() !== client || this.generations.get(key) !== generation) return 'cancelled'
+      view.snapshots[target.id] = snapshot
+      delete view.errors[target.id]
+      return snapshot.empty ? 'empty' : 'success'
     } catch (error) {
       if (!this.closed && !signal.aborted && this.generations.get(key) === generation) view.errors[target.id] = message(error)
+      return this.closed || signal.aborted ? 'cancelled' : 'error'
     } finally {
       this.refreshes.delete(key)
       if (!this.closed) { this.hooks.changed(); if (this.dirty.delete(key)) this.schedule(origin) }

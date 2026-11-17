@@ -4,8 +4,9 @@ import { runBridge } from '../lib/bridge'
 import { artifactsDir } from '../lib/paths'
 import { resolveTranscript } from '../lib/session'
 import { ensureReady, sessionArgv } from '../lib/snapshot'
+import { markOutcome } from '../lib/telemetry'
 import type { CommandContext } from './index'
-import { EMPTY_TEXT, errorRow, captureSessionSpec, sessionSpec } from './overview'
+import { EMPTY_TEXT, errorRow, observedError, captureSessionSpec, sessionSpec } from './overview'
 
 /** A comparison loads every run whole, and the converge CLI may run a batch: the plan's 600 s. */
 const COMPARE_TIMEOUT_MS = 600_000
@@ -47,17 +48,17 @@ async function compareRuns($: EngineInterface, ctx: CommandContext, spec: string
   const { positional, flags } = ctx.parsed
   const other = positional[0]
   const patch = flags['anchor-patch']
-  if (other === undefined || positional.length > 1 || patch === true) return COMPARE_USAGE
+  if (other === undefined || positional.length > 1 || patch === true) return markOutcome(ctx.telemetry, 'rejected', COMPARE_USAGE)
   await ensureReady($, ctx.options)
   const { argv } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
   const resolved = await otherPaths($, [other])
-  if ('row' in resolved) return resolved.row
+  if ('row' in resolved) return markOutcome(ctx.telemetry, 'error', resolved.row)
   const call = ['compare', ...argv, '--other', ...resolved.paths]
   if (patch !== undefined) call.push('--anchor-patch', patch)
   if (flags['fuzzy-commands'] !== undefined) call.push('--fuzzy-commands')
   if (flags['reverse'] !== undefined) call.push('--reverse')
   const doc = await runBridge<ViewsDoc>($, call, { timeoutMs: COMPARE_TIMEOUT_MS })
-  if ('empty' in doc) return EMPTY_TEXT
+  if ('empty' in doc) return markOutcome(ctx.telemetry, 'empty', EMPTY_TEXT)
   return `${doc.text}\n\nComparison views written to ${doc.path}.`
 }
 
@@ -70,17 +71,17 @@ async function compareRuns($: EngineInterface, ctx: CommandContext, spec: string
 async function scorecard($: EngineInterface, ctx: CommandContext, spec: string | undefined): Promise<string> {
   const { positional, flags } = ctx.parsed
   const labels = flags['labels']
-  if (positional.length === 0 || labels === true) return SCORECARD_USAGE
+  if (positional.length === 0 || labels === true) return markOutcome(ctx.telemetry, 'rejected', SCORECARD_USAGE)
   await ensureReady($, ctx.options)
   const { argv } = await sessionArgv($, spec, undefined, captureSessionSpec(ctx))
   const resolved = await otherPaths($, positional)
-  if ('row' in resolved) return resolved.row
+  if ('row' in resolved) return markOutcome(ctx.telemetry, 'error', resolved.row)
   const call = ['scorecard', ...argv, '--others', ...resolved.paths]
   if (flags['fuzzy-commands'] !== undefined) call.push('--fuzzy-commands')
   if (labels !== undefined) call.push('--labels', labels)
   if (flags['no-self'] !== undefined) call.push('--no-self')
   const doc = await runBridge<ViewsDoc>($, call, { timeoutMs: COMPARE_TIMEOUT_MS })
-  if ('empty' in doc) return EMPTY_TEXT
+  if ('empty' in doc) return markOutcome(ctx.telemetry, 'empty', EMPTY_TEXT)
   // The host prefixes the first output line with the plugin name. Keep the
   // table header on its own line so the terminal recognizes it as Markdown.
   return `Scorecard\n\n${doc.text}\n\nScorecard views written to ${doc.path}.`
@@ -94,19 +95,19 @@ async function scorecard($: EngineInterface, ctx: CommandContext, spec: string |
  */
 async function convergeCli($: EngineInterface, ctx: CommandContext): Promise<string> {
   const args = passArgs(ctx.args)
-  if (args.length === 0) return CONVERGE_CLI_USAGE
+  if (args.length === 0) return markOutcome(ctx.telemetry, 'rejected', CONVERGE_CLI_USAGE)
   await ensureReady($, ctx.options)
   const call = ['converge-cli', '--artifacts', await artifactsDir($, await $.session.id()), '--', ...args]
   const doc = await runBridge<ConvergeDoc>($, call, { timeoutMs: COMPARE_TIMEOUT_MS })
   if (doc.path !== null) return `Converge report written to ${doc.path}.`
   const text = (doc.text ?? '').trimEnd()
-  return doc.exit === 0 ? text : `${text}${text ? '\n' : ''}agent-trajviz-converge exited with ${doc.exit}.`
+  return doc.exit === 0 ? text : markOutcome(ctx.telemetry, 'error', `${text}${text ? '\n' : ''}agent-trajviz-converge exited with ${doc.exit}.`)
 }
 
 /** `labels <sidecar> [<other>]`: the label views of a sidecar, compared with another when given; sidecars are files, not sessions. */
 async function labels($: EngineInterface, ctx: CommandContext): Promise<string> {
   const [sidecar, other] = ctx.parsed.positional
-  if (sidecar === undefined || ctx.parsed.positional.length > 2) return LABELS_USAGE
+  if (sidecar === undefined || ctx.parsed.positional.length > 2) return markOutcome(ctx.telemetry, 'rejected', LABELS_USAGE)
   await ensureReady($, ctx.options)
   const call = ['labels', '--sidecar', sidecar]
   if (other !== undefined) call.push('--other', other)
@@ -128,6 +129,6 @@ export async function compare($: EngineInterface, ctx: CommandContext): Promise<
         return { text: await labels($, ctx) }
     }
   } catch (e) {
-    return { text: errorRow(e, spec) }
+    return { text: observedError(ctx.telemetry, e, spec) }
   }
 }

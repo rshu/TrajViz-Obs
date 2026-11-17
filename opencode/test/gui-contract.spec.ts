@@ -4,7 +4,7 @@ import { createContext, runInContext } from 'node:vm'
 import type { OpenCodeClient } from '@opencode/client'
 import { SNAPSHOT } from '../../hooks/testdata/snapshot.js'
 import { GuiController, type GuiOrigin } from '../src/gui-controller.js'
-import type { CommandResult, RunInput } from '../src/rpc.js'
+import type { CommandResult, RunInput, UsageInteraction } from '../src/rpc.js'
 
 type Options = { signal?: AbortSignal; location?: { directory: string } }
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0))
@@ -25,6 +25,8 @@ function connection(server = 'server-a', id = 'ses_shared') {
     > => { const result = completed.get(phase(input)); return result ? { state: 'finished', result } : { state: 'expired' } }),
     snapshot: mock(async (_input: unknown, _options?: Options) => structuredClone(snapshot)),
     cancel: mock(async (_input: unknown, _options?: Options) => ({ cancelled: true })),
+    usageStatus: mock(async (_input: object, _options?: Options) => ({ enabled: false })),
+    usageInteraction: mock(async (_input: UsageInteraction, _options?: Options) => ({})),
     events: { on: mock((_name: string, _listener: unknown) => () => {}) },
   }
   const messages = mock(async (_input: unknown, _options?: Options): Promise<{ data: Record<string, unknown>[]; cursor: { next?: string } }> => ({ data: [], cursor: {} }))
@@ -55,6 +57,137 @@ async function fastPolling(run: (elapsed: () => number) => Promise<void>) {
 }
 
 describe('Desktop command coordination', () => {
+  test('waits for workspace RPC registration without running a command twice', async () => {
+    const h = connection(), { ui } = controller()
+    const unavailable = { type: 'rpc.unavailable', message: 'RPC is unavailable: trajviz-obs' }
+    h.rpc.sync.mockRejectedValueOnce(unavailable)
+    h.rpc.start.mockRejectedValueOnce(unavailable)
+    try {
+      const job = ui.start(h.origin, 'overview')
+      await job.done
+      expect(h.messages).toHaveBeenCalledTimes(1)
+      expect(h.rpc.sync).toHaveBeenCalledTimes(2)
+      expect(h.rpc.start.mock.calls.map(([input]) => input.runID)).toEqual([job.id, job.id])
+      expect(h.rpc.run).toHaveBeenCalledTimes(1)
+      expect(h.rpc.poll).toHaveBeenCalledTimes(1)
+      expect(ui.jobs.get(job.id)?.text).toBe('Done')
+
+      h.rpc.snapshot.mockRejectedValueOnce(unavailable)
+      expect(await ui.refresh(h.origin)).toBe('success')
+      expect(h.rpc.snapshot).toHaveBeenCalledTimes(2)
+    } finally { ui.dispose() }
+  })
+
+  test('cancelling during registration aborts the retry', async () => {
+    const h = connection(), { ui } = controller()
+    const rejected = Promise.withResolvers<void>()
+    h.rpc.start.mockImplementationOnce(async () => {
+      rejected.resolve()
+      throw { type: 'rpc.unavailable', message: 'RPC is unavailable: trajviz-obs' }
+    })
+    try {
+      const job = ui.start(h.origin, 'help')
+      await rejected.promise
+      await ui.cancel(h.origin)
+      await job.done
+      expect(h.rpc.start).toHaveBeenCalledTimes(1)
+      expect(h.rpc.run).not.toHaveBeenCalled()
+      expect(h.rpc.poll).not.toHaveBeenCalled()
+      expect(ui.jobs.get(job.id)?.text).toBe('Obs command cancelled.')
+    } finally { ui.dispose() }
+  })
+
+  test('known commands that fail before Desktop dispatch report fixed outcomes once', async () => {
+    const h = connection(), { ui } = controller()
+    h.rpc.usageStatus.mockResolvedValue({ enabled: true })
+    try {
+      expect(() => ui.start(h.origin, 'help --private-flag value')).toThrow('Unknown option')
+      expect(() => ui.start(h.origin, 'private-unknown-command')).toThrow('Unknown subcommand')
+      h.rpc.resolve.mockRejectedValueOnce(new Error('private resolve error'))
+      await ui.start(h.origin, 'issues --session "/private/missing.json"').done
+      expect(h.rpc.start).not.toHaveBeenCalled()
+      await ui.start(h.origin, 'help').done
+      expect(h.rpc.start).toHaveBeenCalledTimes(1)
+      expect(h.rpc.usageInteraction.mock.calls.map(([{ feature, surface, outcome }]) => ({ feature, surface, outcome }))).toEqual([
+        { feature: 'help', surface: 'desktop', outcome: 'rejected' },
+        { feature: 'issues', surface: 'desktop', outcome: 'error' },
+      ])
+      expect(JSON.stringify(h.rpc.usageInteraction.mock.calls.map(([input]) => input))).not.toContain('private')
+    } finally { ui.dispose() }
+  })
+
+  test('pane tab changes and manual refresh outcomes are sent to the consenting session server', async () => {
+    const h = connection(), off = connection('off'), { ui } = controller()
+    h.rpc.usageStatus.mockResolvedValue({ enabled: true })
+    try {
+      await ui.refresh(h.origin)
+      ui.selectTab(h.origin, 0)
+      expect(h.rpc.usageStatus).not.toHaveBeenCalled()
+      ui.selectTab(h.origin, 2)
+      ui.selectTab(h.origin, 2)
+      await tick()
+      await ui.refreshPane(h.origin)
+      h.rpc.snapshot.mockRejectedValueOnce(new Error('private snapshot error'))
+      await ui.refreshPane(h.origin)
+      ui.selectTab(off.origin, 3)
+      await ui.refreshPane(off.origin)
+      await tick()
+      expect(h.rpc.usageStatus.mock.calls.map(([input]) => input)).toEqual([{}, {}, {}])
+      expect(off.rpc.usageInteraction).not.toHaveBeenCalled()
+      expect(h.rpc.usageInteraction.mock.calls.map(([{ durationMs, ...event }, options]) => {
+        expect(durationMs).toBeGreaterThanOrEqual(0)
+        expect(options?.location).toEqual({ directory: '/server-a/project' })
+        return event
+      })).toEqual([
+        { feature: 'pane.tab', surface: 'desktop', outcome: 'success' },
+        { feature: 'pane.refresh', surface: 'desktop', outcome: 'success' },
+        { feature: 'pane.refresh', surface: 'desktop', outcome: 'error' },
+      ])
+    } finally { ui.dispose() }
+  })
+
+  test('enabling during a Desktop pane refresh does not report a gesture started while off', async () => {
+    const h = connection(), { ui } = controller()
+    const snapshot = Promise.withResolvers<typeof h.snapshot>()
+    h.rpc.snapshot.mockReturnValueOnce(snapshot.promise)
+    try {
+      const refresh = ui.refreshPane(h.origin)
+      await tick()
+      expect(h.rpc.usageStatus).toHaveBeenCalledTimes(1)
+      expect(h.rpc.snapshot).toHaveBeenCalledTimes(1)
+      h.rpc.usageStatus.mockResolvedValue({ enabled: true })
+      snapshot.resolve(h.snapshot)
+      await refresh
+      await tick()
+      expect(h.rpc.usageInteraction).not.toHaveBeenCalled()
+      await ui.refreshPane(h.origin)
+      expect(h.rpc.usageInteraction).toHaveBeenCalledTimes(1)
+    } finally { ui.dispose() }
+  })
+
+  test('open Desktop panes recheck changed consent on each connected server', async () => {
+    const h = connection(), other = connection('other-server'), { ui } = controller()
+    try {
+      ui.selectTab(h.origin, 1)
+      ui.selectTab(other.origin, 1)
+      await tick()
+      expect(h.rpc.usageInteraction).not.toHaveBeenCalled()
+
+      h.rpc.usageStatus.mockResolvedValue({ enabled: true })
+      ui.selectTab(h.origin, 2)
+      ui.selectTab(other.origin, 2)
+      await tick()
+      expect(h.rpc.usageStatus).toHaveBeenCalledTimes(2)
+      expect(h.rpc.usageInteraction).toHaveBeenCalledTimes(1)
+      expect(other.rpc.usageStatus).toHaveBeenCalledTimes(2)
+      expect(other.rpc.usageInteraction).not.toHaveBeenCalled()
+      h.rpc.usageStatus.mockResolvedValue({ enabled: false })
+      ui.selectTab(h.origin, 3)
+      await tick()
+      expect(h.rpc.usageInteraction).toHaveBeenCalledTimes(1)
+    } finally { ui.dispose() }
+  })
+
   test('arguments, quoted capture identity and selected model reach the same authenticated server', async () => {
     const h = connection(), { ui } = controller()
     const args = "analyze what's missing --session '/server/shared capture.json' --session-id 'session A'"
@@ -414,10 +547,21 @@ describe('Desktop command coordination', () => {
       await ui.start(h.origin, 'help').done
       expect(h.client.location.get).toHaveBeenCalledTimes(1)
       expect(h.rpc.run.mock.calls[0]?.[0].sessionID).toBe('home')
+      await ui.start(h.origin, 'telemetry').done
+      expect(h.rpc.run.mock.calls[1]?.[0]).toMatchObject({ sessionID: 'home', args: 'telemetry' })
+      await ui.start(h.origin, 'enable_telemetry').done
+      await ui.start(h.origin, 'disable_telemetry').done
+      expect(h.rpc.run.mock.calls[2]?.[0]).toMatchObject({ sessionID: 'home', args: 'enable_telemetry' })
+      expect(h.rpc.run.mock.calls[3]?.[0]).toMatchObject({ sessionID: 'home', args: 'disable_telemetry' })
+      await ui.start(h.origin, 'telemetry_destination').done
+      await ui.start(h.origin, 'dashboard port auto').done
+      expect(h.rpc.run.mock.calls[4]?.[0]).toMatchObject({ sessionID: 'home', args: 'telemetry_destination' })
+      expect(h.rpc.run.mock.calls[5]?.[0]).toMatchObject({ sessionID: 'home', args: 'dashboard port auto' })
+      expect(h.rpc.sync).not.toHaveBeenCalled()
       const job = ui.start(h.origin, 'issues')
       await job.done
       expect(ui.jobs.get(job.id)?.text).toContain('Open a session first')
-      expect(h.rpc.run).toHaveBeenCalledTimes(1)
+      expect(h.rpc.run).toHaveBeenCalledTimes(6)
       expect(() => ui.start(h.origin, 'health --unexpected')).toThrow('Unknown option')
     } finally { ui.dispose() }
   })
@@ -492,7 +636,11 @@ function desktop(options: Record<string, unknown> = {}, preferences: Preferences
   const [stored, setStored] = solid.createSignal(preferences.value)
   const visible = new Set<string>()
   const open = mock((key: string, target: typeof sessionA) => { visible.add(target.key + key) })
-  const close = mock((key: string, target: typeof sessionA) => { visible.delete(target.key + key) })
+  const close = mock((key: string, target: typeof sessionA) => {
+    if (!visible.delete(target.key + key)) return
+    const panel = contributions.get('panel')?.[0] as unknown as { close?(input: { session: typeof sessionA }): void }
+    panel?.close?.({ session: target })
+  })
   const confirm = mock(async (_question: unknown) => true)
   const notify = mock((_message: unknown) => {})
   const openExternal = mock((_url: string) => {})
@@ -512,7 +660,7 @@ function desktop(options: Record<string, unknown> = {}, preferences: Preferences
   const module = { exports: {} as { default: { setup(ctx: unknown): () => void }; setup?: (ctx: unknown) => () => void } }
   const web = { template: () => () => ({}), delegateEvents: () => {}, createComponent: (component: unknown, props: Record<string, unknown>): NativeNode => ({ component, props }) }
   const allowed: Record<string, unknown> = { effect: require('effect'), 'solid-js': solid, 'solid-js/web': web, '@opencode/plugin/gui': sdk, '@opencode/schema/rpc': { Rpc: { define: (value: unknown) => value } } }
-  const realm = createContext({ module, exports: module.exports, require: (name: string) => { if (!(name in allowed)) throw new Error(`GUI requires unsupported renderer module: ${name}`); return allowed[name] }, TextEncoder, TextDecoder, AbortController, AbortSignal, URL, crypto, setTimeout, clearTimeout })
+  const realm = createContext({ module, exports: module.exports, require: (name: string) => { if (!(name in allowed)) throw new Error(`GUI requires unsupported renderer module: ${name}`); return allowed[name] }, TextEncoder, TextDecoder, AbortController, AbortSignal, URL, crypto, performance, setTimeout, clearTimeout })
   runInContext(readFileSync(new URL('../dist/gui-experimental.cjs', import.meta.url), 'utf8'), realm, { filename: 'gui-experimental.cjs' })
   let cleanup: (() => void) | undefined, root: (() => void) | undefined
   solid.createRoot(dispose => { root = dispose; cleanup = module.exports.default.setup(context) })
@@ -527,6 +675,26 @@ function desktop(options: Record<string, unknown> = {}, preferences: Preferences
 }
 
 describe('built Desktop GUI contract', () => {
+  test('explicit pane opens, native closes and restores report one Desktop event each', async () => {
+    const h = desktop()
+    h.a.rpc.usageStatus.mockResolvedValue({ enabled: true })
+    try {
+      await h.command('pane --session /private/capture.json')
+      expect(h.a.rpc.start.mock.calls[0]?.[0]).toMatchObject({ args: 'overview --session /private/capture.json', paneSnapshot: true })
+      await h.command('pane close')
+      const panel = h.contributions.get('panel')?.[0] as unknown as { restore(input: { session: typeof h.sessionA }): void }
+      panel.restore({ session: h.sessionA })
+      await h.command('watch off')
+      await h.command('statusline on')
+      await tick()
+      expect(h.a.rpc.usageInteraction.mock.calls.map(([{ durationMs, ...event }]) => {
+        expect(durationMs).toBeGreaterThanOrEqual(0)
+        return event
+      })).toEqual((['pane', 'pane.close', 'pane', 'watch', 'statusline'] as const).map(feature => ({ feature, surface: 'desktop', outcome: 'success' })))
+      expect(h.b.rpc.usageInteraction).not.toHaveBeenCalled()
+    } finally { h.dispose() }
+  })
+
   test('loads without Node globals and registers native slash arguments, side panel and mobile view', async () => {
     const h = desktop()
     try {
@@ -546,13 +714,13 @@ describe('built Desktop GUI contract', () => {
   test('the native slash command exposes every backend feature without rewriting its arguments', async () => {
     const h = desktop()
     const commands = [
-      '', 'overview', 'help', 'setup --extras none', 'doctor', 'sessions 20', 'schemas /server/schemas',
+      '', 'overview', 'help', 'setup --extras none', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'telemetry_destination https://collector.example --use-launch-token', 'sessions 20', 'schemas /server/schemas',
       'view', 'view data_quality --json', 'issues --limit 2 --offset 1', 'health', 'patterns', 'agents', 'context', 'timeline', 'brief',
       'json --with-trajectory --view health --view issues -o "/server/output dir"', 'bundle -o /server/source.zip',
       'compare /server/other.json', 'scorecard /server/other.json --labels current,other', 'labels /server/labels.json',
       "analyze what's missing?", 'fixes --limit 1', 'label --assistant-only --max-steps 1',
       'attribution --reference-root /server/references --agent native --instance task',
-      'dashboard --port 9000', 'dashboard stop', 'converge --data-root /server/sessions', 'converge stop',
+      'dashboard --port 9000', 'dashboard stop', 'dashboard port 9000', 'converge --data-root /server/sessions', 'converge stop',
       'collect cursor --help', 'collect opencode --help', 'converge-cli --help',
     ]
     try {

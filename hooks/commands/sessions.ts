@@ -4,9 +4,10 @@ import { fmtBytes, fmtInt } from '../lib/format'
 import { configDir } from '../lib/paths'
 import { resolveTranscript } from '../lib/session'
 import { ensureReady } from '../lib/snapshot'
+import { markOutcome } from '../lib/telemetry'
 import type { CommandContext } from './index'
 import { MAX_LIMIT } from './inline'
-import { errorRow, sessionSpec } from './overview'
+import { observedError, sessionSpec } from './overview'
 
 const SESSIONS_TIMEOUT_MS = 120_000
 
@@ -47,7 +48,7 @@ export function sessionsTable(doc: SessionsDoc, currentId: string): string {
 export async function sessions($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
   const n = ctx.parsed.positional[0]
   const limit = n === undefined ? undefined : /^\d+$/.test(n) ? Number(n) : 0
-  if (ctx.parsed.positional.length > 1 || (limit !== undefined && (limit < 1 || limit > MAX_LIMIT))) return { text: SESSIONS_USAGE }
+  if (ctx.parsed.positional.length > 1 || (limit !== undefined && (limit < 1 || limit > MAX_LIMIT))) return { text: markOutcome(ctx.telemetry, 'rejected', SESSIONS_USAGE) }
   try {
     await ensureReady($, ctx.options)
     const spec = sessionSpec(ctx)
@@ -59,8 +60,9 @@ export async function sessions($: EngineInterface, ctx: CommandContext): Promise
     const argv = ['sessions', '--cwd', await $.session.cwd(), '--config-dir', await configDir($)]
     if (limit !== undefined) argv.push('--limit', String(limit))
     const doc = await runBridge<SessionsDoc>($, argv, { timeoutMs: SESSIONS_TIMEOUT_MS })
-    return { text: sessionsTable(doc, await $.session.id()) }
+    const text = sessionsTable(doc, await $.session.id())
+    return { text: doc.sessions.length === 0 ? markOutcome(ctx.telemetry, 'empty', text) : text }
   } catch (e) {
-    return { text: errorRow(e) }
+    return { text: observedError(ctx.telemetry, e) }
   }
 }
