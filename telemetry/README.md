@@ -2,7 +2,7 @@
 
 Telemetry is off by default. When enabled, Claude Code and OpenCode queue allowlisted usage events locally and send them in the background during plugin activity. The collector validates and deduplicates uploads in SQLite. The local service saves a JSON snapshot of the report. The separate publisher refreshes HTML and JSON on a schedule.
 
-Run the collector commands from the service checkout with Python 3.11 or newer. The quickstart uses a plugin build that supports `/obs enable_telemetry`.
+Run the collector commands from the TrajViz-Obs repository root with Python 3.11 or newer.
 
 ## Try it locally
 
@@ -100,10 +100,11 @@ Add `--github-traffic` with an authenticated `gh` session to include 14 days of 
 
 ## Test the client and service together
 
-From the service checkout, point `TRAJVIZ_OBS_CLIENT_CHECKOUT` at the repository root of a separate checkout of the current telemetry client.
+From the repository root, run the integration tests with the sender and collector in the same checkout.
 
 ```sh
 uv sync --project bridge --locked --extra dev
-TRAJVIZ_OBS_CLIENT_CHECKOUT=/absolute/path/to/TrajViz-Obs \
-  uv run --project bridge --locked --extra dev python3 -m pytest telemetry -q
+uv run --project bridge --locked --extra dev python3 -m pytest telemetry -q
 ```
+
+To test compatibility with a different client build, set `TRAJVIZ_OBS_CLIENT_CHECKOUT` to that checkout's root.
