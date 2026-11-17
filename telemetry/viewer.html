@@ -1,0 +1,939 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>Plugin usage · TrajViz-Obs</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      color: #142635;
+      background: #f3f6f8;
+      --ink: #142635;
+      --muted: #506473;
+      --line: #d8e1e8;
+      --surface: #fff;
+      --tint: #edf3f6;
+      --accent: #173d58;
+      --claude: #a74d2e;
+      --opencode: #176b9a;
+      --negative: #972d3b;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; }
+    button, select, input { font: inherit; }
+    button, select { cursor: pointer; }
+    :focus-visible { outline: 3px solid #1076aa; outline-offset: 3px; }
+    .frame { width: min(1260px, 100% - 48px); margin-inline: auto; }
+    .masthead { padding: 36px 0 28px; background: #e8f0f4; border-bottom: 1px solid var(--line); }
+    .masthead-inner, .section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
+    .section-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
+    .view-switch, .language { display: inline-flex; align-items: center; gap: .15rem; padding: .2rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); }
+    :is(.view-switch, .language) button { min-width: 2.35rem; min-height: 2rem; padding: .2rem .5rem; border: 0; border-radius: 5px; background: transparent; color: var(--accent); font-weight: 700; }
+    :is(.view-switch, .language) button:hover { background: var(--tint); }
+    :is(.view-switch, .language) button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+    .view-switch { font-size: .8rem; }
+    .brand { margin: 0 0 7px; color: var(--accent); font-size: .8rem; font-weight: 750; letter-spacing: .06em; }
+    h1 { margin: 0; font-size: clamp(1.85rem, 4vw, 2.8rem); line-height: 1.07; letter-spacing: -.045em; }
+    h2 { margin: 0; font-size: 1.2rem; letter-spacing: -.025em; }
+    p { line-height: 1.55; }
+    .subtle, .meta { margin: 6px 0 0; color: var(--muted); font-size: .875rem; }
+    main { padding-block: 22px 50px; }
+    .error { margin: 0 0 16px; padding: .7rem .9rem; border-radius: 8px; background: #fff0f1; color: var(--negative); }
+    .toolbar { display: flex; justify-content: flex-end; margin-bottom: 15px; }
+    .field { display: flex; gap: .5rem; align-items: center; font-size: .875rem; font-weight: 650; }
+    .field input, .field select { min-width: 0; padding: .43rem .55rem; border: 1px solid #aebfc9; border-radius: 7px; color: var(--ink); background: var(--surface); }
+    .field input { width: min(10rem, 42vw); }
+    .pair { display: grid; gap: 14px; }
+    .pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .panel { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+    .block { margin-top: 16px; }
+    .pad { padding: 15px 17px; }
+    .total { display: block; margin-top: .55rem; color: var(--accent); font-size: 2rem; line-height: 1.1; font-weight: 750; }
+    .report-details > summary { font-size: .95rem; }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px 15px; margin: 10px 0 0; font-size: .77rem; color: var(--muted); }
+    .adapter { display: inline-flex; align-items: center; gap: .4rem; white-space: nowrap; }
+    .adapter::before { content: ''; height: .57rem; width: .57rem; border-radius: 50%; background: var(--series); }
+    .legend .adapter::before { height: 0; width: 1.1rem; border-top: 2px solid var(--series); border-radius: 0; }
+    .legend .opencode::before { border-top-style: dashed; }
+    .claude-code { --series: var(--claude); }
+    .opencode { --series: var(--opencode); }
+    .all-adapters { --series: var(--accent); }
+    svg { width: 100%; height: auto; display: block; margin-top: 5px; }
+    .chart text { fill: var(--muted); font-size: 13px; }
+    .chart line { stroke: var(--line); stroke-width: 1; }
+    .chart polyline { fill: none; stroke: var(--series); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+    .chart circle { fill: var(--series); }
+    #addresses-chart svg { max-height: 230px; }
+    .bar-chart { margin: 0; }
+    .bar-chart figcaption { color: var(--muted); font-size: .83rem; font-weight: 650; }
+    .bar-plot { overflow-x: auto; overscroll-behavior-x: contain; margin-top: .35rem; }
+    .bar-plot:focus-visible { outline-offset: -3px; }
+    .bar-chart ul { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(6rem, 1fr); margin: 0; padding: 2rem 0 .5rem; list-style: none; }
+    .bar-row { display: grid; grid-template-rows: 10rem auto; align-content: start; row-gap: .5rem; min-width: 0; text-align: center; font-size: .83rem; }
+    .bar-label { grid-row: 2; display: flex; flex-direction: column; align-items: center; gap: .2rem; min-width: 0; padding-inline: .3rem; }
+    .bar-label .adapter { font-size: .76rem; color: var(--muted); }
+    .bar-name { overflow-wrap: anywhere; font-weight: 650; }
+    #features .bar-name { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .bar-track { grid-row: 1; display: flex; align-items: flex-end; justify-content: center; height: 100%; border-bottom: 1px solid var(--line); background: linear-gradient(to top, var(--line) 1px, transparent 1px) 0 0 / 100% 25%; }
+    .bar-fill { position: relative; width: min(62%, 3.25rem); border-radius: 5px 5px 0 0; background: var(--series); }
+    .bar-value { position: absolute; bottom: calc(100% + .25rem); left: 50%; transform: translateX(-50%); width: max-content; max-width: 5.35rem; overflow-wrap: anywhere; text-align: center; font-size: .76rem; line-height: 1.15; font-weight: 700; }
+    .table-wrap { overflow: auto; }
+    .feature-table, #agent-versions-data { max-height: 30rem; }
+    table { border-collapse: separate; border-spacing: 0; width: 100%; text-align: left; font-size: .83rem; }
+    th, td { padding: .58rem .65rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+    thead th { position: sticky; top: 0; z-index: 1; color: #304757; background: var(--tint); white-space: nowrap; }
+    tbody tr:last-child > * { border-bottom: 0; }
+    tbody tr:nth-child(even) { background: #f7fafb; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .feature-name { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .8rem; white-space: nowrap; }
+    .compact { display: block; margin-top: 3px; color: var(--muted); font-size: .76rem; white-space: nowrap; }
+    .daily-data { padding-top: 12px; }
+    summary { cursor: pointer; color: var(--accent); font-size: .83rem; font-weight: 650; }
+    details > .table-wrap { margin-top: 10px; max-height: 22rem; }
+    .no-data { margin: 4px 0; color: var(--muted); font-size: .86rem; }
+    @media (max-width: 650px) {
+      .frame { width: min(100% - 24px, 1260px); }
+      .masthead { padding-block: 24px 19px; }
+      main { padding-top: 14px; }
+      .pair { grid-template-columns: 1fr; }
+      .pad { padding: 12px; }
+      .pair { gap: 9px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="frame masthead-inner">
+      <div>
+        <p class="brand">TrajViz-Obs</p>
+        <h1 data-copy="title">Plugin usage</h1>
+        <p id="report-meta" class="meta" role="status"></p>
+      </div>
+      <div class="language" role="group" aria-label="Report language" data-copy-aria="language">
+        <button type="button" data-language="en" lang="en" aria-label="English" aria-pressed="true">EN</button>
+        <span aria-hidden="true">|</span>
+        <button type="button" data-language="zh-CN" lang="zh-CN" aria-label="简体中文" aria-pressed="false">中</button>
+      </div>
+    </div>
+  </header>
+  <main class="frame">
+    <p id="error" class="error" role="alert" hidden></p>
+    <div id="dashboard" hidden>
+      <div class="toolbar">
+        <label class="field"><span data-copy="adapter">Coding agent</span> <select id="adapter-filter"><option value="all" data-copy="allAdapters">All agents</option><option value="claude-code">Claude Code</option><option value="opencode">OpenCode</option></select></label>
+      </div>
+      <div class="pair">
+        <section class="panel pad" aria-labelledby="first-seen-title">
+          <h2 id="first-seen-title" data-copy="firstSeen">First-seen installations</h2>
+          <div id="first-seen"></div>
+          <p class="subtle" data-copy="firstSeenDefinition"></p>
+        </section>
+        <section class="panel pad" aria-labelledby="returning-title">
+          <h2 id="returning-title" data-copy="activeReturning">Active and returning installations</h2>
+          <div id="returning" class="table-wrap block" role="region" tabindex="0" aria-label="Active and returning installations" data-copy-aria="activeReturning"></div>
+          <p class="subtle" data-copy="returningDefinition"></p>
+        </section>
+      </div>
+      <section id="observed-activity" class="panel block pad" aria-labelledby="observed-activity-title" hidden>
+        <h2 id="observed-activity-title" data-copy="observedActivity">IP counts</h2>
+        <div id="activity-counts" class="table-wrap block" role="region" aria-label="Activity counts by window" data-copy-aria="activityWindows" tabindex="0"></div>
+        <p class="subtle" data-copy="addressDefinition"></p>
+        <p class="subtle" data-copy="coverageDefinition"></p>
+      </section>
+      <section class="panel block pad" aria-labelledby="features-title">
+        <div class="section-head">
+          <h2 id="features-title" data-copy="features">Feature usage</h2>
+          <div class="section-actions">
+            <label class="field"><span data-copy="featureCategory">Category</span> <select id="feature-category"><option value="all" data-copy="allCategories">All categories</option><option value="command" data-copy="commands">Commands</option><option value="pane" data-copy="panes">Pane</option><option value="dashboard" data-copy="dashboards">Dashboard</option></select></label>
+            <label id="feature-version-field" class="field" hidden><span data-copy="agentVersion">Agent version</span> <select id="feature-version"></select></label>
+            <label class="field"><span data-copy="filterFeatures">Find a feature</span> <input id="feature-filter" type="search" maxlength="80" autocomplete="off"></label>
+            <div class="view-switch" role="group" data-view-switch="features"></div>
+          </div>
+        </div>
+        <p class="subtle" data-copy="featureHint"></p>
+        <p id="legacy-features" class="subtle" data-copy="legacyFeatureVersions" hidden></p>
+        <div id="features" class="table-wrap feature-table block" role="region" tabindex="0"></div>
+      </section>
+      <details class="panel pad block report-details">
+        <summary data-copy="reportDetails">Daily trends and breakdowns</summary>
+      <div class="pair block">
+        <section id="active-chart" class="panel pad" aria-label="Daily active installations" data-copy-aria="dailyActive"></section>
+        <section id="actions-chart" class="panel pad" aria-label="Actions per day" data-copy-aria="dailyActions"></section>
+      </div>
+      <details class="panel pad block daily-data"><summary data-copy="viewDaily">View daily counts</summary><div id="daily" class="table-wrap" role="region" aria-label="Daily counts table" data-copy-aria="dailyTable" tabindex="0"></div></details>
+      <div id="daily-addresses" hidden>
+        <section id="addresses-chart" class="panel pad block" aria-label="Daily distinct IP addresses" data-copy-aria="dailyAddresses"></section>
+        <details class="panel pad block daily-data"><summary data-copy="viewDailyNetwork">View daily IP counts</summary><div id="daily-network" class="table-wrap" role="region" aria-label="Daily IP counts table" data-copy-aria="dailyNetworkTable" tabindex="0"></div></details>
+      </div>
+      <div class="pair block">
+        <section id="adoption" class="panel pad" aria-label="Installation activity" data-copy-aria="installationActivity"></section>
+        <section id="retention" class="panel pad" aria-label="Returns on day 7 and day 30" data-copy-aria="retention"></section>
+      </div>
+      <div class="pair block">
+        <section id="surfaces" class="panel pad" aria-labelledby="surfaces-title">
+          <div class="section-head">
+            <h2 id="surfaces-title" data-copy="surfaces">Actions by interface</h2>
+            <div class="view-switch" role="group" data-view-switch="surfaces"></div>
+          </div>
+          <div id="surfaces-data" class="table-wrap block" role="region" tabindex="0"></div>
+        </section>
+        <section id="versions" class="panel pad" aria-labelledby="versions-title">
+          <div class="section-head">
+            <h2 id="versions-title" data-copy="versions">Plugin versions</h2>
+            <div class="view-switch" role="group" data-view-switch="versions"></div>
+          </div>
+          <div id="versions-data" class="table-wrap block" role="region" tabindex="0"></div>
+        </section>
+      </div>
+      <section id="agent-versions" class="panel pad block" aria-labelledby="agent-versions-title" hidden>
+        <h2 id="agent-versions-title" data-copy="agentVersions">Coding agent versions</h2>
+        <p class="subtle" data-copy="agentVersionDefinition"></p>
+        <div id="agent-versions-data" class="table-wrap block" role="region" aria-label="Coding agent versions table" data-copy-aria="agentVersionsTable" tabindex="0"></div>
+      </section>
+      </details>
+    </div>
+  </main>
+  <script id="embedded-report" type="application/json">__TRAJVIZ_EMBEDDED_REPORT__</script>
+  <script>
+    'use strict';
+
+    const COPY = {
+      title: ['Plugin usage', '插件使用统计'],
+      language: ['Report language', '报告语言'],
+      adapter: ['Coding agent', '编程智能体'],
+      allAdapters: ['All agents', '全部智能体'],
+      activeInstallations: ['Active installations', '活跃安装实例'],
+      firstSeen: ['First-seen installations', '首次记录的安装实例'],
+      firstSeenDefinition: [
+        'These installations had their first recorded event during the report period. The same installation can count again after a local reset or when its old record expires.',
+        '这些安装实例的首条事件都在报告时段内。清除本地数据或旧记录过期后，同一实例可能再次计入。',
+      ],
+      activeReturning: ['Active and returning installations', '活跃与回访安装实例'],
+      returningDefinition: [
+        'Active installations have at least one event in the window, including activation. Returning installations are active installations first recorded before that window.',
+        '每个时段内有事件记录的安装实例计为活跃，激活也算。活跃实例如果在时段开始前已有记录，也计为回访。',
+      ],
+      returningInstallations: ['Returning installations', '回访安装实例'],
+      last7Days: ['Last 7 days', '最近 7 天'],
+      legacyRolling: ['Older reports may lack counts for some windows.', '旧版报告可能缺少部分时段的统计。'],
+      reportDetails: ['Daily trends and breakdowns', '每日趋势与详细统计'],
+      activityDefinition: [
+        'An installation with actions did something beyond activating the plugin.',
+        '有操作的安装实例至少记录过一次激活以外的操作。',
+      ],
+      observedActivity: ['IP counts', 'IP 地址统计'],
+      addressDefinition: [
+        'Several installations can share an IP, and one installation can use several IPs. Each pair counts once.',
+        '多个安装实例可以共用一个 IP 地址，同一安装实例也可以使用多个 IP 地址。每种 IP 地址与安装实例的组合只计一次。',
+      ],
+      coverageDefinition: [
+        "IP counting is optional. It uses the connection IP from supported uploads received on the event's UTC day. Unavailable means there were no IP measurements for that window.",
+        'IP 统计可选。启用后，采集服务只统计在事件当天（UTC）收到的兼容上传所用的 IP。暂无数据表示该时段没有 IP 统计。',
+      ],
+      activityWindows: ['Activity counts by window', '各时段活动统计'],
+      window: ['Window', '时段'],
+      today: ['Final day of report', '报告最后一天'],
+      periodWindow: ['Report period', '报告时段'],
+      last30Days: ['Last 30 days', '最近 30 天'],
+      distinctAddresses: ['Distinct IP addresses', '不同 IP 地址数'],
+      addressInstallationPairs: ['IP and installation pairs', 'IP 地址与安装实例组合数'],
+      addressCoverage: ['Events with an IP', '有 IP 记录的事件'],
+      agentVersionCoverage: ['Events with an agent version', '有智能体版本记录的事件'],
+      events: ['Events', '事件数'],
+      coverage: ['{observed} of {total}', '{observed} / {total}'],
+      dailyAddresses: ['Daily distinct IP addresses', '每日不同 IP 地址数'],
+      noAddressActivity: ['No IP data for this period.', '此时段没有 IP 数据。'],
+      viewDailyNetwork: ['View daily IP counts', '查看每日 IP 统计'],
+      dailyNetworkTable: ['Daily IP counts table', '每日 IP 统计表'],
+      addressChart: ['{title}. Open View daily IP counts for exact values.', '{title}。具体数值见“查看每日 IP 统计”。'],
+      dailyActive: ['Daily active installations', '每日活跃安装实例'],
+      dailyActions: ['Actions per day', '每日操作数'],
+      dailyActivity: ['Daily activity', '每日活动'],
+      viewDaily: ['View daily counts', '查看每日统计'],
+      dailyTable: ['Daily counts table', '每日统计表'],
+      utcDay: ['UTC day', 'UTC 日期'],
+      features: ['Feature usage', '功能使用情况'],
+      featureCategory: ['Category', '类别'],
+      allCategories: ['All categories', '所有类别'],
+      commands: ['Commands', '命令'],
+      panes: ['Pane', '面板'],
+      dashboards: ['Dashboard', '仪表盘'],
+      codingAgent: ['Coding agent', '编程智能体'],
+      filterFeatures: ['Find a feature', '搜索功能'],
+      featureHint: [
+        'Actions include browser activity. Each installation counts once per row and can appear under several versions.',
+        '操作数包含浏览器活动。每行对同一安装实例只计一次，但同一实例可能出现在多个版本中。',
+      ],
+      legacyFeatureVersions: ['This report groups feature usage by coding agent only.', '这份报告只按编程智能体汇总功能使用情况。'],
+      tableView: ['Table', '表格'],
+      barView: ['Bar chart', '柱状图'],
+      viewMode: ['{title} view', '{title}显示方式'],
+      barRegion: ['{title} bar chart', '{title}柱状图'],
+      barLimit: ['Top {shown} of {total} by action count.', '按操作次数排名，显示前 {shown} 项，共 {total} 项。'],
+      feature: ['Feature', '功能'],
+      actions: ['Actions', '操作数'],
+      installations: ['Installations', '安装实例数'],
+      installationActivity: ['Installation activity', '安装实例活动'],
+      engagement: ['Engagement', '参与度'],
+      metric: ['Metric', '指标'],
+      retention: ['Returns on day 7 and day 30', '第 7 天与第 30 天的回访'],
+      day: ['Day after first event', '首次记录后第几天'],
+      returned: ['Returned', '回访数'],
+      eligible: ['Reached this day', '已到该天的实例数'],
+      rate: ['Return rate', '回访率'],
+      retentionNote: [
+        'Only activity on that exact day counts. The rate uses installations first recorded on or after {date} UTC that had time to reach the day shown.',
+        '只计指定当天的活动。回访率的分母是从 {date}（UTC）起首次有记录、且已经到达指定天数的安装实例。',
+      ],
+      surfaces: ['Actions by interface', '各界面的操作数'],
+      surface: ['Interface', '界面'],
+      versions: ['Plugin versions', '插件版本'],
+      version: ['Version', '版本'],
+      versionLimit: ['Top {shown} of {total} by action count. The JSON export includes all rows.', '按操作次数排名，显示前 {shown} 行，共 {total} 行。JSON 导出文件包含全部数据。'],
+      agentVersions: ['Coding agent versions', '编程智能体版本'],
+      agentVersion: ['Agent version', '智能体版本'],
+      allVersions: ['All versions', '所有版本'],
+      agentVersionsTable: ['Coding agent versions table', '编程智能体版本统计表'],
+      agentVersionDefinition: [
+        'These are Claude Code and OpenCode versions. If an installation reports several versions, it counts under each one. Events without a version appear under Unknown.',
+        '这里统计的是 Claude Code 和 OpenCode 的版本。一个安装实例上报了多个版本时，每个版本各计一次。未上报版本的事件归为“未知”。',
+      ],
+      unknownVersion: ['Unknown', '未知'],
+      agentVersionLimit: ['Top {shown} of {total} by event count. The JSON export includes all rows.', '按事件数排名，显示前 {shown} 行，共 {total} 行。JSON 导出文件包含全部数据。'],
+      table: ['{title} table', '{title}统计表'],
+      chart: ['{title} by coding agent. Open View daily counts for exact values.', '按编程智能体显示{title}。具体数值见“查看每日统计”。'],
+      dateRange: ['{start} to {end}', '{start}至{end}'],
+      period: ['{range} (UTC). Data kept for {days} days.', '{range}（UTC），数据保留 {days} 天。'],
+      unavailable: ['Unavailable', '暂无数据'],
+      noActivity: ['No activity in the selected period.', '所选时段内没有活动。'],
+      noMatchingFeatures: ['No matching features.', '没有符合条件的功能。'],
+      noFeatureActions: ['No feature actions were recorded in this period.', '这段时间没有功能操作记录。'],
+      invalidReport: ['The report is not a TrajViz-Obs usage summary.', '这不是 TrajViz-Obs 使用统计报告。'],
+      unsupportedReport: ['The viewer does not support this report format or version.', '查看器不支持此报告的格式或版本。'],
+      missingSections: ['The report is missing required sections.', '报告缺少必需的部分。'],
+      invalidDates: ['The report has an invalid UTC date range.', '报告的 UTC 日期范围无效。'],
+      datesOutsideRetention: ['The report date range exceeds its retention window.', '报告的日期范围超出数据保留期。'],
+      invalidSection: ['The {section} section is invalid.', '“{section}”部分无效。'],
+      invalidRow: ['Invalid row in {section}.', '“{section}”中存在无效的行。'],
+      duplicateRow: ['Duplicate row in {section}.', '“{section}”中存在重复的行。'],
+      missingRows: ['The report is missing rows for a coding agent or date.', '报告缺少部分编程智能体或日期的记录。'],
+      oversized: ['The report exceeds the 5 MiB viewer limit.', '报告超出查看器的 5 MiB 大小限制。'],
+      loadFailed: ['Could not load the report data.', '无法加载报告数据。'],
+    };
+    const ADAPTERS = { 'claude-code': 'Claude Code', opencode: 'OpenCode' };
+    const SURFACES = { terminal: ['Terminal', '终端'], desktop: ['Desktop', '桌面端'], headless: ['Headless', '无界面'], browser: ['Browser', '浏览器'], unknown: ['Unknown', '未知'] };
+    const OUTCOMES = new Set(['success', 'error', 'observed', 'empty', 'cancelled', 'rejected', 'confirmation']);
+    const BUCKETS = new Set(['lt_100ms', '100ms_1s', '1s_5s', '5s_30s', 'gte_30s']);
+    const FEATURES = new Set([
+      'overview', 'pane', 'pane.close', 'pane.refresh', 'pane.tab', 'pane.expand', 'issues', 'health', 'patterns',
+      'agents', 'context', 'timeline', 'view', 'json', 'bundle', 'schemas', 'dashboard', 'dashboard.html', 'dashboard.stop',
+      'converge', 'converge.stop', 'compare', 'scorecard', 'labels', 'converge-cli', 'analyze', 'fixes', 'label',
+      'attribution', 'collect', 'sessions', 'watch', 'statusline', 'setup', 'doctor', 'help', 'brief', 'tool',
+      'dashboard.render', 'dashboard.tab', 'dashboard.inspect', 'dashboard.load', 'dashboard.export',
+      'dashboard.compare', 'dashboard.analyze', 'dashboard.attribution', 'converge.render', 'converge.tab', 'converge.compare',
+    ]);
+    const ADOPTION = {
+      observed_installations: ['Observed within retention', '保留期内观测到的实例'],
+      new_installations: ['First seen in period', '本期首次出现'],
+      active_today: ['Active on last day', '报告最后一天活跃'],
+      active_last_30_days: ['Active in last 30 days', '近 30 天活跃'],
+      active_in_period: ['Active installations in period', '本期活跃安装实例'],
+      engaged_in_period: ['Installations with actions in the period', '本期有操作的安装实例'],
+      activation_only_in_period: ['Activation only in period', '本期仅激活'],
+      returning_in_period: ['Returning in period', '本期回访'],
+      returning_engaged_in_period: ['Returning installations with actions', '回访且有操作的安装实例'],
+    };
+    const ENGAGEMENT = {
+      invocations: ['Tracked actions', '已记录操作'],
+      engaged_installations: ['Installations with actions', '有操作的安装实例'],
+      engaged_on_multiple_days: ['Installations with actions on multiple days', '多天有操作的安装实例'],
+      average_invocations_per_engaged_installation: ['Average actions per installation with actions', '每个有操作实例的平均操作数'],
+      average_days_per_engaged_installation: ['Average days with actions', '平均操作天数'],
+    };
+    const DAILY = { active_installations: COPY.activeInstallations, engaged_installations: ENGAGEMENT.engaged_installations, new_installations: ['First seen', '首次出现'], returning_installations: ['Returning', '回访'], invocations: COPY.actions };
+    const ACTIVITY_WINDOWS = { period: 'periodWindow', today: 'today', last_30_days: 'last30Days' };
+    const ACTIVITY_COLUMNS = ['distinctAddresses', 'activeInstallations', 'addressInstallationPairs', 'addressCoverage', 'agentVersionCoverage'];
+    const ROLLING_WINDOWS = { last_7_days: ['last7Days', 7], last_30_days: ['last30Days', 30] };
+    const FEATURE_CATEGORIES = { command: 'commands', pane: 'panes', dashboard: 'dashboards' };
+    const FORMAT = 'trajviz-obs-usage-report';
+    const VERSION = 3;
+    const MAX_REPORT_SIZE = 5 * 1024 * 1024;
+    const VERSION_ROWS = 100;
+    const BAR_ROWS = 12;
+    const DAY_MS = 86_400_000;
+    const ADAPTER_IDS = Object.keys(ADAPTERS);
+    const VIEW_SECTIONS = ['adoption', 'daily', 'engagement', 'features', 'surfaces', 'versions', 'retention'];
+    const BREAKDOWNS = { surfaces: 'surface', versions: 'version' };
+    const viewModes = { features: 'table', surfaces: 'table', versions: 'table' };
+    let locale = 'en';
+    let number, percent, axisNumber, shortDate, date;
+    const localized = pair => pair[locale === 'en' ? 0 : 1];
+    const t = (key, values = {}) => localized(COPY[key]).replace(/\{(\w+)\}/g, (_, name) => values[name]);
+    const labels = keys => keys.map(key => t(key));
+    const element = id => document.getElementById(id);
+    const own = (object, key) => Object.hasOwn(object, key);
+    const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+    const count = value => Number.isSafeInteger(value) && value >= 0;
+    const average = value => typeof value === 'number' && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
+    const rate = value => average(value) && value <= 1;
+    const dateMillis = day => Date.parse(`${day}T00:00:00Z`);
+    const known = options => value => typeof value === 'string' && own(options, value);
+    const nullable = predicate => value => value === null || predicate(value);
+    const exact = (value, keys) => record(value) && Object.keys(value).length === keys.length && keys.every(key => own(value, key));
+    const countMap = options => value => record(value) && Object.entries(value).every(([key, item]) => options.has(key) && count(item));
+    const countFields = fields => Object.fromEntries(Object.keys(fields).map(key => [key, count]));
+    const version = value => typeof value === 'string' && /^(?:0|[1-9][0-9]{0,3})(?:\.(?:0|[1-9][0-9]{0,3})){2}(?:-(?:alpha|beta|rc)\.[0-9]{1,3})?$/.test(value);
+    const ACTIVITY_RULES = {
+      distinct_addresses: nullable(count), distinct_installations: count, distinct_address_installation_pairs: nullable(count),
+      events: count, events_with_address: count, events_with_agent_version: count,
+    };
+    const FEATURE_RULES = {
+      feature: value => FEATURES.has(value), invocations: count, installations: count,
+      outcomes: countMap(OUTCOMES), duration_buckets: countMap(BUCKETS), success_rate: nullable(rate), error_rate: nullable(rate),
+      p50_duration_bucket: nullable(value => BUCKETS.has(value)), p95_duration_bucket: nullable(value => BUCKETS.has(value)),
+    };
+
+    class ReportError extends Error {
+      constructor(key, section) {
+        super(key);
+        this.section = section;
+      }
+    }
+
+    function day(value) {
+      if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith('0000')) return false;
+      const time = dateMillis(value);
+      return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
+    }
+
+    const matchesFields = (value, rules) => exact(value, Object.keys(rules)) && Object.entries(rules).every(([key, test]) => test(value[key]));
+
+    function checkRows(rows, name, rules, keyOf, limit = Infinity) {
+      if (!Array.isArray(rows) || rows.length > limit) throw new ReportError('invalidSection', name);
+      const identity = new Set();
+      for (const row of rows) {
+        if (!matchesFields(row, rules)) throw new ReportError('invalidRow', name);
+        const key = keyOf(row);
+        if (identity.has(key)) throw new ReportError('duplicateRow', name);
+        identity.add(key);
+      }
+    }
+
+    function validateActivity(activity, start, end, periodDays) {
+      const section = 'observedActivity';
+      const windows = Object.fromEntries(Object.keys(ACTIVITY_WINDOWS).map(key => [key, row => matchesFields(row, ACTIVITY_RULES)]));
+      const countsByWindow = { ...windows, daily: Array.isArray };
+      if (!matchesFields(activity, { ...countsByWindow, by_adapter: Array.isArray, by_agent_version: Array.isArray })) {
+        throw new ReportError('invalidSection', section);
+      }
+      const adapter = known(ADAPTERS);
+      checkRows(activity.by_adapter, section, { adapter, ...countsByWindow }, row => row.adapter, ADAPTER_IDS.length);
+      checkRows(activity.by_agent_version, 'agentVersions', { adapter, agent_version: nullable(version), ...ACTIVITY_RULES }, row => `${row.adapter}/${row.agent_version}`);
+      if (activity.by_adapter.length !== ADAPTER_IDS.length) throw new ReportError('missingRows');
+      const daily = { day: value => day(value) && value >= start && value <= end, ...ACTIVITY_RULES };
+      for (const scope of [activity, ...activity.by_adapter]) {
+        checkRows(scope.daily, section, daily, row => row.day, periodDays);
+        if (scope.daily.length !== periodDays) throw new ReportError('missingRows');
+      }
+    }
+
+    function validateUsage(usage, end) {
+      if (!exact(usage, ['rolling', 'features'])) throw new ReportError('invalidSection', 'features');
+      const windows = Object.fromEntries(Object.entries(ROLLING_WINDOWS).map(([key, [, days]]) => [key, row => matchesFields(row, {
+        start: value => day(value) && dateMillis(end) - dateMillis(value) === (days - 1) * DAY_MS,
+        active_installations: count,
+        returning_installations: value => count(value) && value <= row.active_installations,
+      })]));
+      const rolling = usage.rolling;
+      if (!matchesFields(rolling, { ...windows, by_adapter: Array.isArray })) throw new ReportError('invalidSection', 'activeReturning');
+      const adapter = known(ADAPTERS);
+      checkRows(rolling.by_adapter, 'activeReturning', { adapter, ...windows }, row => row.adapter, ADAPTER_IDS.length);
+      if (rolling.by_adapter.length !== ADAPTER_IDS.length) throw new ReportError('missingRows');
+      checkRows(usage.features, 'features', {
+        ...FEATURE_RULES, adapter, agent_version: nullable(version), category: known(FEATURE_CATEGORIES),
+        completed: count, cancelled_rate: nullable(rate),
+      }, row => `${row.adapter}/${row.agent_version}/${row.feature}`);
+    }
+
+    function validate(report) {
+      if (!record(report)) throw new ReportError('invalidReport');
+      const versioned = own(report, 'format') || own(report, 'schema_version');
+      if (versioned && (report.format !== FORMAT || ![1, 2, VERSION].includes(report.schema_version))) {
+        throw new ReportError('unsupportedReport');
+      }
+      const hasActivity = own(report, 'activity');
+      const hasUsage = own(report, 'usage');
+      if (hasActivity !== (versioned && report.schema_version >= 2) || hasUsage !== (versioned && report.schema_version === VERSION)) {
+        throw new ReportError('unsupportedReport');
+      }
+      const fields = ['as_of', 'period_start', 'retained_from', 'retention_days', ...VIEW_SECTIONS];
+      if (versioned) fields.push('format', 'schema_version');
+      if (hasActivity) fields.push('activity');
+      if (hasUsage) fields.push('usage');
+      if (!exact(report, fields)) throw new ReportError('missingSections');
+      const { as_of: end, period_start: start, retained_from: retained, retention_days: days } = report;
+      if (![end, start, retained].every(day) || !Number.isInteger(days) || days < 32 || days > 365 || retained > start || start > end) {
+        throw new ReportError('invalidDates');
+      }
+      const periodDays = (dateMillis(end) - dateMillis(start)) / DAY_MS + 1;
+      if (periodDays > days || (dateMillis(end) - dateMillis(retained)) / DAY_MS >= days) {
+        throw new ReportError('datesOutsideRetention');
+      }
+      const key = row => row.adapter;
+      const checkAdapterRows = (rows, name, rules, keyOf, limit) => checkRows(rows, name, { adapter: known(ADAPTERS), ...rules }, keyOf, limit);
+      checkAdapterRows(report.adoption, 'installationActivity', countFields(ADOPTION), key, 2);
+      checkAdapterRows(report.engagement, 'engagement', { ...countFields(ENGAGEMENT), average_invocations_per_engaged_installation: nullable(average), average_days_per_engaged_installation: nullable(average) }, key, 2);
+      checkAdapterRows(report.daily, 'dailyActivity', { ...countFields(DAILY), day: value => day(value) && value >= start && value <= end }, row => `${row.adapter}/${row.day}`, periodDays * 2);
+      checkAdapterRows(report.features, 'features', { ...FEATURE_RULES, executed: count }, row => `${row.adapter}/${row.feature}`, FEATURES.size * 2);
+      checkAdapterRows(report.surfaces, 'surfaces', { surface: known(SURFACES), invocations: count, installations: count }, row => `${row.adapter}/${row.surface}`, 10);
+      checkAdapterRows(report.versions, 'versions', { version, invocations: count, installations: count }, row => `${row.adapter}/${row.version}`);
+      checkAdapterRows(report.retention, 'retention', { days_after_first_seen: value => value === 7 || value === 30, eligible_installations: count, returned_installations: count, rate: nullable(rate) }, row => `${row.adapter}/${row.days_after_first_seen}`, 4);
+      if (report.adoption.length !== 2 || report.engagement.length !== 2 || report.retention.length !== 4 || report.daily.length !== periodDays * 2) {
+        throw new ReportError('missingRows');
+      }
+      if (hasActivity) validateActivity(report.activity, start, end, periodDays);
+      if (hasUsage) validateUsage(report.usage, end);
+      return report;
+    }
+
+    function node(tag, content, className) {
+      const result = document.createElement(tag);
+      if (content !== undefined) result.textContent = content;
+      if (className) result.className = className;
+      return result;
+    }
+
+    function adapterLabel(adapter) {
+      return node('span', ADAPTERS[adapter], `adapter ${adapter}`);
+    }
+
+    const valueLabel = value => value === null ? t('unavailable') : number.format(value);
+    const rateLabel = value => value === null ? t('unavailable') : percent.format(value);
+    const selectedAdapter = () => element('adapter-filter').value;
+    const visibleRows = rows => rows.filter(row => selectedAdapter() === 'all' || row.adapter === selectedAdapter());
+    const sum = (rows, key) => rows.reduce((total, row) => total + BigInt(row[key]), 0n);
+    const byDay = (left, right) => left.day.localeCompare(right.day) || left.adapter.localeCompare(right.adapter);
+    const newestDayFirst = (left, right) => right.day.localeCompare(left.day);
+
+    function heading(target, title, detail) {
+      target.replaceChildren(node('h2', title));
+      if (detail) target.append(node('p', detail, 'subtle'));
+    }
+
+    function table(headers, rows, { numeric = [], rowHeader = false } = {}) {
+      const result = node('table');
+      const head = result.createTHead().insertRow();
+      headers.forEach((label, index) => {
+        const cell = node('th', typeof label === 'string' ? label : undefined);
+        cell.scope = 'col';
+        if (numeric.includes(index)) cell.className = 'num';
+        if (typeof label !== 'string') cell.append(label);
+        head.append(cell);
+      });
+      const body = result.createTBody();
+      for (const values of rows) {
+        const row = body.insertRow();
+        values.forEach((value, index) => {
+          const cell = rowHeader && index === 0 ? node('th') : node('td');
+          if (cell.tagName === 'TH') cell.scope = 'row';
+          if (numeric.includes(index)) cell.className = 'num';
+          if (value instanceof Node) cell.append(value);
+          else cell.textContent = value;
+          row.append(cell);
+        });
+      }
+      return result;
+    }
+
+    function addTable(target, title, headers, rows, numeric = []) {
+      heading(target, title);
+      if (!rows.length) { target.append(node('p', t('noActivity'), 'no-data')); return; }
+      const wrap = node('div', undefined, 'table-wrap block');
+      wrap.tabIndex = 0;
+      wrap.setAttribute('role', 'region');
+      wrap.setAttribute('aria-label', t('table', { title }));
+      wrap.append(table(headers, rows, { numeric, rowHeader: true }));
+      target.append(wrap);
+    }
+
+    function svgNode(tag, attributes, content) {
+      const result = document.createElementNS('http://www.w3.org/2000/svg', tag);
+      for (const [key, value] of Object.entries(attributes)) result.setAttribute(key, value);
+      if (content !== undefined) result.textContent = content;
+      return result;
+    }
+
+    function drawChart(target, title, metric, rows, dates, { address = false } = {}) {
+      heading(target, title);
+      const legend = node('div', undefined, 'legend');
+      const selected = selectedAdapter();
+      const adapters = selected !== 'all' ? [selected] : address ? ['all'] : ADAPTER_IDS;
+      const seriesLabel = adapter => adapter === 'all' ? t('allAdapters') : ADAPTERS[adapter];
+      const seriesClass = adapter => adapter === 'all' ? 'all-adapters' : adapter;
+      for (const adapter of adapters) legend.append(node('span', seriesLabel(adapter), `adapter ${seriesClass(adapter)}`));
+      target.append(legend);
+      if (!rows.some(row => row[metric] > 0)) {
+        target.append(node('p', t(address ? 'noAddressActivity' : 'noActivity'), 'no-data block'));
+        return;
+      }
+      const width = 580, height = 174, left = 52, right = 560, top = 14, bottom = 143;
+      const chart = svgNode('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', class: 'chart', 'aria-label': t(address ? 'addressChart' : 'chart', { title }) });
+      const max = Math.max(...rows.map(row => row[metric]));
+      const interval = 10 ** Math.floor(Math.log10(max));
+      const ceiling = Math.ceil(max / interval) * interval;
+      const y = value => bottom - (value / ceiling) * (bottom - top);
+      const x = index => dates.length === 1 ? (left + right) / 2 : left + index * (right - left) / (dates.length - 1);
+      for (const value of [...new Set([0, Math.floor(ceiling / 2), ceiling])]) {
+        chart.append(svgNode('line', { x1: left, x2: right, y1: y(value), y2: y(value) }));
+        chart.append(svgNode('text', { x: left - 8, y: y(value) + 4, 'text-anchor': 'end' }, axisNumber.format(value)));
+      }
+      const ticks = dates.length < 3 ? dates.map((_, index) => index) : [0, Math.floor((dates.length - 1) / 2), dates.length - 1];
+      for (const index of ticks) {
+        const anchor = dates.length === 1 ? 'middle' : index === 0 ? 'start' : index === dates.length - 1 ? 'end' : 'middle';
+        chart.append(svgNode('text', { x: x(index), y: height - 8, 'text-anchor': anchor }, shortDate.format(dateMillis(dates[index]))));
+      }
+      for (const adapter of adapters) {
+        const series = address ? rows : rows.filter(row => row.adapter === adapter);
+        const runs = [];
+        let run = [];
+        series.forEach((row, index) => {
+          if (row[metric] !== null) run.push([row, index]);
+          else if (run.length) { runs.push(run); run = []; }
+        });
+        if (run.length) runs.push(run);
+        for (const points of runs) {
+          const coordinates = points.map(([row, index]) => `${x(index)},${y(row[metric])}`).join(' ');
+          const style = { class: seriesClass(adapter), points: coordinates, 'stroke-dasharray': adapter === 'opencode' ? '5 3' : 'none' };
+          if (points.length > 1) chart.append(svgNode('polyline', style));
+          if (series.length > 31 && points.length > 1) continue;
+          for (const [row, index] of points) {
+            const marker = svgNode('circle', { class: seriesClass(adapter), cx: x(index), cy: y(row[metric]), r: 3 });
+            marker.append(svgNode('title', {}, `${seriesLabel(adapter)} · ${date.format(dateMillis(row.day))} · ${valueLabel(row[metric])}`));
+            chart.append(marker);
+          }
+        }
+      }
+      target.append(chart);
+    }
+
+    function drawBars(target, rows, rowName) {
+      const shown = rows.slice(0, BAR_ROWS);
+      const max = Math.max(1, ...shown.map(row => row.invocations));
+      const figure = node('figure', undefined, 'bar-chart');
+      const plot = node('div', undefined, 'bar-plot');
+      const caption = localized(ENGAGEMENT.invocations);
+      plot.tabIndex = 0;
+      plot.setAttribute('role', 'group');
+      plot.setAttribute('aria-label', caption);
+      const list = node('ul');
+      list.setAttribute('role', 'list');
+      for (const row of shown) {
+        const item = node('li', undefined, 'bar-row');
+        const label = node('span', undefined, 'bar-label');
+        const name = rowName(row);
+        const boundary = target.id === 'features' ? name.indexOf('.') + 1 : 0;
+        const category = node('span', undefined, 'bar-name');
+        if (boundary) category.append(name.slice(0, boundary), node('wbr'), name.slice(boundary));
+        else category.textContent = name;
+        label.append(category, adapterLabel(row.adapter));
+        if (own(row, 'agent_version')) label.append(node('span', row.agent_version ?? t('unknownVersion'), 'compact'));
+        const track = node('span', undefined, 'bar-track');
+        const fill = node('span', undefined, `bar-fill ${row.adapter}`);
+        fill.style.height = `${row.invocations / max * 100}%`;
+        fill.append(node('span', valueLabel(row.invocations), 'bar-value num'));
+        track.append(fill);
+        item.append(label, track);
+        list.append(item);
+      }
+      plot.append(list);
+      figure.append(node('figcaption', caption), plot);
+      if (shown.length < rows.length) {
+        figure.append(node('p', t('barLimit', { shown: valueLabel(shown.length), total: valueLabel(rows.length) }), 'subtle'));
+      }
+      target.replaceChildren(figure);
+    }
+
+    function updateViewRegion(target, id) {
+      const chart = viewModes[id] === 'bars';
+      target.setAttribute('aria-label', t(chart ? 'barRegion' : 'table', { title: t(id) }));
+      target.tabIndex = chart ? -1 : 0;
+      return chart;
+    }
+
+    function featureCategory(feature) {
+      const family = feature.split('.', 1)[0];
+      if (family === 'pane') return 'pane';
+      if (family === 'dashboard' || family === 'converge') return 'dashboard';
+      return 'command';
+    }
+
+    function matchingFeatures(rows) {
+      const filter = element('feature-filter').value.trim().toLowerCase();
+      const category = element('feature-category').value;
+      return visibleRows(rows).filter(row => row.feature.includes(filter) &&
+        (category === 'all' || category === (row.category ?? featureCategory(row.feature))))
+        .sort((a, b) => b.invocations - a.invocations || a.feature.localeCompare(b.feature) || a.adapter.localeCompare(b.adapter));
+    }
+
+    function showNoFeatures(target) {
+      const filtered = element('feature-filter').value.trim() || element('feature-category').value !== 'all' || element('feature-version').value !== 'all';
+      target.replaceChildren(node('p', t(filtered ? 'noMatchingFeatures' : 'noFeatureActions'), 'no-data'));
+    }
+
+    const versionFilter = row => row.agent_version ?? 'unknown';
+
+    function refreshVersionFilter(usage) {
+      const field = element('feature-version-field');
+      const select = element('feature-version');
+      const previous = select.value;
+      field.hidden = !usage;
+      const all = node('option', t('allVersions'));
+      all.value = 'all';
+      select.replaceChildren(all);
+      if (!usage) return;
+      const versions = [...new Set(visibleRows(usage.features).map(versionFilter))].sort();
+      for (const version of versions) {
+        const option = node('option', version === 'unknown' ? t('unknownVersion') : version);
+        option.value = version;
+        select.append(option);
+      }
+      if (versions.includes(previous)) select.value = previous;
+    }
+
+    function drawFeatures(report) {
+      const target = element('features');
+      const chart = updateViewRegion(target, 'features');
+      target.classList.toggle('feature-table', !chart);
+      element('legacy-features').hidden = !!report.usage;
+      const selected = element('feature-version').value;
+      const features = matchingFeatures(report.usage?.features ?? report.features)
+        .filter(row => selected === 'all' || versionFilter(row) === selected);
+      if (!features.length) { showNoFeatures(target); return; }
+      if (chart) { drawBars(target, features, row => row.feature); return; }
+      const rows = features.map(row => [
+        node('span', row.feature, 'feature-name'),
+        t(FEATURE_CATEGORIES[row.category ?? featureCategory(row.feature)]), adapterLabel(row.adapter),
+        ...(report.usage ? [row.agent_version ?? t('unknownVersion')] : []),
+        valueLabel(row.invocations), valueLabel(row.installations),
+      ]);
+      const fields = ['feature', 'featureCategory', 'codingAgent', ...(report.usage ? ['agentVersion'] : []), 'actions', 'installations'];
+      target.replaceChildren(table(labels(fields), rows, { numeric: [fields.length - 2, fields.length - 1], rowHeader: true }));
+    }
+
+    function drawBreakdown(report, id) {
+      const target = element(`${id}-data`);
+      const chart = updateViewRegion(target, id);
+      const rows = visibleRows(report[id]).sort((a, b) => b.invocations - a.invocations || a.adapter.localeCompare(b.adapter));
+      const rowName = row => id === 'surfaces' ? localized(SURFACES[row.surface]) : row.version;
+      if (!rows.length) {
+        target.replaceChildren(node('p', t('noActivity'), 'no-data'));
+      } else if (chart) {
+        drawBars(target, rows, rowName);
+      } else {
+        const shown = rows.slice(0, VERSION_ROWS);
+        target.replaceChildren(table(labels([BREAKDOWNS[id], 'adapter', 'actions', 'installations']), shown.map(row => [
+          rowName(row), adapterLabel(row.adapter), valueLabel(row.invocations), valueLabel(row.installations),
+        ]), { numeric: [2, 3], rowHeader: true }));
+        if (shown.length < rows.length) {
+          target.append(node('p', t('versionLimit', { shown: valueLabel(shown.length), total: valueLabel(rows.length) }), 'subtle'));
+        }
+      }
+    }
+
+    function coverageLabel(observed, total) {
+      return t('coverage', { observed: valueLabel(observed), total: valueLabel(total) });
+    }
+
+    function activityCells(row) {
+      return [valueLabel(row.distinct_addresses), valueLabel(row.distinct_installations),
+        valueLabel(row.distinct_address_installation_pairs), coverageLabel(row.events_with_address, row.events),
+        coverageLabel(row.events_with_agent_version, row.events)];
+    }
+
+    function drawObservedActivity(activity) {
+      element('observed-activity').hidden = !activity;
+      element('daily-addresses').hidden = !activity;
+      element('agent-versions').hidden = !activity;
+      if (!activity) return;
+
+      const adapter = selectedAdapter();
+      const scope = adapter === 'all' ? activity : activity.by_adapter.find(row => row.adapter === adapter);
+      const daily = [...scope.daily].sort((a, b) => a.day.localeCompare(b.day));
+      const numeric = [1, 2, 3, 4, 5];
+      element('activity-counts').replaceChildren(table(labels(['window', ...ACTIVITY_COLUMNS]),
+        Object.entries(ACTIVITY_WINDOWS).map(([key, label]) => [t(label), ...activityCells(scope[key])]),
+        { numeric, rowHeader: true }));
+      drawChart(element('addresses-chart'), t('dailyAddresses'), 'distinct_addresses', daily, daily.map(row => row.day), { address: true });
+      element('daily-network').replaceChildren(table(labels(['utcDay', ...ACTIVITY_COLUMNS]),
+        [...daily].sort(newestDayFirst).map(row => [row.day, ...activityCells(row)]), { numeric, rowHeader: true }));
+
+      const target = element('agent-versions-data');
+      const rows = visibleRows(activity.by_agent_version).sort((a, b) => b.events - a.events || a.adapter.localeCompare(b.adapter));
+      if (!rows.length) {
+        target.replaceChildren(node('p', t('noActivity'), 'no-data'));
+        return;
+      }
+      const shown = rows.slice(0, VERSION_ROWS);
+      const headers = labels(['agentVersion', 'adapter', 'events', ...ACTIVITY_COLUMNS.slice(0, 3)]);
+      target.replaceChildren(table(headers, shown.map(row => [
+        row.agent_version ?? t('unknownVersion'), adapterLabel(row.adapter), valueLabel(row.events), ...activityCells(row).slice(0, 3),
+      ]), { numeric: [2, 3, 4, 5], rowHeader: true }));
+      if (shown.length < rows.length) {
+        target.append(node('p', t('agentVersionLimit', { shown: valueLabel(shown.length), total: valueLabel(rows.length) }), 'subtle'));
+      }
+    }
+
+    function drawAdoption(report, adoption) {
+      const total = node('strong', valueLabel(sum(adoption, 'new_installations')), 'total');
+      const split = node('p', undefined, 'legend');
+      for (const row of adoption) {
+        const label = adapterLabel(row.adapter);
+        label.append(node('strong', valueLabel(row.new_installations)));
+        split.append(label);
+      }
+      element('first-seen').replaceChildren(total, split);
+
+      const adapter = selectedAdapter();
+      const rolling = report.usage?.rolling;
+      const scope = adapter === 'all' ? rolling : rolling?.by_adapter.find(row => row.adapter === adapter);
+      const windows = Object.entries(ROLLING_WINDOWS).map(([key, [label]]) => {
+        const counts = scope?.[key];
+        const active = counts?.active_installations ?? (key === 'last_30_days' ? sum(adoption, 'active_last_30_days') : null);
+        return [t(label), valueLabel(active), valueLabel(counts?.returning_installations ?? null)];
+      });
+      const target = element('returning');
+      target.replaceChildren(table(labels(['window', 'activeInstallations', 'returningInstallations']), windows, { numeric: [1, 2], rowHeader: true }));
+      if (!rolling) target.append(node('p', t('legacyRolling'), 'subtle'));
+    }
+
+    function render(report) {
+      const adoption = visibleRows(report.adoption);
+      const engagement = visibleRows(report.engagement);
+      drawAdoption(report, adoption);
+      refreshVersionFilter(report.usage);
+      drawFeatures(report);
+      const daily = visibleRows(report.daily).sort(byDay);
+      const dates = [...new Set(daily.map(row => row.day))];
+      drawChart(element('active-chart'), t('dailyActive'), 'active_installations', daily, dates);
+      drawChart(element('actions-chart'), t('dailyActions'), 'invocations', daily, dates);
+      const dailyRows = [...daily].sort(newestDayFirst);
+      element('daily').replaceChildren(table([...labels(['utcDay', 'adapter']), ...Object.values(DAILY).map(localized)], dailyRows.map(row => [
+        row.day, adapterLabel(row.adapter), ...Object.keys(DAILY).map(key => valueLabel(row[key])),
+      ]), { numeric: [2, 3, 4, 5, 6], rowHeader: true }));
+      drawObservedActivity(report.activity);
+
+      const metrics = [...Object.entries(ADOPTION).map(([key, label]) => [label, adoption, key]),
+        ...Object.entries(ENGAGEMENT).filter(([key]) => key !== 'engaged_installations').map(([key, label]) => [label, engagement, key])];
+      addTable(element('adoption'), t('installationActivity'), [t('metric'), ...adoption.map(row => adapterLabel(row.adapter))],
+        metrics.map(([label, rows, key]) => [localized(label), ...adoption.map(item => valueLabel(rows.find(row => row.adapter === item.adapter)[key]))]),
+        adoption.map((_, index) => index + 1));
+      element('adoption').append(node('p', t('activityDefinition'), 'subtle'));
+
+      const retention = visibleRows(report.retention).sort((a, b) => a.adapter.localeCompare(b.adapter) || a.days_after_first_seen - b.days_after_first_seen);
+      addTable(element('retention'), t('retention'), labels(['adapter', 'day', 'returned', 'eligible', 'rate']),
+        retention.map(row => [adapterLabel(row.adapter), valueLabel(row.days_after_first_seen), valueLabel(row.returned_installations), valueLabel(row.eligible_installations), rateLabel(row.rate)]), [1, 2, 3, 4]);
+      element('retention').append(node('p', t('retentionNote', { date: date.format(dateMillis(report.retained_from)) }), 'subtle'));
+      for (const id of Object.keys(BREAKDOWNS)) drawBreakdown(report, id);
+    }
+
+    let currentReport;
+    let currentError;
+    const languageButtons = document.querySelectorAll('[data-language]');
+    const viewSwitches = document.querySelectorAll('[data-view-switch]');
+    const languageStorageKey = 'trajviz-obs-usage-language';
+
+    function updateError() {
+      const section = currentError.section ? t(currentError.section) : '';
+      element('error').textContent = t(currentError.message, { section });
+      element('error').hidden = false;
+    }
+
+    function updateReportMeta() {
+      const { as_of: end, period_start: start, retention_days: days } = currentReport;
+      const endLabel = date.format(dateMillis(end));
+      const range = start === end ? endLabel : t('dateRange', { start: date.format(dateMillis(start)), end: endLabel });
+      element('report-meta').textContent = t('period', { range, days: valueLabel(days) });
+    }
+
+    function setLanguage(next) {
+      locale = next;
+      document.documentElement.lang = locale;
+      document.title = `${t('title')} · TrajViz-Obs`;
+      for (const button of languageButtons) button.setAttribute('aria-pressed', String(button.dataset.language === locale));
+      for (const item of document.querySelectorAll('[data-copy]')) item.textContent = t(item.dataset.copy);
+      for (const item of document.querySelectorAll('[data-copy-aria]')) item.setAttribute('aria-label', t(item.dataset.copyAria));
+      for (const group of viewSwitches) group.setAttribute('aria-label', t('viewMode', { title: t(group.dataset.viewSwitch) }));
+      number = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 });
+      percent = new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 2 });
+      axisNumber = new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 });
+      shortDate = new Intl.DateTimeFormat(locale, { timeZone: 'UTC', month: 'short', day: 'numeric' });
+      date = new Intl.DateTimeFormat(locale, { timeZone: 'UTC', year: 'numeric', month: 'short', day: 'numeric' });
+      if (currentReport) {
+        render(currentReport);
+        updateReportMeta();
+      }
+      if (currentError) updateError();
+    }
+
+    for (const group of viewSwitches) {
+      const id = group.dataset.viewSwitch;
+      const buttons = ['table', 'bars'].map(mode => {
+        const button = node('button');
+        button.type = 'button';
+        button.dataset.copy = mode === 'table' ? 'tableView' : 'barView';
+        button.dataset.mode = mode;
+        button.setAttribute('aria-pressed', String(mode === viewModes[id]));
+        button.setAttribute('aria-controls', id === 'features' ? id : `${id}-data`);
+        button.addEventListener('click', () => {
+          if (!currentReport || viewModes[id] === mode) return;
+          viewModes[id] = mode;
+          for (const choice of buttons) choice.setAttribute('aria-pressed', String(choice.dataset.mode === mode));
+          if (id === 'features') drawFeatures(currentReport);
+          else drawBreakdown(currentReport, id);
+        });
+        return button;
+      });
+      group.append(...buttons);
+    }
+
+    let savedLanguage;
+    try { savedLanguage = localStorage.getItem(languageStorageKey); }
+    catch { /* Offline browsers may disable storage. */ }
+    setLanguage(savedLanguage === 'zh-CN' ? 'zh-CN' : 'en');
+    for (const button of languageButtons) {
+      button.addEventListener('click', () => {
+        if (button.dataset.language === locale) return;
+        setLanguage(button.dataset.language);
+        try { localStorage.setItem(languageStorageKey, locale); }
+        catch { /* The toggle remains available without storage. */ }
+      });
+    }
+
+    element('adapter-filter').addEventListener('change', () => { if (currentReport) render(currentReport); });
+    function updateFeatureFilter() {
+      if (!currentReport) return;
+      drawFeatures(currentReport);
+    }
+    element('feature-filter').addEventListener('input', updateFeatureFilter);
+    element('feature-category').addEventListener('change', updateFeatureFilter);
+    element('feature-version').addEventListener('change', updateFeatureFilter);
+
+    try {
+      const embedded = element('embedded-report').textContent.trim();
+      if (embedded.length > MAX_REPORT_SIZE) throw new ReportError('oversized');
+      const report = validate(JSON.parse(embedded));
+      render(report);
+      currentReport = report;
+      updateReportMeta();
+      element('dashboard').hidden = false;
+    } catch (error) {
+      currentError = error instanceof ReportError ? error : new ReportError('loadFailed');
+      updateError();
+    }
+  </script>
+</body>
+</html>

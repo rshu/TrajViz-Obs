@@ -47,9 +47,10 @@ def main() -> int:
         ]
     checks += [
         ("bridge tests", [python, "-m", "pytest", str(ROOT / "bridge" / "tests"), "-q"]),
+        ("usage telemetry tests", [python, "-m", "pytest", str(ROOT / "telemetry"), "-q"]),
         ("command and schema matrix", [python, str(ROOT / "scripts" / "command_matrix.py"), "--python", python]),
         ("format and extension matrix", [python, str(ROOT / "scripts" / "formats_e2e.py"), "--python", python]),
-        ("Python lint", [python, "-m", "ruff", "check", str(ROOT / "bridge"), str(ROOT / "scripts")]),
+        ("Python lint", [python, "-m", "ruff", "check", str(ROOT / "bridge"), str(ROOT / "scripts"), str(ROOT / "telemetry")]),
     ]
     failed: list[str] = []
     for label, command in checks:
