@@ -14,6 +14,7 @@ export type GuiOrigin = {
   key: string
   id: string
   client(): OpenCodeClient
+  connected?(): boolean
   location(): LocationRef | undefined
   server?: string
 }
@@ -197,7 +198,7 @@ export class GuiController {
         if (active) active.nativeUpdate = true
         const result = await updatePlugin(client, {
           check: parsed.flags.check === true, location, signal, server: origin.server,
-          current: () => !this.closed && origin.client() === client,
+          current: () => !this.closed && origin.client() === client && origin.connected?.() !== false,
           progress: text => { if (!this.closed && origin.client() === client) { job.text = display(text); this.hooks.changed() } },
           confirm: question => this.hooks.confirm({ ...question, id: job.id }, signal),
         })
@@ -306,6 +307,14 @@ export class GuiController {
     if (!id || !job) { this.hooks.notice('No obs command is running.'); return }
     job.controller.abort()
     if (!job.nativeUpdate) this.cancelRemote(job.client, id, job.location)
+  }
+  cancelStaleUpdates(reconnected?: OpenCodeClient): void {
+    for (const [id, active] of this.active) {
+      if (!active.nativeUpdate) continue
+      const origin = this.jobs.get(id)?.origin
+      try { if (reconnected === active.client || origin && (origin.client() !== active.client || origin.connected?.() === false)) active.controller.abort() }
+      catch { active.controller.abort() }
+    }
   }
   dispose() {
     this.closed = true

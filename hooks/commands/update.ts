@@ -12,15 +12,24 @@ const READ_TIMEOUT_MS = 30_000
 const UPDATE_TIMEOUT_MS = 120_000
 const MAX_JSON = 1024 * 1024
 type Installation = { id: string; scope: 'user' | 'project' | 'local' | 'managed'; version: string; installPath: string; readFromFolder?: string; projectPath?: string }
-type Marketplace = { source?: { source?: unknown; repo?: unknown; ref?: unknown }; installLocation?: unknown }
+type Marketplace = { source?: { source?: unknown; repo?: unknown; ref?: unknown; path?: unknown }; installLocation?: unknown }
 type PluginEntry = { name?: unknown; version?: unknown }
 type Target = { installation: Installation; marketplace: string; metadata: Marketplace }
 type Available = { version?: string; source: string }
-let applying = false
+let running = false
 
 /** Strip terminal controls from host diagnostics; no native command text is ever executed. */
 function clean(value: string): string {
   return displayText(value).slice(0, 2000)
+}
+
+/** Native Git errors can echo authenticated URLs; redact before truncating diagnostics. */
+function diagnostic(value: string): string {
+  return displayText(value)
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, '$1[redacted]@')
+    .replace(/([a-z][a-z0-9+.-]*:\/\/[^?#\s]+)\?[^#\s]*/gi, '$1?[redacted]')
+    .replace(/([a-z][a-z0-9+.-]*:\/\/[^#\s]+)#[^\s]*/gi, '$1#[redacted]')
+    .slice(0, 2000)
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -29,7 +38,8 @@ function object(value: unknown): value is Record<string, unknown> {
 
 function json(text: string): unknown {
   if (text.length > MAX_JSON) throw new Error('Native plugin metadata is too large to inspect safely.')
-  return JSON.parse(text)
+  try { return JSON.parse(text) }
+  catch { throw new Error('Claude Code returned invalid plugin metadata. Inspect /plugin and retry.') }
 }
 
 /** Native mutation commands print their structured result after any progress lines. */
@@ -43,14 +53,27 @@ function nativeDocument(result: ProcessRunResult): Record<string, unknown> | und
 
 function nativeMessage(result: ProcessRunResult): string {
   const doc = nativeDocument(result)
-  return clean(typeof doc?.message === 'string' ? doc.message : result.stderr.trim() || result.stdout.trim() || 'The native Claude Code command did not complete.')
+  if (typeof doc?.message === 'string') return diagnostic(doc.message)
+  const error = result.stderr.trim()
+  return error && !/^[{[]/.test(error) ? diagnostic(error) : 'The native Claude Code command did not complete. Check /plugin for details.'
 }
 
 function installedRows(value: unknown): Installation[] {
   if (!Array.isArray(value)) throw new Error('Claude Code returned an unsupported plugin inventory. Update through /plugin instead.')
-  return value.filter((row): row is Installation => object(row) && typeof row.id === 'string' && row.id.startsWith(`${NAME}@`)
-    && typeof row.installPath === 'string' && typeof row.version === 'string'
-    && ['user', 'project', 'local', 'managed'].includes(String(row.scope)))
+  const rows: Installation[] = []
+  for (const row of value) {
+    if (!object(row) || typeof row.id !== 'string' || !row.id.startsWith(`${NAME}@`)) continue
+    if (typeof row.installPath !== 'string' || !row.installPath || typeof row.version !== 'string' || !row.version.trim()
+      || row.version.length > 128 || clean(row.version) !== row.version
+      || !['user', 'project', 'local', 'managed'].includes(String(row.scope))
+      || ((row.scope === 'project' || row.scope === 'local') && (typeof row.projectPath !== 'string' || !row.projectPath))
+      || (row.projectPath !== undefined && (typeof row.projectPath !== 'string' || !row.projectPath))
+      || (row.readFromFolder !== undefined && (typeof row.readFromFolder !== 'string' || !row.readFromFolder))) {
+      throw new Error('Claude Code returned an incomplete installation record for this plugin. Update through /plugin instead.')
+    }
+    rows.push(row as Installation)
+  }
+  return rows
 }
 
 async function nativeConfiguration($: EngineInterface): Promise<string> {
@@ -75,6 +98,47 @@ async function realDirectory($: EngineInterface, path: string, windows: boolean)
     const stat = await $.fs.stat(path, { resolve: true })
     return stat.kind === 'dir' && stat.realPath ? pathKey(stat.realPath, windows) : undefined
   } catch { return undefined }
+}
+
+/** Source objects come from JSON; sort fields without exposing their private values in output. */
+function sourceIdentity(value: unknown, depth = 0): string {
+  if (depth > 16) throw new Error('The marketplace source metadata is too deeply nested to verify.')
+  if (Array.isArray(value)) return `[${value.map(item => sourceIdentity(item, depth + 1)).join(',')}]`
+  if (object(value)) return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${sourceIdentity(value[key], depth + 1)}`).join(',')}}`
+  return JSON.stringify(value) ?? 'null'
+}
+
+/** Capture both registration and filesystem targets before waiting on the native updater. */
+async function targetIdentity($: EngineInterface, found: Target, configuration: string): Promise<string> {
+  const windows = /^windows/i.test((await $.env.get('OS')) ?? '')
+  const row = found.installation
+  const source = found.metadata.source
+  const location = found.metadata.installLocation
+  if (!object(source) || typeof source.source !== 'string' || !source.source || typeof location !== 'string') {
+    throw new Error('The marketplace registration is incomplete. Update through /plugin instead.')
+  }
+  const market = await realDirectory($, location, windows)
+  const installed = await realDirectory($, row.installPath, windows)
+  const marketStore = await realDirectory($, `${configuration}/plugins/marketplaces`, windows)
+  const cacheStore = await realDirectory($, `${configuration}/plugins/cache`, windows)
+  const project = row.projectPath ? await realDirectory($, row.projectPath, windows) : undefined
+  const folder = row.readFromFolder ? await realDirectory($, row.readFromFolder, windows) : undefined
+  if (!market || !installed || ((row.scope === 'project' || row.scope === 'local') && !project) || (row.readFromFolder && !folder)) {
+    throw new Error('The installation or marketplace paths could not be verified. Update through /plugin instead.')
+  }
+  if (!marketStore || !cacheStore || !market.startsWith(`${marketStore}/`) || !installed.startsWith(`${cacheStore}/`)) {
+    throw new Error('The installation or marketplace resolves outside Claude Code’s managed stores. Update the checkout manually or inspect /plugin instead.')
+  }
+  return JSON.stringify([row.id, row.scope, row.version, installed, project, folder, market, cacheStore, marketStore, sourceIdentity(source)])
+}
+
+async function revalidateTarget($: EngineInterface, configuration: string, expected: string): Promise<void> {
+  let identity: string | undefined
+  try {
+    const current = await target($, await inventory($, configuration), configuration)
+    if (current) identity = await targetIdentity($, current, configuration)
+  } catch { /* A missing or changed registration is no longer the authorized update target. */ }
+  if (identity !== expected) throw new Error('The installation or marketplace source changed during refresh or could not be verified afterward. No plugin update was started; inspect /plugin and retry.')
 }
 
 /** Match the actual running directory, applicable project, and native scope precedence. */
@@ -152,7 +216,7 @@ async function available($: EngineInterface, found: Target): Promise<Available> 
   return { source: 'unavailable; latest remote version unknown' }
 }
 
-async function sourceGuidance($: EngineInterface, includeVersion: boolean, configuration: string): Promise<string> {
+async function sourceGuidance($: EngineInterface, includeVersion: boolean, configuration: string, directory = $.plugin.root, refreshLocal = false): Promise<string> {
   let version = 'unknown'
   if (includeVersion) {
     try {
@@ -162,14 +226,15 @@ async function sourceGuidance($: EngineInterface, includeVersion: boolean, confi
   }
   const versions = includeVersion ? `Current files: ${version}\nAvailable: unknown\n` : ''
   const windows = /^windows/i.test((await $.env.get('OS')) ?? '')
-  const root = await realDirectory($, $.plugin.root, windows)
+  const root = await realDirectory($, directory, windows)
   const cache = await realDirectory($, `${configuration}/plugins/cache`, windows)
-  if (root && cache && root.startsWith(`${cache}/`)) {
+  if (includeVersion && root && cache && root.startsWith(`${cache}/`)) {
     return `${versions}This session’s cached plugin no longer matches a current installation. Run /reload-plugins or restart Claude Code, then retry. No installation was changed.`
   }
-  const command = manualUpdateCommand($.plugin.root, windows)
-  const next = command ? `To update its Git checkout, run:\n${command}\nThen run /reload-plugins.` : 'Open this checkout in your shell, update it manually, then run /reload-plugins.'
-  return `${versions}This plugin is loaded from a local or unmanaged directory:\n${clean($.plugin.root)}\n${next}\nNo installation was changed.`
+  const command = manualUpdateCommand(directory, windows)
+  const reload = refreshLocal ? 'Then refresh this plugin in /plugin and run /reload-plugins.' : 'Then run /reload-plugins.'
+  const next = command ? `To update its Git checkout, run${windows ? ' in PowerShell' : ''}:\n${command}\n${reload}` : `Open this checkout in your shell and update it manually. ${reload}`
+  return `${versions}This plugin uses a local or unmanaged directory:\n${clean(directory)}\n${next}\nNo installation was changed.`
 }
 
 /** A literal path in the user's shell; omit copyable commands for paths with controls. */
@@ -202,8 +267,8 @@ export async function updatePlugin($: EngineInterface, ctx: CommandContext): Pro
   }
   const check = ctx.parsed.flags.check === true
   if (!check && !ctx.personRequested) return { text: markOutcome(ctx.telemetry, 'rejected', 'Run /obs update directly in the Claude Code composer to update this plugin. /obs update --check is read-only.') }
-  if (!check && applying) return { text: markOutcome(ctx.telemetry, 'rejected', 'A plugin update is already running. Wait for it to finish.') }
-  if (!check) applying = true
+  if (running) return { text: markOutcome(ctx.telemetry, 'rejected', 'A plugin update or version check is already running. Wait for it to finish.') }
+  running = true
   const generation = publicationGeneration()
   try {
     if ($.plugin.name !== NAME) throw new Error('This update command does not match the running plugin’s identity.')
@@ -218,19 +283,24 @@ export async function updatePlugin($: EngineInterface, ctx: CommandContext): Pro
     const currentVersion = object(current) && typeof current.version === 'string' ? clean(current.version) : 'unknown'
     const header = `TrajViz Obs · Claude Code\nCurrent files: ${currentVersion}\nInstalled: ${clean(row.version)} · ${row.scope} · ${row.id}`
     const local = typeof row.readFromFolder === 'string' || found.metadata.source?.source === 'directory'
+    const localDirectory = row.readFromFolder ?? (typeof found.metadata.source?.path === 'string' ? found.metadata.source.path : typeof found.metadata.installLocation === 'string' ? found.metadata.installLocation : $.plugin.root)
     if (check) {
       const latest = await available($, found)
-      if (local && row.scope !== 'managed') return { text: `${header}\nAvailable: ${latest.version ?? 'unknown'} · ${latest.source}\n${await sourceGuidance($, false, configuration)}` }
+      if (local && row.scope !== 'managed') return { text: `${header}\nAvailable: ${latest.version ?? 'unknown'} · ${latest.source}\n${await sourceGuidance($, false, configuration, localDirectory, !row.readFromFolder)}` }
       return { text: `${header}\nAvailable: ${latest.version ?? 'unknown'} · ${latest.source}\nNo installation was changed.${row.scope === 'managed' ? '\nThis installation is managed by your administrator.' : '\nRun /obs update to ask Claude Code to update this installation.'}` }
     }
     if (row.scope === 'managed') return { text: markOutcome(ctx.telemetry, 'rejected', `${header}\nThis installation is managed by your administrator. No installation was changed.`) }
-    if (local) return { text: `${header}\n${await sourceGuidance($, false, configuration)}` }
-    const nativeCwd = row.projectPath ?? await $.session.cwd()
+    if (local) return { text: `${header}\n${await sourceGuidance($, false, configuration, localDirectory, !row.readFromFolder)}` }
+    const windows = /^windows/i.test((await $.env.get('OS')) ?? '')
+    const nativeCwd = await realDirectory($, row.scope === 'project' || row.scope === 'local' ? row.projectPath! : await $.session.cwd(), windows)
+    if (!nativeCwd) throw new Error('The update working directory could not be verified. Update through /plugin instead.')
+    const identity = await targetIdentity($, found, configuration)
     $.ui.status('obs update: refreshing this marketplace…')
     const refresh = await $.process.run(['claude', 'plugin', 'marketplace', 'update', found.marketplace, '--json'], { cwd: nativeCwd, env: { CLAUDE_CONFIG_DIR: configuration }, timeoutMs: UPDATE_TIMEOUT_MS, stdin: '' })
     if (refresh.exitCode !== 0 || nativeDocument(refresh)?.outcome !== 'ok') {
       return { text: markOutcome(ctx.telemetry, 'error', `${header}\nMarketplace refresh did not complete: ${nativeMessage(refresh)}\nComplete the update in /plugin or your shell. No approval was accepted automatically.`), exitCode: 1 }
     }
+    await revalidateTarget($, configuration, identity)
     $.ui.status('obs update: updating this plugin…')
     const result = await $.process.run(['claude', 'plugin', 'update', row.id, '--scope', row.scope, '--json'], { cwd: nativeCwd, env: { CLAUDE_CONFIG_DIR: configuration }, timeoutMs: UPDATE_TIMEOUT_MS, stdin: '' })
     if (result.exitCode !== 0 || nativeDocument(result)?.outcome !== 'ok') {
@@ -241,9 +311,10 @@ export async function updatePlugin($: EngineInterface, ctx: CommandContext): Pro
     if (typeof claimedVersion === 'string' && claimedVersion !== installedVersion) throw new Error('The native updater’s result and installed version disagree. Inspect the installation in /plugin before retrying.')
     return { text: `${header}\nVerified installed: ${installedVersion} · ${row.scope}\nRun /reload-plugins or restart Claude Code to load updated files. Your current session keeps its loaded plugin until then.` }
   } catch (error) {
-    return { text: markOutcome(ctx.telemetry, 'error', `obs update: ${clean(error instanceof Error ? error.message : String(error))}\nUpdate through /plugin if the native CLI or installation metadata is unavailable.`), exitCode: 1 }
+    const detail = error instanceof Error ? error.message : typeof error === 'string' ? error : 'The native plugin update could not be completed.'
+    return { text: markOutcome(ctx.telemetry, 'error', `obs update: ${diagnostic(detail)}\nUpdate through /plugin if the native CLI or installation metadata is unavailable.`), exitCode: 1 }
   } finally {
-    if (!check) applying = false
+    running = false
     $.ui.status(undefined)
     restoreStatusLine($, generation)
   }

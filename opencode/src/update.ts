@@ -81,6 +81,7 @@ export async function updatePlugin(client: OpenCodeClient, options: UpdateOption
     return matches[0]!
   }
   try {
+    if (typeof location.directory !== 'string' || !location.directory.trim()) throw new Error('The project location is not ready. Open a project and run /obs update again.')
     check(); options.progress('Checking this server’s Obs installation…')
     const plugin = await find(), source = plugin.source
     if (source.type === 'local') return {
@@ -119,8 +120,10 @@ export async function updatePlugin(client: OpenCodeClient, options: UpdateOption
     if (!accepted) return { state: 'cancelled', text: 'Obs update cancelled before dispatch. No package was changed.' }
     const latest = await find()
     if (identity(latest) !== identity(checked)) throw new Error('The Obs installation changed while confirmation was open. Run /obs update --check again before updating.')
+    if (latest.state.status === 'failed') throw new Error(`Obs failed to load while confirmation was open: ${latest.state.error}`)
     if (latest.source.type === 'package' && latest.source.updating) throw new Error('OpenCode is already updating Obs. Wait for that update to finish.')
     check(); options.progress('Updating Obs through OpenCode. The host may reload this plugin; run /obs update --check after it reconnects.')
+    check()
     dispatched = true
     await client.plugin.update({ location, targets: [target] }, { signal: options.signal })
     check()

@@ -158,6 +158,25 @@ describe('OpenCode native package updates', () => {
     expect(h.plugin.update).not.toHaveBeenCalled()
   })
 
+  test('reconnect or cancellation caused by the final progress update cannot dispatch a mutation', async () => {
+    for (const abort of [false, true]) {
+      const h = harness(); let current = true
+      h.options.current = () => current
+      h.progress.mockImplementation(text => { if (text.startsWith('Updating Obs')) { if (abort) h.controller.abort(); else current = false } })
+      expect((await h.run()).state).toBe(abort ? 'cancelled' : 'error')
+      expect(h.plugin.update).not.toHaveBeenCalled()
+    }
+  })
+
+  test('missing project scope and a plugin that failed during confirmation remain read-only', async () => {
+    const missing = harness(); missing.options.location.directory = ''
+    expect((await missing.run()).text).toContain('project location is not ready')
+    expect(missing.plugin.list).not.toHaveBeenCalled(); expect(missing.plugin.update).not.toHaveBeenCalled()
+    const failed = harness(); failed.confirm.mockImplementation(async () => { failed.info.state = { status: 'failed', error: 'late native failure' }; return true })
+    expect((await failed.run()).text).toContain('late native failure')
+    expect(failed.plugin.update).not.toHaveBeenCalled()
+  })
+
   test('a project switch while confirming cannot move the update to a different location', async () => {
     const h = harness()
     h.confirm.mockImplementation(async () => { h.options.location.directory = '/different/project'; return true })

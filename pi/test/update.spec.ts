@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { execFile } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { writeFileSync } from 'node:fs'
+import { cp, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { DefaultPackageManager, DefaultResourceLoader, createAgentSession, SessionManager, SettingsManager, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent'
@@ -48,7 +49,7 @@ async function fixture(scope: 'user' | 'project' = 'user', source = SOURCE) {
   let trusted = true, applied = false, available = NEXT, remoteFailure = false, updates = 0
   const inspected: string[][] = [], selectedConfigurations: { source: string; scope: string }[][] = []
   let duringUpdate = () => {}
-  const context = { cwd: project, isProjectTrusted: () => trusted }
+  const context = { cwd: project, isProjectTrusted: () => trusted, isIdle: () => true, hasPendingMessages: () => false }
   const options: UpdateOptions = {
     agentDir: agent, sourceInfo: { path: entry, source, scope, origin: 'package' },
     git: async (args, cwd, abort) => {
@@ -205,6 +206,93 @@ describe('Pi plugin update inspection and native management', () => {
     expect(h.state().updates).toBe(0)
   })
 
+  for (const change of ['branch', 'upstream', 'root', 'git-directory', 'ignored-file', 'trust', 'offline', 'busy'] as const) test(`a ${change} change after preparation cannot reach the native mutation`, async () => {
+    const h = await fixture(), result = await prepareUpdate(h.context, false, signal(), h.options)
+    if (change === 'branch') {
+      await git(['checkout', '-b', 'new-work'], h.root); await git(['branch', '--set-upstream-to=origin/main'], h.root)
+    } else if (change === 'upstream') {
+      await git(['update-ref', 'refs/remotes/origin/other', h.current], h.root)
+      await git(['branch', '--set-upstream-to=origin/other'], h.root)
+    } else if (change === 'root') {
+      const replacement = path.join(h.folder, 'replacement')
+      await git(['clone', '--no-hardlinks', h.root, replacement], h.folder)
+      await git(['remote', 'set-url', 'origin', 'https://github.com/rshu/TrajViz-Obs.git'], replacement)
+      await rename(h.root, path.join(h.folder, 'previous-root')); await rename(replacement, h.root)
+    } else if (change === 'git-directory') {
+      const saved = path.join(h.folder, 'previous-git-directory')
+      await rename(path.join(h.root, '.git'), saved); await cp(saved, path.join(h.root, '.git'), { recursive: true })
+    } else if (change === 'ignored-file') await writeFile(path.join(h.root, '.env'), 'controlled local setting')
+    else if (change === 'trust') h.trust(false)
+    else if (change === 'offline') env('PI_OFFLINE', '1')
+    else h.context.isIdle = () => false
+    const applied = await result.applyUpdate!()
+    expect(applied.outcome).toBe('error'); expect(applied.text).toContain('No update was started')
+    expect(applied.reload).toBeUndefined(); expect(h.state().updates).toBe(0)
+    expect((await git(['rev-parse', 'HEAD'], h.root)).trim()).toBe(h.current)
+    if (change === 'branch') expect((await git(['symbolic-ref', '--short', 'HEAD'], h.root)).trim()).toBe('new-work')
+    if (change === 'upstream') expect((await git(['rev-parse', '--abbrev-ref', '@{upstream}'], h.root)).trim()).toBe('origin/other')
+    if (change === 'ignored-file') expect(await readFile(path.join(h.root, '.env'), 'utf8')).toBe('controlled local setting')
+  })
+
+  test('origin identity retains custom ports while preserving standard transport aliases', async () => {
+    for (const origin of ['https://github.com:8443/rshu/TrajViz-Obs.git', 'ssh://git@github.com:8443/rshu/TrajViz-Obs.git']) {
+      const h = await fixture(); await git(['remote', 'set-url', 'origin', origin], h.root)
+      expect((await prepareUpdate(h.context, false, signal(), h.options)).text).toContain('origin differs')
+      expect(h.state().updates).toBe(0)
+    }
+    for (const source of ['git:https://github.com:8443/rshu/TrajViz-Obs', 'git:github.com:8443/rshu/TrajViz-Obs']) {
+      const h = await fixture('user', source)
+      await git(['remote', 'set-url', 'origin', 'https://github.com:8443/rshu/TrajViz-Obs.git'], h.root)
+      expect((await prepareUpdate(h.context, true, signal(), h.options)).text).toContain('update available')
+    }
+    for (const origin of ['https://github.com:443/rshu/TrajViz-Obs.git', 'ssh://git@github.com:22/rshu/TrajViz-Obs.git', 'git@github.com:rshu/TrajViz-Obs.git']) {
+      const h = await fixture(); await git(['remote', 'set-url', 'origin', origin], h.root)
+      expect((await prepareUpdate(h.context, true, signal(), h.options)).text).toContain('update available')
+    }
+  })
+
+  test('a port change after preparation is rejected before mutation', async () => {
+    const h = await fixture(), result = await prepareUpdate(h.context, false, signal(), h.options)
+    await git(['remote', 'set-url', 'origin', 'https://github.com:8443/rshu/TrajViz-Obs.git'], h.root)
+    expect((await result.applyUpdate!()).text).toContain('No update was started'); expect(h.state().updates).toBe(0)
+  })
+
+  test('a native no-op cannot claim an update or trigger reload', async () => {
+    const h = await fixture()
+    h.options.manager = settings => {
+      const manager = new DefaultPackageManager({ cwd: h.project, agentDir: h.agent, settingsManager: settings })
+      return { listConfiguredPackages: () => manager.listConfiguredPackages(), update: async () => {} }
+    }
+    const applied = await (await prepareUpdate(h.context, false, signal(), h.options)).applyUpdate!()
+    expect(applied.outcome).toBe('error'); expect(applied.text).toContain('did not advance')
+    expect(applied.reload).toBeUndefined(); expect(applied.text).not.toContain('TrajViz Obs updated')
+  })
+
+  test('native incomplete markers require manual repair before checking, dispatching, or claiming success', async () => {
+    const initial = await fixture(), initialMarker = path.join(path.dirname(initial.root), `.${path.basename(initial.root)}.pi-update-incomplete`)
+    await writeFile(initialMarker, '')
+    for (const check of [true, false]) await expect(prepareUpdate(initial.context, check, signal(), initial.options)).rejects.toThrow('Repair it with Pi’s native package manager')
+    expect(initial.state().updates).toBe(0)
+    const late = await fixture(), prepared = await prepareUpdate(late.context, false, signal(), late.options)
+    await writeFile(path.join(path.dirname(late.root), `.${path.basename(late.root)}.pi-update-incomplete`), '')
+    const refused = await prepared.applyUpdate!()
+    expect(refused.text).toContain('No update was started'); expect(late.state().updates).toBe(0)
+    const partial = await fixture()
+    partial.updating(() => writeFileSync(path.join(path.dirname(partial.root), `.${path.basename(partial.root)}.pi-update-incomplete`), ''))
+    const failed = await (await prepareUpdate(partial.context, false, signal(), partial.options)).applyUpdate!()
+    expect(partial.state().updates).toBe(1); expect(failed.outcome).toBe('error'); expect(failed.reload).toBeUndefined()
+    expect(failed.text).toContain('update as incomplete'); expect(failed.text).toContain('may be incomplete')
+    expect(failed.text).not.toContain('TrajViz Obs updated')
+  })
+
+  test('native errors cannot expose source credentials, query tokens, or terminal controls', async () => {
+    const h = await fixture()
+    h.updating(() => { throw new Error('git clone https://private-user:secret-password@host.example/repo?token=private-token\x1b]2;private-title\x07 failed') })
+    const failed = await (await prepareUpdate(h.context, false, signal(), h.options)).applyUpdate!()
+    expect(failed.outcome).toBe('error'); expect(failed.text).toContain('native package update failed')
+    for (const secret of ['private-user', 'secret-password', 'private-token', 'private-title', 'https://', '\x1b', '\x07']) expect(failed.text).not.toContain(secret)
+  })
+
   test('manual checkout commands quote POSIX and PowerShell paths safely', () => {
     expect(manualUpdateCommand("/tmp/owner's repo", 'darwin')).toBe("git -C '/tmp/owner'\\''s repo' pull --ff-only")
     expect(manualUpdateCommand("C:\\dev\\owner's repo", 'win32')).toBe("git -C 'C:\\dev\\owner''s repo' pull --ff-only")
@@ -282,6 +370,57 @@ describe('Pi direct update command lifecycle', () => {
     await h.controller.command('update', h.context)
     expect(h.notifications.at(-1)).toContain('Pi started new work')
     expect(h.state().updates).toBe(0); expect(h.lifecycle().closed).toBe(false); expect(h.lifecycle().reloads).toBe(0)
+  })
+
+  test('new work during quiescence is checked again before the native mutation', async () => {
+    const h = await controllerFixture(), close = h.backend.close.bind(h.backend)
+    h.backend.close = async () => { await close(); h.context.isIdle = () => false }
+    await h.controller.command('update', h.context)
+    expect(h.state().updates).toBe(0); expect(h.lifecycle().reloads).toBe(0)
+    expect(h.notifications.at(-1)).toContain('Pi started new work')
+    expect(h.notifications.at(-1)).toContain('No update was started')
+  })
+
+  test('new work during native apply defers reload and never aborts the coding task', async () => {
+    const h = await controllerFixture(); let aborted = 0
+    h.context.abort = () => { aborted++ }
+    h.updating(() => { h.context.isIdle = () => false })
+    await h.controller.command('update', h.context)
+    expect(h.state().updates).toBe(1); expect(h.lifecycle().reloads).toBe(0); expect(aborted).toBe(0)
+    expect(h.notifications.at(-1)).toContain('Run /reload after it finishes')
+    expect(h.notifications.at(-1)).not.toContain('Reloading Pi extensions')
+  })
+
+  test('native failures and reload failures leave explicit recovery instructions for subsequent commands', async () => {
+    const failed = await controllerFixture(); failed.updating(() => { throw new Error('Controlled update failure') })
+    await failed.controller.command('update', failed.context)
+    expect(failed.notifications.at(-1)).toContain('may be incomplete')
+    await failed.controller.command('help', failed.context)
+    expect(failed.notifications.at(-1)).toContain('Obs is unloaded. Run /reload')
+    const reload = await controllerFixture(); reload.context.reload = async () => { throw new Error('Controlled reload failure') }
+    await reload.controller.command('update', reload.context)
+    expect(reload.notifications.at(-1)).toContain('plugin files were updated, but Pi could not reload')
+    await reload.controller.command('help', reload.context)
+    expect(reload.notifications.at(-1)).toContain('Obs is unloaded. Run /reload')
+  })
+
+  for (const failure of [false, true]) test(`native TUI output is isolated from live rendering and input is drained on ${failure ? 'failure' : 'success'}`, async () => {
+    const h = await controllerFixture(), events: string[] = []
+    let input: ((data: string) => unknown) | undefined
+    h.context.mode = 'tui'
+    const tui = {
+      terminal: { rows: 30, columns: 100, drainInput: async () => { events.push('drain'); expect(input?.('queued prompt\r')).toEqual({ consume: true }) } },
+      stop: () => { events.push('stop') }, start: () => { events.push('start') }, requestRender: (force?: boolean) => { if (force) events.push('redraw') },
+    }
+    Object.assign(h.context.ui, {
+      setWidget() {}, setStatus() {},
+      onTerminalInput: (listener: (data: string) => unknown) => { input = listener; events.push('guard'); return () => { input = undefined; events.push('unguard') } },
+      custom: (factory: any) => new Promise((resolve, reject) => { Promise.resolve(factory(tui, { fg: (_name: string, text: string) => text }, {}, resolve)).catch(reject) }),
+    })
+    h.updating(() => { events.push('native'); expect(input?.('typed while updating')).toEqual({ consume: true }); if (failure) throw new Error('Controlled native failure') })
+    await h.controller.command('update', h.context)
+    expect(events).toEqual(['guard', 'stop', 'native', 'start', 'drain', 'redraw', 'unguard'])
+    expect(h.lifecycle().reloads).toBe(failure ? 0 : 1)
   })
 
   test('the actual Pi SDK reload lifecycle completes after the update command without modifying conversation history', async () => {

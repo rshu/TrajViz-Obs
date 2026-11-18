@@ -45,7 +45,7 @@ For a local checkout, use `pi install /absolute/path/to/TrajViz-Obs`. Keep the c
 
 For project installations, run update and removal commands from that project after approving its settings in Pi.
 
-Run `/obs update --check` to inspect this plugin’s installation and available Git revision. `/obs update` updates a clean Pi-managed Git installation and reloads Pi’s extensions when done. Wait for Pi to finish its task first. Explicit refs, local changes, and ambiguous user/project registrations require manual updates. Local checkouts receive manual pull and reload instructions. Failed remote checks show the available revision as unknown.
+Run `/obs update --check` to inspect this plugin’s installation and available Git revision. `/obs update` updates a clean Pi-managed Git installation and reloads its extensions if Pi is still idle. If new work starts during the update, run `/reload` after it finishes. Wait for Pi to finish its task before updating. Explicit refs, local changes, and ambiguous user/project registrations require manual updates. Local checkouts receive manual pull and reload instructions. Failed remote checks show the available revision as unknown.
 
 From a terminal, run `pi update git:github.com/rshu/TrajViz-Obs`, then restart Pi or run `/reload`. For a local checkout, run `git pull --ff-only` in the checkout instead.
 

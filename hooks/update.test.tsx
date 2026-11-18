@@ -25,7 +25,7 @@ function host(settings: Settings = {}) {
   const ran: { argv: string[]; init?: ProcessRunInit }[] = [], urls: string[] = [], statuses: (string | undefined)[] = []
   let applied = false
   const root = settings.root ?? ROOT
-  const directories: Record<string, string | undefined> = { '/config': '/config', [root]: ROOT, [ROOT]: ROOT, [CWD]: CWD, [PROJECT]: PROJECT, [OTHER]: OTHER, ...settings.directories }
+  const directories: Record<string, string | undefined> = { '/config': '/config', '/config/plugins/cache': '/config/plugins/cache', '/config/plugins/marketplaces': '/config/plugins/marketplaces', [MARKET]: MARKET, [root]: root, [ROOT]: ROOT, [CWD]: CWD, [PROJECT]: PROJECT, [OTHER]: OTHER, ...settings.directories }
   const files: Record<string, unknown> = {
     [`${root}/.claude-plugin/plugin.json`]: settings.manifest ?? { name: 'trajviz-obs', version: '1.0.0' },
     '/config/plugins/known_marketplaces.json': settings.metadata ?? { fixture: { source: { source: 'github', repo: 'owner/repo' }, installLocation: MARKET } },
@@ -64,7 +64,7 @@ function host(settings: Settings = {}) {
       return ok({ outcome: 'ok', message: argv[2] === 'marketplace' ? 'Refreshed' : 'Updated to 1.1.0.', ...(argv[2] === 'update' ? { newVersion: '1.1.0' } : {}) })
     } },
   } as unknown as EngineInterface
-  return { $, ran, urls, statuses }
+  return { $, ran, urls, statuses, files, directories }
 }
 
 function context(args = 'update', personRequested = true): CommandContext {
@@ -109,11 +109,12 @@ test('native apply refreshes only this marketplace and updates the exact user sc
   expect(h.ran.map(call => call.argv)).toEqual([
     ['claude', 'plugin', 'list', '--json'],
     ['claude', 'plugin', 'marketplace', 'update', 'fixture', '--json'],
+    ['claude', 'plugin', 'list', '--json'],
     ['claude', 'plugin', 'update', ID, '--scope', 'user', '--json'],
     ['claude', 'plugin', 'list', '--json'],
   ])
   expect(h.urls).toHaveLength(0)
-  expect(h.ran.slice(1, 3).every(call => call.init?.stdin === '' && call.init.timeoutMs === 120000)).toBe(true)
+  expect(h.ran.filter(call => call.argv[2] !== 'list').every(call => call.init?.stdin === '' && call.init.timeoutMs === 120000)).toBe(true)
   expect(h.ran.every(call => call.init?.env?.CLAUDE_CONFIG_DIR === '/config')).toBe(true)
   expect(result.text).toContain('Verified installed: 1.1.0')
   expect(result.text).toContain('/reload-plugins')
@@ -150,9 +151,10 @@ test('native local directory marketplaces and direct source folders stay manual'
 })
 
 test('unmatched local checkout gives manual fast-forward and reload instructions without mutation', async () => {
-  const h = host({ rows: [] })
+  const root = '/local/plugin'
+  const h = host({ root, rows: [] })
   const result = await updatePlugin(h.$, context())
-  expect(result.text).toContain(`git -C '${ROOT}' pull --ff-only`)
+  expect(result.text).toContain(`git -C '${root}' pull --ff-only`)
   expect(result.text).toContain('Current files: 1.0.0')
   expect(result.text).toContain('Available: unknown')
   expect(result.text).toContain('/reload-plugins')
@@ -232,7 +234,7 @@ test('native success requires a unique resulting row and consistent installed ve
   for (const rows of [[], [row(), row()], [row({ version: '1.0.0' })]]) {
     let lists = 0
     const h = host({ run: async argv => {
-      if (argv[2] === 'list') return ok(++lists === 1 ? [row()] : rows)
+      if (argv[2] === 'list') return ok(++lists <= 2 ? [row()] : rows)
       return ok({ outcome: 'ok', newVersion: '1.1.0' })
     } })
     const result = await updatePlugin(h.$, context())
@@ -263,7 +265,160 @@ test('manual checkout commands quote literal POSIX and PowerShell paths and omit
   const posix = host({ root, rows: [] })
   expect((await updatePlugin(posix.$, context('update --check'))).text).toContain(`git -C '/local/owner'"'"'s $(project)' pull --ff-only`)
   const windows = host({ root, rows: [], windows: true })
-  expect((await updatePlugin(windows.$, context())).text).toContain(`git -C '/local/owner''s $(project)' pull --ff-only`)
+  const windowsResult = await updatePlugin(windows.$, context())
+  expect(windowsResult.text).toContain('run in PowerShell:')
+  expect(windowsResult.text).toContain(`git -C '/local/owner''s $(project)' pull --ff-only`)
   const controls = host({ root: '/local/line\nfeed', rows: [] })
   expect((await updatePlugin(controls.$, context())).text).not.toContain('git -C')
+})
+
+test('marketplace source, pin and registration path changes during refresh stop before plugin mutation', async () => {
+  const changes = [
+    { source: { source: 'github', repo: 'other/replacement' }, installLocation: MARKET },
+    { source: { source: 'github', repo: 'owner/repo', ref: 'changed-pin' }, installLocation: MARKET },
+    { source: { source: 'github', repo: 'owner/repo' }, installLocation: '/replacement-market' },
+    { source: { source: 'directory', path: '/local-checkout' }, installLocation: MARKET },
+  ]
+  for (const changed of changes) {
+    const h = host({ directories: { '/replacement-market': '/replacement-market' }, run: async argv => {
+      if (argv[2] === 'list') return ok([row()])
+      if (argv[2] === 'marketplace') {
+        h.files['/config/plugins/known_marketplaces.json'] = { fixture: changed }
+        return ok({ outcome: 'ok' })
+      }
+      throw new Error('A changed registration must never reach plugin update')
+    } })
+    const result = await updatePlugin(h.$, context())
+    expect(result.exitCode).toBe(1)
+    expect(result.text).toContain('changed during refresh')
+    expect(h.ran.some(call => call.argv[2] === 'update')).toBe(false)
+    expect(h.statuses.at(-1)).toBe(undefined)
+  }
+})
+
+test('installation version, scope, source folder and canonical project races stop after refresh', async () => {
+  for (const changed of [
+    [row({ version: '2.0.0' })],
+    [row(), row({ scope: 'local', projectPath: PROJECT })],
+    [row({ readFromFolder: ROOT })],
+    [],
+  ]) {
+    let refreshed = false
+    const h = host({ run: async argv => {
+      if (argv[2] === 'list') return ok(refreshed ? changed : [row()])
+      if (argv[2] === 'marketplace') { refreshed = true; return ok({ outcome: 'ok' }) }
+      throw new Error('A changed installation must never reach plugin update')
+    } })
+    expect((await updatePlugin(h.$, context())).exitCode).toBe(1)
+    expect(h.ran.some(call => call.argv[2] === 'update')).toBe(false)
+  }
+  const aliased = row({ scope: 'project', projectPath: '/project-alias' })
+  const h = host({ rows: [aliased], directories: { '/project-alias': PROJECT }, run: async argv => {
+    if (argv[2] === 'list') return ok([aliased])
+    if (argv[2] === 'marketplace') { h.directories['/project-alias'] = OTHER; return ok({ outcome: 'ok' }) }
+    throw new Error('A moved project alias must never reach plugin update')
+  } })
+  expect((await updatePlugin(h.$, context())).exitCode).toBe(1)
+  expect(h.ran.some(call => call.argv[2] === 'update')).toBe(false)
+})
+
+test('refresh bookkeeping and reordered source fields keep the same registration identity', async () => {
+  let applied = false
+  const h = host({ run: async argv => {
+    if (argv[2] === 'list') return ok([row({ version: applied ? '1.1.0' : '1.0.0' })])
+    if (argv[2] === 'marketplace') {
+      h.files['/config/plugins/known_marketplaces.json'] = { fixture: { lastUpdated: '2026-11-19T00:00:00Z', source: { repo: 'owner/repo', source: 'github' }, installLocation: MARKET } }
+      return ok({ outcome: 'ok' })
+    }
+    applied = true; return ok({ outcome: 'ok', newVersion: '1.1.0' })
+  } })
+  expect((await updatePlugin(h.$, context())).text).toContain('Verified installed: 1.1.0')
+})
+
+test('malformed own installation rows cannot silently fall through to another scope', async () => {
+  for (const changed of [row({ scope: 'unknown' }), row({ scope: 'local' }), row({ version: '' }), row({ version: '\u001b[31m1.0.0' }), row({ projectPath: 42 }), row({ readFromFolder: '' })]) {
+    const h = host({ rows: [row(), changed] })
+    const result = await updatePlugin(h.$, context())
+    expect(result.exitCode).toBe(1)
+    expect(result.text).toContain('incomplete installation record')
+    expect(h.ran).toHaveLength(1)
+  }
+})
+
+test('selected project aliases are canonicalized before native commands change cwd', async () => {
+  const h = host({ rows: [row({ scope: 'project', projectPath: '/project-alias' })], directories: { '/project-alias': PROJECT } })
+  expect((await updatePlugin(h.$, context())).text).toContain('Verified installed: 1.1.0')
+  expect(h.ran.find(call => call.argv[2] === 'update')?.init?.cwd).toBe(PROJECT)
+})
+
+test('native diagnostics redact URL credentials, queries and fragments before truncation', async () => {
+  const secret = 'PRIVATE-TOKEN'
+  for (const message of [
+    `Cannot fetch https://user:${secret}@example.com/repo.git?token=${secret}#${secret}`,
+    `Cannot fetch https://${secret.repeat(200)}@example.com/repo.git`,
+  ]) {
+    const h = host({ run: async argv => argv[2] === 'list' ? ok([row()]) : { ...ok({ outcome: 'error', message }), exitCode: 1 } })
+    const result = await updatePlugin(h.$, context())
+    expect(result.text).not.toContain(secret)
+    expect(result.text).toContain('https://[redacted]@example.com/repo.git')
+  }
+  const thrown = host({ run: async () => { throw new Error(`Cannot fetch https://user:${secret}@example.com/repo.git?token=${secret}#${secret}`) } })
+  expect((await updatePlugin(thrown.$, context())).text).not.toContain(secret)
+})
+
+test('untyped native objects and malformed metadata never become raw diagnostic JSON', async () => {
+  const secret = 'PRIVATE-RAW-JSON-TOKEN'
+  for (const mode of ['stdout', 'stderr', 'throw', 'metadata']) {
+    const h = host({ run: async argv => {
+      if (mode === 'throw') throw { token: secret }
+      if (argv[2] === 'list') return mode === 'metadata' ? { ...ok(null), stdout: `${secret} is not JSON` } : ok([row()])
+      return mode === 'stderr' ? { ...ok(null), exitCode: 1, stderr: JSON.stringify({ token: secret }) } : { ...ok({ token: secret }), exitCode: 1 }
+    } })
+    expect((await updatePlugin(h.$, context())).text).not.toContain(secret)
+    expect(h.ran.some(call => call.argv[2] === 'update')).toBe(false)
+  }
+})
+
+test('individual marketplace and plugin-cache symlinks cannot redirect native updates into checkouts', async () => {
+  for (const directories of [{ [MARKET]: '/local/market-checkout' }, { [ROOT]: '/local/plugin-checkout' }]) {
+    const h = host({ directories })
+    const result = await updatePlugin(h.$, context())
+    expect(result.exitCode).toBe(1)
+    expect(result.text).toContain('outside Claude Code’s managed stores')
+    expect(h.ran).toHaveLength(1)
+  }
+})
+
+test('whole managed stores can be relocated canonically while keeping contained repositories updatable', async () => {
+  const h = host({ directories: {
+    '/config/plugins/cache': '/relocated/cache',
+    '/config/plugins/marketplaces': '/relocated/marketplaces',
+    [ROOT]: '/relocated/cache/fixture/trajviz-obs/1.0.0',
+    [MARKET]: '/relocated/marketplaces/fixture',
+  } })
+  expect((await updatePlugin(h.$, context())).text).toContain('Verified installed: 1.1.0')
+})
+
+test('managed-store boundaries are checked again after marketplace refresh', async () => {
+  const h = host({ run: async argv => {
+    if (argv[2] === 'list') return ok([row()])
+    if (argv[2] === 'marketplace') { h.directories[MARKET] = '/local/market-checkout'; return ok({ outcome: 'ok' }) }
+    throw new Error('A checkout escape must not reach plugin mutation')
+  } })
+  expect((await updatePlugin(h.$, context())).exitCode).toBe(1)
+  expect(h.ran.some(call => call.argv[2] === 'update')).toBe(false)
+})
+
+test('overlapping checks cannot clear another update operation’s progress', async () => {
+  let release = () => {}
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const h = host({ run: async () => { await gate; return { ...ok(null), exitCode: 1 } } })
+  const first = updatePlugin(h.$, context('update --check', false))
+  const statuses = h.statuses.length
+  expect((await updatePlugin(h.$, context('update --check', false))).text).toContain('already running')
+  expect((await updatePlugin(h.$, context())).text).toContain('already running')
+  expect(h.statuses).toHaveLength(statuses)
+  release(); await first
+  const next = host()
+  expect((await updatePlugin(next.$, context('update --check'))).text).toContain('Available: 1.1.0')
 })

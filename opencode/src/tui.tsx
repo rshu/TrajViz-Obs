@@ -38,6 +38,7 @@ const localTime = (stamp: string): string => {
 
 /** Direct UI commands never submit an agent prompt or alter conversation history. */
 export function setup(context: Plugin.Context): () => void {
+  const [updateConfirmation, setUpdateConfirmation] = createSignal<{ accept(): void; cancel(): void; move(amount: number): void; page(direction: number): void }>()
   const [settings, updateSettings] = context.storage.store('settings', { initial: { watch: context.options.watch !== false, statusline: context.options.statusline === true } })
   const [state, update] = context.storage.memory<UIState>('ui-v1', {
     initial: { tab: 0, selected: {}, files: {}, snapshots: {}, errors: {}, jobs: {}, running: {} },
@@ -45,7 +46,7 @@ export function setup(context: Plugin.Context): () => void {
   let disposed = false
   const aborts = new Set<AbortController>()
   const jobs = new Map<string, AbortController>()
-  const nativeUpdates = new Set<string>()
+  const nativeUpdates = new Map<string, typeof context.client>()
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const refreshing = new Set<string>()
   const dirty = new Set<string>()
@@ -149,6 +150,7 @@ export function setup(context: Plugin.Context): () => void {
     stopCapture()
     for (const controller of captureReads) controller.abort()
     const client = context.client
+    if (subscribedClient && subscribedClient !== client) for (const [id, owner] of nativeUpdates) if (owner === subscribedClient) jobs.get(id)?.abort()
     if (subscribedClient) reportInteraction.reset(subscribedClient)
     subscribedClient = client
     const peer = client.rpc(Obs)
@@ -174,6 +176,7 @@ export function setup(context: Plugin.Context): () => void {
   subscribe()
   const stopEvents = context.data.listen(({ details }) => {
     if (details.type === 'server.connected') {
+      for (const id of nativeUpdates.keys()) jobs.get(id)?.abort()
       subscribe()
       const base = active()
       if (base && (settings.statusline || context.ui.panel.current()?.name === PANEL)) schedule(selected(base))
@@ -212,6 +215,37 @@ export function setup(context: Plugin.Context): () => void {
   function showResult(runID: string): void {
     context.ui.dialog.set({ size: 'large', centered: true })
     context.ui.dialog.show(() => <Result runID={runID} />)
+  }
+
+  function confirmUpdate(question: { title: string; message: string }, signal: AbortSignal, restore: () => void): Promise<boolean> {
+    return new Promise(resolve => {
+      if (signal.aborted) { resolve(false); return }
+      let visible = false, settled = false, scroll: ScrollBoxRenderable | undefined
+      const finish = (accepted: boolean, close: boolean) => {
+        if (settled) return
+        const owned = visible; visible = false; settled = true
+        if (updateConfirmation() === controls) setUpdateConfirmation(undefined)
+        signal.removeEventListener('abort', abort); resolve(accepted)
+        if (close && owned) context.ui.dialog.clear()
+      }
+      const abort = () => finish(false, true)
+      const accept = () => { if (!visible || settled) return; finish(true, false); restore() }
+      const controls = { accept, cancel: () => finish(false, true), move: (amount: number) => scroll?.scrollBy(amount), page: (direction: number) => scroll?.scrollBy(direction * Math.max(1, (scroll?.height ?? 4) - 1)) }
+      signal.addEventListener('abort', abort, { once: true })
+      try {
+        context.ui.dialog.set({ size: 'large', centered: true }); visible = true; setUpdateConfirmation(controls)
+        const Confirmation = () => {
+          const terminal = useTerminalDimensions()
+          return <box flexDirection="column" gap={1} padding={1}>
+            <Text tone="info">{safeText(question.title)}</Text>
+            <scrollbox ref={scroll} height={Math.max(3, Math.min(18, terminal().height - 12))} scrollX={false}><Text>{safeText(question.message)}</Text></scrollbox>
+            <box flexDirection="row" flexWrap="wrap" gap={2}><Action label="u Update" run={accept} /><Action label="x Cancel" run={() => finish(false, true)} /></box>
+            <Text muted>↑↓ scroll · u update · x/Esc cancel</Text>
+          </box>
+        }
+        context.ui.dialog.show(() => <Confirmation />, () => { visible = false; finish(false, false) })
+      } catch { visible = false; finish(false, false) }
+    })
   }
 
   function Result(props: { runID: string }) {
@@ -280,17 +314,16 @@ export function setup(context: Plugin.Context): () => void {
       const parsed = parseArgs(args), sessionless = isSessionlessCommand(parsed)
       if (parsed.sub === 'update') {
         const client = context.client
-        nativeUpdates.add(runID)
+        nativeUpdates.set(runID, client)
         const sourceLocation = location(base)
         const directory = sourceLocation ? { ...sourceLocation } : { directory: (await client.location.get(undefined, { signal: controller.signal })).directory }
         const result = await updatePlugin(client, {
           check: parsed.flags.check === true, location: directory, signal: controller.signal,
           current: () => !disposed && context.client === client,
           progress: text => { if (!disposed && context.client === client) update(draft => { draft.jobs[runID]!.text = displayResult(text) }) },
-          confirm: async question => Boolean(await context.ui.dialog.confirm({ title: safeText(question.title), message: safeText(question.message), label: { confirm: 'Update', cancel: 'Cancel' } })),
+          confirm: (question, signal) => confirmUpdate(question, signal, () => { if (!disposed && context.client === client) showResult(runID) }),
         })
         if (!disposed) update(draft => { draft.jobs[runID]!.text = displayResult(result.text); draft.jobs[runID]!.pending = false })
-        if (!disposed && presentation === 'dialog') showResult(runID)
         return
       }
       if (!sessionless) {
@@ -536,6 +569,14 @@ export function setup(context: Plugin.Context): () => void {
     return <Show when={settings.statusline}><text fg={palette().muted}>{safeText(id() ? statusText(state.snapshots[id()!]) : 'obs: open a session')}</text></Show>
   } })
   context.keymap.layer(() => ({ mode: 'global', commands: [{ id: 'trajviz-obs.command', title: 'TrajViz Obs', description: 'Visualize and diagnose session activity', group: 'TrajViz Obs', palette: true, slash: { name: 'obs', arguments: true }, run: input => command(input) }] }))
+  context.keymap.layer(() => ({ mode: 'global', priority: 10, enabled: () => !!updateConfirmation(), commands: [
+    { id: 'trajviz-obs.update.accept', bind: 'u', title: 'Update TrajViz Obs', run: () => updateConfirmation()?.accept() },
+    { id: 'trajviz-obs.update.cancel', bind: 'x', title: 'Cancel Obs update', run: () => updateConfirmation()?.cancel() },
+    { bind: 'down', title: 'Scroll confirmation down', run: () => updateConfirmation()?.move(1) },
+    { bind: 'up', title: 'Scroll confirmation up', run: () => updateConfirmation()?.move(-1) },
+    { bind: 'pagedown', title: 'Next confirmation page', run: () => updateConfirmation()?.page(1) },
+    { bind: 'pageup', title: 'Previous confirmation page', run: () => updateConfirmation()?.page(-1) },
+  ] }))
 
   return () => {
     disposed = true

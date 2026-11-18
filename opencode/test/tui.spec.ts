@@ -6,6 +6,7 @@ import type { CommandResult, RunInput, UsageInteraction } from '../src/rpc.js'
 import { setup } from '../src/tui.js'
 
 function host(options: Record<string, unknown> = {}, onSession = true) {
+  let setupComplete = false
   let panel: { name: string; sessionID: string } | undefined
   let command: ((input?: string) => void | Promise<void>) | undefined
   let nativeEvent!: (event: {details:{type:string}}) => void
@@ -27,6 +28,13 @@ function host(options: Record<string, unknown> = {}, onSession = true) {
   const messageList = mock(async (_input: unknown, _options?: { signal?: AbortSignal }): Promise<{ data: Record<string, unknown>[]; cursor: { next?: string } }> => ({ data: [], cursor: {} }))
   const toast = mock((_input: unknown) => {})
   const confirm = mock(async (_input: unknown) => true as boolean | undefined)
+  let confirmationActions: { accept(): void | Promise<void>; cancel(): void | Promise<void> } | undefined
+  let dialogClosed: (() => void) | undefined
+  const dialogShow = mock((_render: unknown, onClose?: () => void) => {
+    const prior = dialogClosed; dialogClosed = onClose; prior?.()
+    if (onClose && confirmationActions) void confirm({ title: 'Update TrajViz Obs?' }).then(accepted => (accepted ? confirmationActions?.accept : confirmationActions?.cancel)?.())
+  })
+  const dialogClear = mock(() => { const prior = dialogClosed; dialogClosed = undefined; prior?.() })
   const installation: PluginInfo = { id: 'trajviz-obs', source: { type: 'local', path: '/server/TrajViz-Obs/opencode' }, features: { server: true, tui: true, gui: true, rpc: true }, state: { status: 'active' } }
   const plugin = { list: mock(async (_input: unknown, _options?: unknown) => ({ data: [structuredClone(installation)] })), check: mock(async (_input: unknown, _options?: unknown) => ({ data: [structuredClone(installation)] })), update: mock(async (_input: unknown, _options?: unknown) => {}) }
   const context = {
@@ -44,21 +52,104 @@ function host(options: Record<string, unknown> = {}, onSession = true) {
       listen: (fn: typeof nativeEvent) => { nativeEvent = fn; return () => { unsubscribed.push('native') } },
     },
     theme: { text: { base: 'white', muted: 'gray' } },
-    keymap: { layer: (factory: () => { commands?: { id?: string; run(input?: string): void | Promise<void> }[] }) => { const commands = factory().commands ?? []; command = commands.find(row => row.id === 'trajviz-obs.command')?.run ?? command } },
+    keymap: { layer: (factory: () => { commands?: { id?: string; run(input?: string): void | Promise<void> }[] }) => {
+      // Logic tests have no renderer's Keymap.Provider after setup. Native
+      // rendering scopes are exercised separately by tui-render.spec.ts.
+      if (setupComplete) throw new Error('Keymap.Provider is missing outside setup or a render scope')
+      const commands = factory().commands ?? []
+      command = commands.find(row => row.id === 'trajviz-obs.command')?.run ?? command
+      const accept = commands.find(row => row.id === 'trajviz-obs.update.accept'), cancel = commands.find(row => row.id === 'trajviz-obs.update.cancel')
+      if (accept && cancel) confirmationActions = { accept: () => accept.run(), cancel: () => cancel.run() }
+    } },
     ui: {
       toast: { show: toast },
       router: { current: () => onSession ? { type: 'session', sessionID: 'ses_current' } : { type: 'home' } },
       panel: { current: () => panel, open: (name: string) => { panel = { name, sessionID: 'ses_current' }; return true }, close: () => { panel = undefined } },
-      dialog: { set: (_input: unknown) => {}, show: (_fn: unknown) => {}, clear: () => {}, confirm },
+      dialog: { set: (_input: unknown) => {}, show: dialogShow, clear: dialogClear, confirm },
       model: { current: () => ({ providerID: 'test-provider', modelID: 'test-model', variant: 'high' }) },
       slot: (_input: unknown) => () => { unsubscribed.push('slot') },
     },
   }
   const cleanup = setup(context as unknown as Plugin.Context)
-  return { rpc, sessionGet, messageList, toast, confirm, cleanup, persisted, memory, plugin, installation, listeners, unsubscribed, nativeEvent: (type: string) => nativeEvent({details:{type}}), command: (args: string) => Promise.resolve(command!(args)) }
+  setupComplete = true
+  return { rpc, sessionGet, messageList, toast, confirm, dialogShow, dialogClear, cleanup, persisted, memory, plugin, installation, client: context.client,
+    reconnect: (client: typeof context.client) => { context.client = client; nativeEvent({ details: { type: 'server.connected' } }) },
+    listeners, unsubscribed, nativeEvent: (type: string) => nativeEvent({details:{type}}), command: (args: string) => Promise.resolve(command!(args)) }
 }
 
 describe('OpenCode command adapter', () => {
+  test('cancelling an owned update confirmation closes it and ignores a late acceptance', async () => {
+    const h = host({}, false), entered = Promise.withResolvers<void>(), answer = Promise.withResolvers<boolean>()
+    h.installation.source = { type: 'package', target: 'trajviz-obs-opencode@latest', version: 'controlled', outdated: true }
+    h.confirm.mockImplementation(async () => { entered.resolve(); return answer.promise })
+    try {
+      const update = h.command('update'); await entered.promise
+      await h.command('cancel'); await update
+      expect(h.dialogClear).toHaveBeenCalledTimes(1)
+      expect(h.dialogShow).toHaveBeenCalledTimes(2)
+      answer.resolve(true); await Promise.resolve(); await Promise.resolve()
+      expect(h.dialogShow).toHaveBeenCalledTimes(2)
+      expect(h.plugin.update).not.toHaveBeenCalled()
+    } finally { h.cleanup() }
+  })
+
+  test('a replacement dialog survives cancellation of the previous update confirmation', async () => {
+    const h = host({}, false), entered = Promise.withResolvers<void>(), answer = Promise.withResolvers<boolean>()
+    h.installation.source = { type: 'package', target: 'trajviz-obs-opencode@latest', outdated: true }
+    h.confirm.mockImplementation(async () => { entered.resolve(); return answer.promise })
+    try {
+      const update = h.command('update'); await entered.promise
+      h.dialogShow(() => 'Unrelated native dialog')
+      await h.command('cancel'); await update
+      expect(h.dialogClear).not.toHaveBeenCalled()
+      expect(h.dialogShow).toHaveBeenCalledTimes(3)
+      answer.resolve(true); await Promise.resolve(); await Promise.resolve()
+      expect(h.dialogShow).toHaveBeenCalledTimes(3)
+      expect(h.plugin.update).not.toHaveBeenCalled()
+    } finally { h.cleanup() }
+  })
+
+  test('reconnecting while an update confirmation is open closes only its old prompt', async () => {
+    const old = host({}, false), next = host({}, false), entered = Promise.withResolvers<void>(), answer = Promise.withResolvers<boolean>()
+    old.installation.source = { type: 'package', target: 'trajviz-obs-opencode@latest', outdated: true }
+    old.confirm.mockImplementation(async () => { entered.resolve(); return answer.promise })
+    try {
+      const update = old.command('update'); await entered.promise
+      old.reconnect(next.client); await update
+      expect(old.dialogClear).toHaveBeenCalledTimes(1)
+      answer.resolve(true); await Promise.resolve(); await Promise.resolve()
+      expect(old.plugin.update).not.toHaveBeenCalled(); expect(next.plugin.update).not.toHaveBeenCalled()
+    } finally { old.cleanup(); next.cleanup() }
+  })
+
+  test('a same-client event-stream reconnect revokes its update confirmation after normal initial connection', async () => {
+    const h = host({}, false), entered = Promise.withResolvers<void>(), answer = Promise.withResolvers<boolean>()
+    h.installation.source = { type: 'package', target: 'trajviz-obs-opencode@latest', outdated: true }
+    h.nativeEvent('server.connected')
+    h.confirm.mockImplementation(async () => { entered.resolve(); return answer.promise })
+    try {
+      const run = h.command('update'); await entered.promise
+      expect(h.dialogClear).not.toHaveBeenCalled()
+      h.nativeEvent('server.connected'); await run
+      expect(h.dialogClear).toHaveBeenCalledTimes(1)
+      answer.resolve(true); await Promise.resolve()
+      expect(h.plugin.update).not.toHaveBeenCalled()
+    } finally { h.cleanup() }
+  })
+
+  test('a completed update check does not reopen a dismissed progress dialog', async () => {
+    const h = host({}, false), entered = Promise.withResolvers<void>(), ready = Promise.withResolvers<void>()
+    h.installation.source = { type: 'package', target: 'trajviz-obs-opencode@latest', version: 'controlled', outdated: true }
+    h.plugin.check.mockImplementation(async () => { entered.resolve(); await ready.promise; return { data: [structuredClone(h.installation)] } })
+    try {
+      const running = h.command('update --check'); await entered.promise
+      expect(h.dialogShow).toHaveBeenCalledTimes(1)
+      h.dialogClear(); ready.resolve(); await running
+      expect(h.dialogShow).toHaveBeenCalledTimes(1)
+      expect(h.plugin.update).not.toHaveBeenCalled()
+    } finally { h.cleanup() }
+  })
+
   test('update checks work on the home screen without history, telemetry, or server command RPC', async () => {
     const h = host({ watch: false, statusline: false }, false)
     try {

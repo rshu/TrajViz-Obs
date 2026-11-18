@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { readFile, realpath } from 'node:fs/promises'
+import { lstat, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DefaultPackageManager, SettingsManager, getAgentDir, type ExtensionContext } from '@earendil-works/pi-coding-agent'
@@ -23,9 +23,12 @@ function gitSource(source: string): { identity: string; ref?: string } | undefin
   let value = source.replace(/^git:/, '')
   let host: string, pathname: string
   try {
-    if (/^[a-z]+:\/\//i.test(value)) { const url = new URL(value); host = url.hostname; pathname = url.pathname }
+    if (/^[a-z]+:\/\//i.test(value)) {
+      const url = new URL(value), defaultPort = url.protocol === 'ssh:' ? '22' : url.protocol === 'git:' ? '9418' : ''
+      host = `${url.hostname}${url.port && url.port !== defaultPort ? `:${url.port}` : ''}`; pathname = url.pathname
+    }
     else if (value.startsWith('git@')) { const match = /^git@([^:]+):(.+)$/.exec(value); if (!match) return; host = match[1]!; pathname = match[2]! }
-    else { const match = /^([^/]+\.[^/]+)\/(.+)$/.exec(value); if (!match) return; host = match[1]!; pathname = match[2]! }
+    else { const match = /^([^/]+\.[^/]+)\/(.+)$/.exec(value); if (!match) return; host = new URL(`https://${match[1]!}`).host; pathname = match[2]! }
     const separator = pathname.indexOf('@'), ref = separator < 0 ? undefined : pathname.slice(separator + 1)
     pathname = (separator < 0 ? pathname : pathname.slice(0, separator)).replace(/^\/+|\/+$/g, '').replace(/\.git$/, '')
     if (!host || !pathname || (separator >= 0 && !ref)) return
@@ -57,6 +60,15 @@ async function clean(root: string, run: Git, signal?: AbortSignal): Promise<void
     throw new Error('The Pi-managed plugin checkout contains local changes or files. Update it manually after saving your work; /obs update will not discard them.')
   }
 }
+async function complete(root: string): Promise<void> {
+  const marker = path.join(path.dirname(root), `.${path.basename(root)}.pi-update-incomplete`)
+  try { await lstat(marker) }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw new Error('Pi’s previous update state could not be verified. Inspect the installation in its native package manager.')
+  }
+  throw new Error('Pi marked this installation’s update as incomplete. Repair it with Pi’s native package manager before trying /obs update again.')
+}
 /** A read-only settings view limits Pi's native updater to one source and scope. */
 function scopedSettings(settings: SettingsManager, source: string, scope: 'user' | 'project', trusted: boolean): SettingsManager {
   const values = {
@@ -68,7 +80,7 @@ function scopedSettings(settings: SettingsManager, source: string, scope: 'user'
   } }, { projectTrusted: trusted })
 }
 /** Preparation never updates files. The direct command invokes apply only after its revision has ended. */
-export async function prepareUpdate(ctx: Pick<ExtensionContext, 'cwd' | 'isProjectTrusted'>, check: boolean, signal: AbortSignal, options: UpdateOptions = {}): Promise<UpdateResult> {
+export async function prepareUpdate(ctx: Pick<ExtensionContext, 'cwd' | 'isProjectTrusted' | 'isIdle' | 'hasPendingMessages'>, check: boolean, signal: AbortSignal, options: UpdateOptions = {}): Promise<UpdateResult> {
   signal.throwIfAborted()
   const entry = await realpath(options.entryPath ?? options.sourceInfo?.path ?? fileURLToPath(import.meta.url))
   const info = options.sourceInfo
@@ -101,6 +113,9 @@ export async function prepareUpdate(ctx: Pick<ExtensionContext, 'cwd' | 'isProje
   const relative = path.relative(path.resolve(base), path.resolve(selected.installedPath))
   if (!inside(path.resolve(base), path.resolve(selected.installedPath)) || root !== path.join(await realpath(base), relative)) return { text: 'The managed package path contains a symlink or is outside Pi’s package storage. Update it manually.', outcome: 'rejected' }
   if (!inside(root, entry) || (await manifest(root)).name !== 'trajviz-obs') return { text: 'The loaded extension is outside the expected TrajViz Obs installation. Use Pi’s package manager.', outcome: 'rejected' }
+  await complete(root)
+  const provenance = await Promise.all([lstat(root), lstat(path.join(root, '.git'))])
+  if (provenance.some(item => !item.isDirectory())) throw new Error('The plugin must use an independent managed Git directory, without linked Git metadata.')
   const run = options.git ?? git
   if (path.resolve((await run(['rev-parse', '--show-toplevel'], root, signal)).trim()) !== root) throw new Error('The plugin is not an independent managed Git checkout.')
   const remoteIdentity = gitSource((await run(['remote', 'get-url', 'origin'], root, signal)).trim())?.identity
@@ -135,18 +150,27 @@ export async function prepareUpdate(ctx: Pick<ExtensionContext, 'cwd' | 'isProje
     // do not reset or roll back a user checkout after a failure or interruption.
     let started = false
     try {
-      await clean(root, run)
       if (ctx.isProjectTrusted() !== trusted || offline()) throw new Error('Trust or offline settings changed. No update started.')
       await settings.reload()
       const registrations = create(settings).listConfiguredPackages().filter(pkg => gitSource(pkg.source)?.identity === identity.identity)
       if (settings.drainErrors().length || registrations.length !== 1 || registrations[0]?.source !== selected.source || registrations[0]?.scope !== selected.scope || !registrations[0]?.installedPath || await realpath(registrations[0].installedPath) !== root) throw new Error('The package registration changed. Reload Pi before trying again.')
+      const latestRoot = await Promise.all([lstat(root), lstat(path.join(root, '.git'))])
+      if (root !== path.join(await realpath(base), relative)) throw new Error('The managed package storage changed. Inspect it before trying again.')
+      if (latestRoot.some((item, index) => !item.isDirectory() || item.dev !== provenance[index]!.dev || item.ino !== provenance[index]!.ino)) throw new Error('The managed checkout or its Git metadata was replaced. Inspect it before trying again.')
       if ((await run(['rev-parse', '--verify', 'HEAD'], root)).trim() !== current || gitSource((await run(['remote', 'get-url', 'origin'], root)).trim())?.identity !== identity.identity) throw new Error('The managed checkout changed. Inspect it before trying again.')
+      if ((await run(['symbolic-ref', '--short', 'HEAD'], root)).trim() !== branch || (await run(['rev-parse', '--abbrev-ref', '@{upstream}'], root)).trim() !== upstream) throw new Error('The managed checkout branch or upstream changed. Inspect it before trying again.')
+      await clean(root, run)
+      await complete(root)
+      if (!ctx.isIdle() || ctx.hasPendingMessages()) throw new Error('Pi started new work. Wait for it to finish before updating.')
       started = true
-      await create(scopedSettings(settings, selected.source, selected.scope, trusted)).update(selected.source)
+      try { await create(scopedSettings(settings, selected.source, selected.scope, trusted)).update(selected.source) }
+      catch { throw new Error('Pi’s native package update failed. Inspect its result in the native package manager.') }
+      await complete(root)
       const next = (await run(['rev-parse', '--verify', 'HEAD'], root)).trim()
       const installedUpstream = (await run(['rev-parse', '--verify', '@{upstream}'], root)).trim()
       if (!/^[a-f0-9]{40,64}$/.test(next) || next !== installedUpstream || (await run(['symbolic-ref', '--short', 'HEAD'], root)).trim() !== branch) throw new Error('The installed revision or branch differs from its update target. Inspect the installation before reloading.')
-      return { text: `TrajViz Obs updated · ${(await manifest(root)).version ?? 'version unknown'} · ${next.slice(0, 12)}. Reloading Pi extensions.`, reload: true }
+      if (next === current) throw new Error('Pi did not advance the plugin revision. An updated installation could not be verified; check the native package manager.')
+      return { text: `TrajViz Obs updated · ${(await manifest(root)).version ?? 'version unknown'} · ${next.slice(0, 12)}.`, reload: true }
     } catch (error) {
       return { outcome: 'error', text: `${error instanceof Error ? error.message : 'Plugin update failed.'}\n${started ? 'The managed installation may be incomplete. Repair it with Pi’s package manager, then restart Pi. No rollback was attempted.' : 'No update was started. Run /reload after resolving this problem.'}` }
     }

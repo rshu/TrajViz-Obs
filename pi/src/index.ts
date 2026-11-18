@@ -6,7 +6,7 @@ import { loadOptions } from './config.js'
 import { runCommand, type CommandResult } from './commands.js'
 import { Usage, usageFeature, type Outcome } from './telemetry.js'
 import { FramedComponent, ObsPane, renderOverview, type PaneState } from './ui.js'
-import { prepareUpdate, type UpdateOptions } from './update.js'
+import { prepareUpdate, type UpdateOptions, type UpdateResult } from './update.js'
 
 export type RefreshOutcome = 'success' | 'error' | 'cancelled'
 
@@ -226,7 +226,7 @@ export class Controller {
     }).finally(() => { if (this.paneToken === token) { this.closePane = undefined; this.paneRender = undefined; this.paneToken = undefined } })
   }
   async command(input: string, ctx: ExtensionCommandContext): Promise<void> {
-    if (this.closed) return
+    if (this.closed) { if (ctx.hasUI) ctx.ui.notify('Obs is unloaded. Run /reload after the current task finishes, or restart Pi.', 'warning'); return }
     if (ctx.mode !== 'tui' && !ctx.hasUI) {
       // Pi exposes no slash-command output transport in print/JSON mode.
       // The backend/controller API remains usable by SDK integrations.
@@ -245,13 +245,39 @@ export class Controller {
       // End execute() and its revision before shutdown. A native managed update
       // rewrites bridge files, so stop dashboards and workers before applying it.
       ctx.ui.notify(result.text, 'info')
-      await this.close()
-      const applied = await result.applyUpdate()
+      try { await this.close() }
+      catch { ctx.ui.notify('Obs could not stop cleanly. No plugin update was started. Run /reload after the current task finishes, or restart Pi.', 'error'); return }
+      const applied = await this.applyUpdate(result.applyUpdate, ctx)
+      if (applied.reload) {
+        if (!ctx.isIdle() || ctx.hasPendingMessages()) { ctx.ui.notify(`${applied.text}\nPi started new work. Run /reload after it finishes to load the updated plugin.`, 'info'); return }
+        ctx.ui.notify(`${applied.text} Reloading Pi extensions.`, 'info')
+        try { await ctx.reload() }
+        catch {
+          const text = 'The plugin files were updated, but Pi could not reload its extensions. Run /reload when Pi is idle, or restart Pi.'
+          try { ctx.ui.notify(text, 'error') } catch { process.stderr.write(`${text}\n`) }
+        }
+        return
+      }
       ctx.ui.notify(applied.text, applied.outcome === 'error' ? 'error' : 'info')
-      if (applied.reload) { await ctx.reload(); return }
       return
     }
     await this.present(result, ctx)
+  }
+  private async applyUpdate(apply: () => Promise<UpdateResult>, ctx: ExtensionCommandContext): Promise<UpdateResult> {
+    if (ctx.mode !== 'tui') return apply()
+    // Pi's native updater inherits the terminal. Use the same public suspension
+    // flow as Pi's interactive-shell extension, then discard queued keystrokes.
+    return ctx.ui.custom<UpdateResult>(async (tui, _theme, _keys, done) => {
+      const stopInput = ctx.ui.onTerminalInput(() => ({ consume: true }))
+      let result!: UpdateResult, paused = false
+      try { tui.stop(); paused = true; result = await apply() }
+      finally {
+        try { if (paused) { tui.start(); await tui.terminal.drainInput(200, 25); tui.requestRender(true) } }
+        finally { stopInput() }
+      }
+      done(result)
+      return { render: () => [], invalidate: () => {} }
+    })
   }
   private dismissPane(): void {
     this.paneToken = undefined; this.closePane?.(); this.closePane = undefined; this.paneRender = undefined
