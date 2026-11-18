@@ -11,9 +11,10 @@ import { runModel, type Result } from './model.js'
 import type { Usage } from './telemetry.js'
 import type { Snapshot, EmptySnapshot } from './types.js'
 import { protectNativeOutput } from './outputs.js'
+import type { UpdateResult } from './update.js'
 
-export type CommandResult = Result & { snapshot?: Snapshot | EmptySnapshot; pane?: boolean; url?: string }
-export type Actions = { watch(value?: boolean): boolean; statusline(value?: boolean): boolean; closePane(): void; progress(text: string): void }
+export type CommandResult = Result & Pick<UpdateResult, 'reload' | 'applyUpdate'> & { snapshot?: Snapshot | EmptySnapshot; pane?: boolean; url?: string }
+export type Actions = { watch(value?: boolean): boolean; statusline(value?: boolean): boolean; closePane(): void; progress(text: string): void; update?(check: boolean, signal: AbortSignal): Promise<CommandResult> }
 export const HELP = `/obs [command] [options] · TrajViz for Pi
 Diagnostics run locally. Session commands accept --session <id|prefix|path>.
 
@@ -41,6 +42,7 @@ AI · uses your selected Pi model, with a call preview
 
 Setup and preferences
   setup [--extras all|none|charts,app] [--source S]    doctor    sessions [1–500]
+  update [--check] · update a Pi-managed Git install; local checkouts need a manual pull
   watch [on|off]    statusline [on|off]    cancel
   enable_telemetry | disable_telemetry    telemetry
   telemetry_destination [URL [--use-launch-token] | default]
@@ -62,6 +64,7 @@ export async function runCommand(backend: Backend, ctx: ExtensionContext, input:
   const invalid = validateArguments(input, parsed)
   if (invalid) return rejected(invalid)
   signal.throwIfAborted()
+  if (sub === 'update') return actions.update ? actions.update(flags.check === true, signal) : rejected('Plugin updates require the direct /obs update command.')
   await backend.protect?.(ctx)
   const selector = asFlag(flags.session), captured = asFlag(flags['session-id']), output = asFlag(flags.o ?? flags.out)
   if (sub !== 'analyze') await protectNativeOutput(ctx, sub === 'collect' && output === '-' ? [] : [flags.o, flags.out, flags.html])

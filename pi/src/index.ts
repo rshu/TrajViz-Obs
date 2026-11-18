@@ -6,6 +6,7 @@ import { loadOptions } from './config.js'
 import { runCommand, type CommandResult } from './commands.js'
 import { Usage, usageFeature, type Outcome } from './telemetry.js'
 import { FramedComponent, ObsPane, renderOverview, type PaneState } from './ui.js'
+import { prepareUpdate, type UpdateOptions } from './update.js'
 
 export type RefreshOutcome = 'success' | 'error' | 'cancelled'
 
@@ -61,7 +62,7 @@ export class Controller {
   private widget = false
   private closed = false
   private closing?: Promise<void>
-  constructor(readonly backend: Backend, ctx: ExtensionContext, hostVersion = VERSION) {
+  constructor(readonly backend: Backend, ctx: ExtensionContext, hostVersion = VERSION, private readonly updateOptions: () => UpdateOptions = () => ({})) {
     this.ctx = ctx
     this.state = { tab: 0, watch: backend.options.watch !== false }
     this.status = backend.options.statusline !== false
@@ -115,7 +116,7 @@ export class Controller {
     this.draw()
     return this.state.watch
   }
-  async execute(input: string, ctx: ExtensionContext = this.ctx): Promise<CommandResult> {
+  async execute(input: string, ctx: ExtensionContext = this.ctx, direct = false): Promise<CommandResult> {
     this.ctx = ctx
     if (this.closed) return { text: 'Obs is unloading. Restart Pi or /reload.', outcome: 'cancelled' }
     const parsed = parseArgs(input)
@@ -146,6 +147,7 @@ export class Controller {
         watch: value => this.setWatch(value),
         statusline: value => { if (value !== undefined) this.status = value; this.draw(); return this.status },
         closePane: () => this.dismissPane(), progress,
+        update: (check, signal) => check || direct ? prepareUpdate(ctx, check, signal, this.updateOptions()) : Promise.resolve(rejected('Plugin updates require the direct /obs update command.')),
       }, this.usage))
       active.signal.throwIfAborted()
       if (result.snapshot) {
@@ -232,9 +234,23 @@ export class Controller {
       return
     }
     const alreadyActive = Boolean(this.active)
-    const pending = this.execute(input, ctx)
+    if (parseArgs(input).sub === 'update' && !parseArgs(input).flags.check && (!ctx.isIdle() || ctx.hasPendingMessages())) {
+      ctx.ui.notify('Wait for Pi to finish its response and queued work before updating the plugin.', 'warning'); return
+    }
+    const pending = this.execute(input, ctx, true)
     if (!['cancel', 'help', 'telemetry', 'telemetry_destination', 'enable_telemetry', 'disable_telemetry', 'watch', 'statusline'].includes(parseArgs(input).sub) && !alreadyActive) this.openProgress(ctx)
     const result = await pending
+    if (result.applyUpdate) {
+      if (!ctx.isIdle() || ctx.hasPendingMessages()) { ctx.ui.notify('Pi started new work while checking the update. Wait for it to finish, then run /obs update again.', 'warning'); return }
+      // End execute() and its revision before shutdown. A native managed update
+      // rewrites bridge files, so stop dashboards and workers before applying it.
+      ctx.ui.notify(result.text, 'info')
+      await this.close()
+      const applied = await result.applyUpdate()
+      ctx.ui.notify(applied.text, applied.outcome === 'error' ? 'error' : 'info')
+      if (applied.reload) { await ctx.reload(); return }
+      return
+    }
     await this.present(result, ctx)
   }
   private dismissPane(): void {
@@ -260,7 +276,7 @@ export default function trajvizObs(pi: ExtensionAPI): void {
     const current = generation
     return initializing ??= loadOptions(ctx.cwd).then(options => {
       if (generation !== current) throw new Error('Obs is unloading. Restart Pi or /reload.')
-      controller = new Controller(new Backend(ctx.cwd, options), ctx); return controller
+      controller = new Controller(new Backend(ctx.cwd, options), ctx, VERSION, () => ({ sourceInfo: pi.getCommands().find(command => command.name === 'obs' && command.source === 'extension')?.sourceInfo })); return controller
     }).finally(() => { initializing = undefined })
   }
   pi.registerCommand('obs', {

@@ -47,7 +47,7 @@ export function setup(ctx: GuiContext): () => void {
     confirm: (plan, signal) => signal.aborted ? Promise.resolve(false) : ctx.dialogs.confirm({ title: safeText(plan.title), description: safeText(plan.message), confirm: 'Run', cancel: 'Cancel' }),
   }, ctx.signal)
   const key = `${ctx.id}:${PANEL}`
-  const origin = (session: SessionRef): GuiOrigin => ({ key: session.key, id: session.id, client: () => session.server.client, location: () => session.location })
+  const origin = (session: SessionRef): GuiOrigin => ({ key: session.key, id: session.id, client: () => session.server.client, location: () => session.location, server: session.server.name })
   const read = <T,>(get: () => T): T => { revision(); return get() }
   const active = () => ctx.sessions.current()
   const currentOrigin = async (): Promise<GuiOrigin> => {
@@ -55,7 +55,7 @@ export function setup(ctx: GuiContext): () => void {
     if (session) return origin(session)
     const server = ctx.servers.list().map(id => ctx.servers.get(id)).find(server => server?.builtin)
     if (!server) throw new Error('Open a project or connect a server first.')
-    return { key: `${server.id}\nhome`, id: 'home', client: () => server.client, location: () => undefined }
+    return { key: `${server.id}\nhome`, id: 'home', client: () => server.client, location: () => undefined, server: server.name }
   }
   const openPane = (session?: SessionRef) => {
     const target = session ?? active()

@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test'
 import type { Plugin } from '@opencode/plugin/tui'
+import type { PluginInfo } from '@opencode/client'
 import { SNAPSHOT } from '../../hooks/testdata/snapshot.js'
 import type { CommandResult, RunInput, UsageInteraction } from '../src/rpc.js'
 import { setup } from '../src/tui.js'
@@ -26,11 +27,13 @@ function host(options: Record<string, unknown> = {}, onSession = true) {
   const messageList = mock(async (_input: unknown, _options?: { signal?: AbortSignal }): Promise<{ data: Record<string, unknown>[]; cursor: { next?: string } }> => ({ data: [], cursor: {} }))
   const toast = mock((_input: unknown) => {})
   const confirm = mock(async (_input: unknown) => true as boolean | undefined)
+  const installation: PluginInfo = { id: 'trajviz-obs', source: { type: 'local', path: '/server/TrajViz-Obs/opencode' }, features: { server: true, tui: true, gui: true, rpc: true }, state: { status: 'active' } }
+  const plugin = { list: mock(async (_input: unknown, _options?: unknown) => ({ data: [structuredClone(installation)] })), check: mock(async (_input: unknown, _options?: unknown) => ({ data: [structuredClone(installation)] })), update: mock(async (_input: unknown, _options?: unknown) => {}) }
   const context = {
     options,
     location: { directory: '/test-project' },
     renderer: { height: 40 },
-    client: { rpc: () => rpc, session: { get: sessionGet }, message: { list: messageList } },
+    client: { rpc: () => rpc, session: { get: sessionGet }, message: { list: messageList }, plugin, server: { info: async () => ({ version: '2.2.5', urls: ['https://remote.example'] }) } },
     storage: {
       store: (key: string, input: { initial: object }) => { persisted.set(key, input.initial); return [input.initial, async (fn: (state: object) => void) => fn(input.initial)] },
       memory: (key: string, input: { initial: object }) => { memory.set(key, input.initial); return [input.initial, (fn: (state: object) => void) => fn(input.initial)] },
@@ -52,10 +55,60 @@ function host(options: Record<string, unknown> = {}, onSession = true) {
     },
   }
   const cleanup = setup(context as unknown as Plugin.Context)
-  return { rpc, sessionGet, messageList, toast, confirm, cleanup, persisted, memory, listeners, unsubscribed, nativeEvent: (type: string) => nativeEvent({details:{type}}), command: (args: string) => Promise.resolve(command!(args)) }
+  return { rpc, sessionGet, messageList, toast, confirm, cleanup, persisted, memory, plugin, installation, listeners, unsubscribed, nativeEvent: (type: string) => nativeEvent({details:{type}}), command: (args: string) => Promise.resolve(command!(args)) }
 }
 
 describe('OpenCode command adapter', () => {
+  test('update checks work on the home screen without history, telemetry, or server command RPC', async () => {
+    const h = host({ watch: false, statusline: false }, false)
+    try {
+      const preferences = structuredClone(h.persisted.get('settings'))
+      await h.command('update --check')
+      expect(h.plugin.list).toHaveBeenCalledTimes(1)
+      expect(h.plugin.list.mock.calls[0]?.[0]).toEqual({ location: { directory: '/test-project' } })
+      expect(h.rpc.run).not.toHaveBeenCalled(); expect(h.rpc.sync).not.toHaveBeenCalled(); expect(h.messageList).not.toHaveBeenCalled()
+      expect(h.rpc.usageStatus).not.toHaveBeenCalled(); expect(h.rpc.usageInteraction).not.toHaveBeenCalled()
+      expect(h.persisted.get('settings')).toEqual(preferences)
+      expect(JSON.stringify(h.memory.get('ui-v1'))).toContain('local checkout')
+    } finally { h.cleanup() }
+  })
+
+  test('native package updates require the terminal confirmation and target only the connected installation', async () => {
+    const h = host({}, false)
+    h.installation.source = { type: 'package', target: 'trajviz-obs-opencode@latest', version: 'controlled', outdated: true }
+    try {
+      const preferences = structuredClone(h.persisted.get('settings'))
+      h.confirm.mockResolvedValueOnce(false)
+      await h.command('update')
+      expect(h.plugin.update).not.toHaveBeenCalled()
+      h.plugin.update.mockImplementation(async () => { if (h.installation.source.type === 'package') { delete h.installation.source.outdated; h.installation.source.version = 'updated' } })
+      await h.command('update')
+      expect(h.plugin.update.mock.calls[0]?.[0]).toEqual({ targets: ['trajviz-obs-opencode@latest'], location: { directory: '/test-project' } })
+      expect(h.confirm.mock.calls).toHaveLength(2)
+      expect(h.persisted.get('settings')).toEqual(preferences)
+      expect(h.rpc.run).not.toHaveBeenCalled(); expect(h.rpc.usageInteraction).not.toHaveBeenCalled()
+    } finally { h.cleanup() }
+  })
+
+  test('native update cancellation and plugin unload never send unrelated Obs RPC cancellation', async () => {
+    const h = host({}, false), entered = Promise.withResolvers<void>()
+    h.installation.source = { type: 'package', target: 'trajviz-obs-opencode@latest', outdated: true }
+    h.plugin.check.mockImplementation(async (_input, options) => {
+      ;(options as { signal: AbortSignal }).signal.throwIfAborted()
+      entered.resolve()
+      await new Promise<void>((_resolve, reject) => (options as { signal: AbortSignal }).signal.addEventListener('abort', () => reject(new Error('Cancelled')), { once: true }))
+      return { data: [] }
+    })
+    try {
+      const running = h.command('update'); await entered.promise
+      await h.command('cancel'); await running
+      expect(h.rpc.cancel).not.toHaveBeenCalled(); expect(h.plugin.update).not.toHaveBeenCalled()
+      expect(JSON.stringify(h.memory.get('ui-v1'))).toContain('cancelled before dispatch')
+      const next = h.command('update'); await Promise.resolve(); h.cleanup(); await next
+      expect(h.rpc.cancel).not.toHaveBeenCalled()
+    } finally { h.cleanup() }
+  })
+
   test('known commands that fail before dispatch report only the allowlisted outcome', async () => {
     const h = host()
     h.rpc.usageStatus.mockResolvedValue({ enabled: true })

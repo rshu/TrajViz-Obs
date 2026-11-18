@@ -76,7 +76,11 @@ In either interface, `/obs help` lists commands and `/obs doctor` checks setup. 
 
 ### Update or remove
 
-To update, pull the checkout, repeat `bun install --frozen-lockfile` and `bun run build` in its `opencode` directory, then repeat the restart step above.
+Run `/obs update --check` in the terminal or Desktop to inspect the connected server's Obs installation. `/obs update` applies an available host-managed package update after confirmation. It targets only Obs, keeps configuration and telemetry preferences, and lets OpenCode reload the affected plugin instances. Exact version and commit pins stay pinned. On a shared or remote server, the update affects its installation for all clients; the confirmation names the server and project.
+
+For the local-checkout installation above, `/obs update` shows manual commands for its configured adapter directory. Pull the checkout, repeat `bun install --frozen-lockfile` and `bun run build` in its `opencode` directory, then repeat the restart step above. The command leaves the checkout unchanged.
+
+If the plugin reloads or the connection closes during a package update, wait for OpenCode to reconnect and run `/obs update --check` to verify its state. Cancelling stops waiting; an update already sent to the server may still finish. The read-only `obs` agent tool cannot update installations.
 
 To disable the adapter, remove its entry from the configuration you edited and repeat the restart step.
 

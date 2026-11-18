@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { createContext, runInContext } from 'node:vm'
-import type { OpenCodeClient } from '@opencode/client'
+import type { OpenCodeClient, PluginInfo } from '@opencode/client'
 import { SNAPSHOT } from '../../hooks/testdata/snapshot.js'
 import { GuiController, type GuiOrigin } from '../src/gui-controller.js'
 import type { CommandResult, RunInput, UsageInteraction } from '../src/rpc.js'
@@ -30,7 +30,11 @@ function connection(server = 'server-a', id = 'ses_shared') {
     events: { on: mock((_name: string, _listener: unknown) => () => {}) },
   }
   const messages = mock(async (_input: unknown, _options?: Options): Promise<{ data: Record<string, unknown>[]; cursor: { next?: string } }> => ({ data: [], cursor: {} }))
+  const installation: PluginInfo = { id: 'trajviz-obs', source: { type: 'local', path: `/${server}/TrajViz-Obs/opencode` }, features: { server: true, tui: true, gui: true, rpc: true }, state: { status: 'active' } }
+  const plugin = { list: mock(async (_input: unknown, _options?: Options) => ({ data: [structuredClone(installation)] })), check: mock(async (_input: unknown, _options?: Options) => ({ data: [structuredClone(installation)] })), update: mock(async (_input: unknown, _options?: Options) => {}) }
   const client = {
+    plugin,
+    server: { info: async () => ({ version: '2.2.5', hostname: server, urls: [] }) },
     rpc: (contract: { id: string }) => { if (contract.id !== 'trajviz-obs') throw new Error('Unexpected RPC contract'); return rpc },
     session: { get: mock(async (input: { sessionID: string }, _options?: Options) => ({ id: input.sessionID, location: { directory: `/${server}/project` } })) },
     message: { list: messages },
@@ -38,7 +42,7 @@ function connection(server = 'server-a', id = 'ses_shared') {
   }
   let live = client as unknown as OpenCodeClient
   const origin: GuiOrigin = { key: `${server}\n${id}`, id, client: () => live, location: () => ({ directory: `/${server}/project` }) }
-  return { rpc, client, origin, messages, snapshot, reconnect: (next: OpenCodeClient) => { live = next } }
+  return { rpc, client, origin, messages, snapshot, plugin, installation, reconnect: (next: OpenCodeClient) => { live = next } }
 }
 
 function controller() {
@@ -57,6 +61,44 @@ async function fastPolling(run: (elapsed: () => number) => Promise<void>) {
 }
 
 describe('Desktop command coordination', () => {
+  test('updates use the active session’s server and location, preserving selection and avoiding command RPC', async () => {
+    const remote = connection('remote-server', 'home'), local = connection('builtin'), { ui, hooks } = controller()
+    remote.installation.source = { type: 'package', target: 'trajviz-obs-opencode@latest', version: 'controlled', outdated: true }
+    try {
+      ui.view(remote.origin).selected = { id: 'saved', selector: '/remote/private.json' }
+      expect(ui.follow(remote.origin, 'update --check')).toBe('update --check')
+      const check = ui.start(remote.origin, 'update --check'); await check.done
+      expect(ui.jobs.get(check.id)?.text).toContain('update is available')
+      expect(hooks.confirm).not.toHaveBeenCalled(); expect(remote.plugin.update).not.toHaveBeenCalled()
+      remote.plugin.update.mockImplementation(async () => { if (remote.installation.source.type === 'package') { delete remote.installation.source.outdated; remote.installation.source.version = 'updated' } })
+      const apply = ui.start(remote.origin, 'update'); await apply.done
+      expect(remote.plugin.update.mock.calls[0]?.[0]).toEqual({ targets: ['trajviz-obs-opencode@latest'], location: { directory: '/remote-server/project' } })
+      expect(hooks.confirm.mock.calls[0]?.[0]).toMatchObject({ title: 'Update TrajViz Obs?' })
+      expect(ui.jobs.get(apply.id)?.text).toContain('completed the Obs update request')
+      expect(ui.target(remote.origin).id).toBe('saved')
+      expect(remote.rpc.start).not.toHaveBeenCalled(); expect(remote.messages).not.toHaveBeenCalled(); expect(remote.rpc.usageInteraction).not.toHaveBeenCalled()
+      expect(local.plugin.list).not.toHaveBeenCalled(); expect(local.plugin.update).not.toHaveBeenCalled()
+    } finally { ui.dispose() }
+  })
+
+  test('a cancelled or disposed native update does not issue an unrelated server-RPC cancellation', async () => {
+    const remote = connection('remote'), { ui } = controller(), entered = Promise.withResolvers<void>()
+    remote.installation.source = { type: 'package', target: 'trajviz-obs-opencode@latest', outdated: true }
+    remote.plugin.check.mockImplementation(async (_input, options) => {
+      entered.resolve()
+      await new Promise<void>((_resolve, reject) => options?.signal?.addEventListener('abort', () => reject(new Error('Cancelled')), { once: true }))
+      return { data: [] }
+    })
+    try {
+      const run = ui.start(remote.origin, 'update'); await entered.promise
+      await ui.cancel(remote.origin); await run.done
+      expect(ui.jobs.get(run.id)?.text).toContain('cancelled before dispatch')
+      expect(remote.rpc.cancel).not.toHaveBeenCalled(); expect(remote.plugin.update).not.toHaveBeenCalled()
+      const next = ui.start(remote.origin, 'update'); await Promise.resolve(); ui.dispose(); await next.done
+      expect(remote.rpc.cancel).not.toHaveBeenCalled()
+    } finally { ui.dispose() }
+  })
+
   test('waits for workspace RPC registration without running a command twice', async () => {
     const h = connection(), { ui } = controller()
     const unavailable = { type: 'rpc.unavailable', message: 'RPC is unavailable: trajviz-obs' }

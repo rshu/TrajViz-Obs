@@ -37,6 +37,7 @@ test('Pi feature telemetry only names allowlisted commands and variants', () => 
     ['', 'overview'], ['pane close', 'pane.close'], ['pane', 'pane'], ['analyze why private code failed', 'analyze'],
     ['dashboard --html "/private/report.html"', 'dashboard.html'], ['dashboard stop', 'dashboard.stop'],
     ['converge stop', 'converge.stop'], ['brief', 'brief'], ['telemetry', undefined], ['enable_telemetry', undefined],
+    ['update', undefined], ['update --check', undefined],
     ['disable_telemetry', undefined], ['telemetry_destination https://private.example --use-launch-token', undefined],
     ['dashboard port 8001', undefined], ['private-secret-unknown-command', undefined],
   ] as const) expect(usageFeature(args)).toBe(expected)

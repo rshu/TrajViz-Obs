@@ -41,6 +41,7 @@ export const HELP_TEXT = [
   '    --taxonomy PATH --user-phase TAG --user-action TAG --max-content-chars N --max-tokens N',
   '    --delay SEC spaces label calls. --max-tokens and --temperature require llm=env.',
   'Setup',
+  '  update [--check] · check or update this host-managed package in the native UI',
   '  setup [--extras all|none|charts,app] [--source S]    doctor    sessions [1–500]',
   '  telemetry · local usage telemetry delivery status',
   '  telemetry_destination [URL [--use-launch-token] | default] · show or set the collector',
@@ -137,6 +138,7 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
   }
 
   if (sub === 'help') return { text: HELP_TEXT }
+  if (sub === 'update') return rejected('Run /obs update or /obs update --check in the OpenCode terminal or Desktop UI. The server RPC and agent-facing read-only tool cannot update installations. Local checkouts require git pull --ff-only, bun install --frozen-lockfile, and bun run build in their opencode directory, then plugin reload.')
   if (sub === 'telemetry') return { text: await usageDeliveryStatus(backend.runtime, signal) }
   if (sub === 'telemetry_destination') {
     return { text: await usageDestination(backend.runtime, signal, positional[0], flags['use-launch-token'] === true) }

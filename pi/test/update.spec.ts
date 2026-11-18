@@ -1,0 +1,315 @@
+import { afterEach, describe, expect, test } from 'bun:test'
+import { execFile } from 'node:child_process'
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { DefaultPackageManager, DefaultResourceLoader, createAgentSession, SessionManager, SettingsManager, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent'
+import { prepareUpdate, manualUpdateCommand, type UpdateOptions } from '../src/update.js'
+import { Controller } from '../src/index.js'
+import { Backend } from '../src/backend.js'
+
+const SOURCE = 'git:github.com/rshu/TrajViz-Obs'
+const NEXT = 'b'.repeat(40)
+const folders: string[] = []
+const controllers: Controller[] = []
+const before = new Map<string, string | undefined>()
+function env(key: string, value: string | undefined) { if (!before.has(key)) before.set(key, process.env[key]); if (value === undefined) delete process.env[key]; else process.env[key] = value }
+afterEach(async () => {
+  for (const controller of controllers.splice(0)) await controller.close()
+  for (const folder of folders.splice(0)) await rm(folder, { recursive: true, force: true })
+  for (const [key, value] of before) { if (value === undefined) delete process.env[key]; else process.env[key] = value }
+  before.clear()
+})
+const signal = () => new AbortController().signal
+const git = (args: string[], cwd: string): Promise<string> => new Promise((resolve, reject) => execFile('git', args, {
+  cwd, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(cwd, 'nonexistent-global-config'), GIT_OPTIONAL_LOCKS: '0' },
+}, (error, out) => error ? reject(error) : resolve(out)))
+
+async function fixture(scope: 'user' | 'project' = 'user', source = SOURCE) {
+  const folder = await mkdtemp(path.join(tmpdir(), 'trajviz-pi-update-')); folders.push(folder)
+  const agent = path.join(folder, 'agent'), project = path.join(folder, 'project')
+  const root = path.join(scope === 'user' ? agent : path.join(project, '.pi'), 'git/github.com/rshu/TrajViz-Obs')
+  const entry = path.join(root, 'pi/trajviz-obs.ts')
+  await mkdir(path.dirname(entry), { recursive: true }); await mkdir(project, { recursive: true }); await mkdir(agent, { recursive: true })
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'trajviz-obs', version: '0.1.0' }))
+  await writeFile(path.join(root, '.gitignore'), '.env\nnode_modules/\n__pycache__/\n')
+  await writeFile(entry, 'export default function() {}\n')
+  await git(['init', '--initial-branch=main'], root); await git(['add', '.'], root)
+  await git(['-c', 'user.name=Controlled Test', '-c', 'user.email=test@invalid.example', 'commit', '-m', 'Controlled fixture'], root)
+  await git(['remote', 'add', 'origin', 'https://github.com/rshu/TrajViz-Obs.git'], root)
+  const current = (await git(['rev-parse', 'HEAD'], root)).trim()
+  await git(['update-ref', 'refs/remotes/origin/main', current], root)
+  await git(['config', 'branch.main.remote', 'origin'], root); await git(['config', 'branch.main.merge', 'refs/heads/main'], root)
+  const globalFile = path.join(agent, 'settings.json'), projectFile = path.join(project, '.pi/settings.json')
+  await mkdir(path.dirname(projectFile), { recursive: true })
+  await writeFile(globalFile, JSON.stringify({ packages: scope === 'user' ? [source] : ['git:github.com/example/unrelated'] }))
+  await writeFile(projectFile, JSON.stringify({ packages: scope === 'project' ? [source] : [] }))
+  env('PI_CODING_AGENT_DIR', agent); env('TRAJVIZ_OBS_TELEMETRY', '0'); env('TRAJVIZ_OBS_TELEMETRY_STATE_DIR', path.join(folder, 'usage')); env('PI_OFFLINE', undefined)
+  let trusted = true, applied = false, available = NEXT, remoteFailure = false, updates = 0
+  const inspected: string[][] = [], selectedConfigurations: { source: string; scope: string }[][] = []
+  let duringUpdate = () => {}
+  const context = { cwd: project, isProjectTrusted: () => trusted }
+  const options: UpdateOptions = {
+    agentDir: agent, sourceInfo: { path: entry, source, scope, origin: 'package' },
+    git: async (args, cwd, abort) => {
+      abort?.throwIfAborted(); inspected.push(args)
+      if (args[0] === 'ls-remote') { if (remoteFailure) throw new Error('Controlled network failure'); return `${available}\trefs/heads/main\n` }
+      if (applied && ['rev-parse --verify HEAD', 'rev-parse --verify @{upstream}'].includes(args.join(' '))) return `${available}\n`
+      return git(args, cwd)
+    },
+    manager: settings => {
+      const manager = new DefaultPackageManager({ cwd: project, agentDir: agent, settingsManager: settings })
+      return { listConfiguredPackages: () => manager.listConfiguredPackages(), update: async source => {
+        updates++; selectedConfigurations.push(manager.listConfiguredPackages().map(row => ({ source: row.source, scope: row.scope })))
+        expect(source).toBe(SOURCE); duringUpdate(); applied = true
+      } }
+    },
+  }
+  return { folder, root, agent, project, entry, globalFile, projectFile, current, context, options, inspected, selectedConfigurations,
+    state: () => ({ applied, updates }), trust: (value: boolean) => { trusted = value }, next: (value: string) => { available = value }, failRemote: () => { remoteFailure = true },
+    updating: (callback: () => void) => { duringUpdate = callback } }
+}
+
+describe('Pi plugin update inspection and native management', () => {
+  test('read-only check reports version and available commit without touching settings or Git state', async () => {
+    const h = await fixture(), settings = await readFile(h.globalFile), config = await readFile(path.join(h.root, '.git/config'))
+    const result = await prepareUpdate(h.context, true, signal(), h.options)
+    expect(result.text).toContain('TrajViz Obs 0.1.0'); expect(result.text).toContain('update available')
+    expect(result.text).toContain('Available version: unknown until installed'); expect(result.applyUpdate).toBeUndefined()
+    expect(h.state().updates).toBe(0); expect(await readFile(h.globalFile)).toEqual(settings); expect(await readFile(path.join(h.root, '.git/config'))).toEqual(config)
+    expect((await git(['rev-parse', 'HEAD'], h.root)).trim()).toBe(h.current)
+    expect(h.inspected.some(args => ['fetch', 'reset', 'clean', 'pull'].includes(args[0]!))).toBe(false)
+  })
+
+  for (const scope of ['user', 'project'] as const) test(`apply uses only the exact ${scope} package through the real SDK resolver`, async () => {
+    const h = await fixture(scope), globalBefore = await readFile(h.globalFile), projectBefore = await readFile(h.projectFile)
+    const result = await prepareUpdate(h.context, false, signal(), h.options)
+    expect(h.state().updates).toBe(0); expect(result.applyUpdate).toBeDefined()
+    const applied = await result.applyUpdate!()
+    expect(applied.reload).toBe(true); expect(h.state().updates).toBe(1)
+    expect(h.selectedConfigurations).toEqual([[{ source: SOURCE, scope }]])
+    expect(await readFile(h.globalFile)).toEqual(globalBefore); expect(await readFile(h.projectFile)).toEqual(projectBefore)
+  })
+
+  for (const scope of ['user', 'project'] as const) test(`the actual native updater applies a ${scope} fixture commit without changing other packages or consent`, async () => {
+    const h = await fixture(scope), remote = path.join(h.folder, 'remote.git'), publisher = path.join(h.folder, 'publisher')
+    await git(['clone', '--bare', h.root, remote], h.folder)
+    await git(['clone', remote, publisher], h.folder)
+    await writeFile(path.join(publisher, 'package.json'), JSON.stringify({ name: 'trajviz-obs', version: '0.1.1', private: true }))
+    await git(['add', 'package.json'], publisher)
+    await git(['-c', 'user.name=Controlled Test', '-c', 'user.email=test@invalid.example', 'commit', '-m', 'Fixture update'], publisher)
+    await git(['push', 'origin', 'main'], publisher)
+    h.next((await git(['rev-parse', 'HEAD'], publisher)).trim())
+    const other = path.join(h.agent, 'git/github.com/example/unrelated/sentinel.txt')
+    await mkdir(path.dirname(other), { recursive: true }); await writeFile(other, 'Unrelated installation stays intact')
+    const consent = path.join(h.folder, 'usage/pi-consent'); await mkdir(path.dirname(consent), { recursive: true }); await writeFile(consent, 'off\n')
+    const globalBefore = await readFile(h.globalFile), projectBefore = await readFile(h.projectFile)
+    let updates = 0
+    h.options.manager = settings => {
+      const native = new DefaultPackageManager({ cwd: h.project, agentDir: h.agent, settingsManager: settings })
+      return { listConfiguredPackages: () => native.listConfiguredPackages(), update: async source => {
+        updates++; expect(native.listConfiguredPackages().map(row => ({ source: row.source, scope: row.scope }))).toEqual([{ source: SOURCE, scope }])
+        const values: Record<string, string> = {
+          GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: `url.file://${remote}.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/rshu/TrajViz-Obs.git',
+          GIT_CONFIG_KEY_1: 'protocol.file.allow', GIT_CONFIG_VALUE_1: 'always', GIT_CONFIG_GLOBAL: path.join(h.folder, 'empty-gitconfig'),
+          npm_config_offline: 'true', npm_config_audit: 'false', npm_config_fund: 'false', npm_config_ignore_scripts: 'true',
+          npm_config_cache: path.join(h.folder, 'npm-cache'), npm_config_userconfig: path.join(h.folder, 'empty-npmrc'),
+        }
+        const previous = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]))
+        try { Object.assign(process.env, values); await native.update(source) }
+        finally { for (const key of Object.keys(values)) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key] } }
+      } }
+    }
+    const result = await (await prepareUpdate(h.context, false, signal(), h.options)).applyUpdate!()
+    expect(result.reload).toBe(true); expect(updates).toBe(1)
+    expect(JSON.parse(await readFile(path.join(h.root, 'package.json'), 'utf8')).version).toBe('0.1.1')
+    expect((await git(['rev-parse', 'HEAD'], h.root)).trim()).toBe((await git(['rev-parse', 'HEAD'], publisher)).trim())
+    expect((await git(['symbolic-ref', '--short', 'HEAD'], h.root)).trim()).toBe('main')
+    expect(await readFile(h.globalFile)).toEqual(globalBefore); expect(await readFile(h.projectFile)).toEqual(projectBefore)
+    expect(await readFile(consent, 'utf8')).toBe('off\n'); expect(await readFile(other, 'utf8')).toBe('Unrelated installation stays intact')
+  }, 15_000)
+
+  test('local checkouts return quoted manual guidance and never read or mutate a package installation', async () => {
+    const h = await fixture()
+    const options = { ...h.options, sourceInfo: { ...h.options.sourceInfo!, source: h.root }, manager: () => { throw new Error('Must not construct native manager') } }
+    const result = await prepareUpdate(h.context, false, signal(), options)
+    expect(result.outcome).toBe('rejected'); expect(result.applyUpdate).toBeUndefined()
+    expect(result.text).toContain('pull --ff-only'); expect(result.text).toContain('/reload'); expect(h.state().updates).toBe(0)
+  })
+
+  test('offline, pinned and up-to-date states never start an update', async () => {
+    const pinned = await fixture('user', `${SOURCE}@v0.1.0`)
+    expect((await prepareUpdate(pinned.context, false, signal(), pinned.options)).text).toContain('preserves explicitly selected refs')
+    expect(pinned.inspected.some(args => args[0] === 'ls-remote')).toBe(false)
+    const h = await fixture()
+    env('PI_OFFLINE', '1'); expect((await prepareUpdate(h.context, true, signal(), h.options)).text).toContain('unknown (Pi offline mode)')
+    env('PI_OFFLINE', undefined); h.next(h.current)
+    expect((await prepareUpdate(h.context, false, signal(), h.options)).text).toContain('up to date')
+    expect(h.state().updates).toBe(0)
+  })
+
+  test('remote failures remain unknown and cancellation cannot become an up-to-date claim', async () => {
+    const h = await fixture(); h.failRemote()
+    const result = await prepareUpdate(h.context, true, signal(), h.options)
+    expect(result.outcome).toBe('error'); expect(result.text).toContain('unknown (remote check failed)'); expect(result.text).not.toContain('up to date')
+    const abort = new AbortController(); abort.abort(); await expect(prepareUpdate(h.context, true, abort.signal, h.options)).rejects.toThrow()
+    expect(h.state().updates).toBe(0)
+  })
+
+  test('project trust, multiple scopes, source mismatch and unrelated loaded files fail closed', async () => {
+    const h = await fixture('project'); h.trust(false)
+    expect((await prepareUpdate(h.context, false, signal(), h.options)).text).toContain('Approve this project')
+    h.trust(true); await writeFile(h.globalFile, JSON.stringify({ packages: ['https://github.com/rshu/TrajViz-Obs.git'] }))
+    expect((await prepareUpdate(h.context, false, signal(), h.options)).text).toContain('configured more than once')
+    await writeFile(h.globalFile, '{}')
+    const other = path.join(h.folder, 'outside.ts'); await writeFile(other, '')
+    expect((await prepareUpdate(h.context, false, signal(), { ...h.options, entryPath: other })).outcome).toBe('rejected')
+    expect(h.state().updates).toBe(0)
+  })
+
+  for (const file of ['.env', 'private.txt', 'package.json']) test(`locally changed ${file} is protected from native reset/clean`, async () => {
+    const h = await fixture(); await writeFile(path.join(h.root, file), 'controlled local data')
+    if (file === 'package.json') await writeFile(path.join(h.root, file), JSON.stringify({ name: 'trajviz-obs', version: 'local' }))
+    await expect(prepareUpdate(h.context, false, signal(), h.options)).rejects.toThrow('contains local changes or files')
+    expect(h.state().updates).toBe(0)
+  })
+
+  test('Pi-generated dependency locks and Python bytecode do not block a clean managed installation', async () => {
+    const h = await fixture()
+    await writeFile(path.join(h.root, 'package-lock.json'), '{"lockfileVersion":3}')
+    await mkdir(path.join(h.root, '__pycache__')); await writeFile(path.join(h.root, '__pycache__/cache.pyc'), '')
+    await mkdir(path.join(h.root, 'node_modules')); await writeFile(path.join(h.root, 'node_modules/.package-lock.json'), '{}')
+    expect((await prepareUpdate(h.context, false, signal(), h.options)).applyUpdate).toBeDefined()
+  })
+
+  test('local commits, changed origin, symlinked managed roots and registration changes are rejected', async () => {
+    const h = await fixture()
+    await writeFile(path.join(h.root, 'extra'), 'controlled'); await git(['add', '.'], h.root)
+    await git(['-c', 'user.name=Controlled Test', '-c', 'user.email=test@invalid.example', 'commit', '-m', 'Local work'], h.root)
+    expect((await prepareUpdate(h.context, false, signal(), h.options)).text).toContain('local commits')
+    const changed = await fixture(); await git(['remote', 'set-url', 'origin', 'https://github.com/other/repo'], changed.root)
+    expect((await prepareUpdate(changed.context, false, signal(), changed.options)).text).toContain('origin differs')
+    const linked = await fixture(), moved = path.join(linked.folder, 'developer-checkout')
+    const { rename } = await import('node:fs/promises'); await rename(linked.root, moved); await symlink(moved, linked.root, 'dir')
+    expect((await prepareUpdate(linked.context, false, signal(), linked.options)).text).toContain('symlink')
+    const registration = await fixture(), prepared = await prepareUpdate(registration.context, false, signal(), registration.options)
+    await writeFile(registration.globalFile, '{}')
+    expect((await prepared.applyUpdate!()).text).toContain('No update was started'); expect(registration.state().updates).toBe(0)
+  })
+
+  test('a custom clean branch is not reset by the host updater', async () => {
+    const h = await fixture()
+    await git(['checkout', '-b', 'custom-work'], h.root)
+    await git(['branch', '--set-upstream-to=origin/main'], h.root)
+    expect((await prepareUpdate(h.context, false, signal(), h.options)).text).toContain('custom local branch')
+    expect(h.state().updates).toBe(0)
+  })
+
+  test('manual checkout commands quote POSIX and PowerShell paths safely', () => {
+    expect(manualUpdateCommand("/tmp/owner's repo", 'darwin')).toBe("git -C '/tmp/owner'\\''s repo' pull --ff-only")
+    expect(manualUpdateCommand("C:\\dev\\owner's repo", 'win32')).toBe("git -C 'C:\\dev\\owner''s repo' pull --ff-only")
+    expect(manualUpdateCommand("C:\\dev\\owner's repo", 'darwin')).toBe("git -C 'C:\\dev\\owner''s repo' pull --ff-only")
+  })
+
+  test('control characters never become a displayed manual update command or a changed copyable target', async () => {
+    for (const character of ['\n', '\r', '\t', '\x1b', '\x7f', '\x85', '\x9b']) {
+      expect(manualUpdateCommand(`/tmp/unsafe${character}checkout`, 'darwin')).toBeUndefined()
+      expect(manualUpdateCommand(`C:\\unsafe${character}checkout`, 'win32')).toBeUndefined()
+    }
+    const h = await fixture(), unsafe = path.join(h.folder, 'unsafe\ncheckout')
+    const { rename } = await import('node:fs/promises'); await rename(h.root, unsafe)
+    const result = await prepareUpdate(h.context, false, signal(), { ...h.options,
+      sourceInfo: { ...h.options.sourceInfo!, path: path.join(unsafe, 'pi/trajviz-obs.ts'), source: unsafe },
+    })
+    expect(result.text).toContain('Open the plugin’s local checkout in a terminal')
+    expect(result.text).not.toContain('git -C'); expect(result.text).not.toContain(unsafe)
+    expect(result.text).not.toContain('unsafecheckout'); expect(result.applyUpdate).toBeUndefined()
+  })
+
+  test('a native apply failure reports possible partial update without reload or rollback promises', async () => {
+    const h = await fixture(); h.updating(() => { throw new Error('Controlled installation failure') })
+    const result = await (await prepareUpdate(h.context, false, signal(), h.options)).applyUpdate!()
+    expect(result.outcome).toBe('error'); expect(result.reload).toBeUndefined(); expect(result.text).toContain('may be incomplete'); expect(result.text).toContain('No rollback was attempted')
+  })
+})
+
+describe('Pi direct update command lifecycle', () => {
+  async function controllerFixture() {
+    const h = await fixture(), notifications: string[] = []
+    const backend = new Backend(h.project, { cacheRoot: path.join(h.folder, 'cache') })
+    let activeRevisions = 0, closed = false, reloads = 0
+    const run = backend.revisions.run.bind(backend.revisions)
+    backend.revisions.run = async request => { activeRevisions++; try { return await run(request) } finally { activeRevisions-- } }
+    const close = backend.close.bind(backend)
+    backend.close = async () => { await close(); closed = true }
+    const context = { ...h.context, mode: 'rpc', hasUI: true, isIdle: () => true, hasPendingMessages: () => false,
+      sessionManager: SessionManager.inMemory(h.project), getContextUsage: () => undefined,
+      ui: { notify: (value: string) => notifications.push(value) },
+      reload: async () => { expect(closed).toBe(true); expect(activeRevisions).toBe(0); reloads++ },
+    } as unknown as ExtensionCommandContext
+    const controller = new Controller(backend, context, '1.5.2', () => h.options); controllers.push(controller)
+    h.updating(() => { expect(closed).toBe(true); expect(activeRevisions).toBe(0) })
+    return { ...h, backend, controller, context, notifications, lifecycle: () => ({ closed, activeRevisions, reloads }) }
+  }
+
+  test('SDK execution cannot apply updates, while check remains read-only', async () => {
+    const h = await controllerFixture()
+    expect((await h.controller.execute('update')).outcome).toBe('rejected')
+    expect((await h.controller.execute('update --check')).text).toContain('update available')
+    expect(h.state().updates).toBe(0); expect(h.lifecycle().closed).toBe(false)
+  })
+
+  test('a direct RPC command quiesces after its transaction and reloads only after native apply', async () => {
+    const h = await controllerFixture()
+    await h.controller.command('update', h.context)
+    expect(h.state().updates).toBe(1); expect(h.lifecycle()).toEqual({ closed: true, activeRevisions: 0, reloads: 1 })
+    expect(h.notifications.at(-1)).toContain('Reloading Pi extensions')
+  })
+
+  test('check never reloads and running or queued agent work blocks apply', async () => {
+    const h = await controllerFixture()
+    await h.controller.command('update --check', h.context)
+    expect(h.lifecycle().reloads).toBe(0)
+    h.context.isIdle = () => false; await h.controller.command('update', h.context)
+    expect(h.notifications.at(-1)).toContain('Wait for Pi')
+    h.context.isIdle = () => true; h.context.hasPendingMessages = () => true; await h.controller.command('update', h.context)
+    expect(h.state().updates).toBe(0); expect(h.lifecycle().closed).toBe(false)
+  })
+
+  test('new agent work arriving during preflight also blocks mutation without aborting the agent', async () => {
+    const h = await controllerFixture(), inspect = h.options.git!
+    h.options.git = async (args, cwd, abort) => { const result = await inspect(args, cwd, abort); if (args[0] === 'ls-remote') h.context.isIdle = () => false; return result }
+    await h.controller.command('update', h.context)
+    expect(h.notifications.at(-1)).toContain('Pi started new work')
+    expect(h.state().updates).toBe(0); expect(h.lifecycle().closed).toBe(false); expect(h.lifecycle().reloads).toBe(0)
+  })
+
+  test('the actual Pi SDK reload lifecycle completes after the update command without modifying conversation history', async () => {
+    const h = await controllerFixture(), lifecycle: string[] = [], notifications: string[] = []
+    const settings = SettingsManager.inMemory({ packages: [] })
+    let factories = 0
+    const loader = new DefaultResourceLoader({ cwd: h.project, agentDir: h.agent, settingsManager: settings,
+      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+      extensionFactories: [pi => {
+        factories++
+        pi.on('session_start', event => { lifecycle.push(`start:${event.reason}`) })
+        pi.on('session_shutdown', async event => { lifecycle.push(`shutdown:${event.reason}`); await h.controller.close() })
+        pi.registerCommand('controlled-update', { handler: (_args, ctx) => h.controller.command('update', ctx) })
+      }],
+    })
+    await loader.reload()
+    const manager = SessionManager.inMemory(h.project)
+    const { session } = await createAgentSession({ cwd: h.project, agentDir: h.agent, settingsManager: settings, resourceLoader: loader, sessionManager: manager, tools: [] })
+    try {
+      await session.bindExtensions({ mode: 'rpc', uiContext: { notify: (value: string) => notifications.push(value) } as any,
+        commandContextActions: { reload: () => session.reload() } as any })
+      const history = JSON.stringify(manager.getEntries())
+      await session.prompt('/controlled-update')
+      expect(h.state().updates).toBe(1); expect(factories).toBe(2)
+      expect(lifecycle).toEqual(['start:startup', 'shutdown:reload', 'start:reload'])
+      expect(notifications.at(-1)).toContain('Reloading Pi extensions')
+      expect(JSON.stringify(manager.getEntries())).toBe(history)
+      expect(session.isStreaming).toBe(false)
+    } finally { session.dispose() }
+  }, 15_000)
+})

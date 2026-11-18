@@ -10,11 +10,11 @@ const FLAGS: Record<string, readonly string[]> = {
   compare: ['anchor-patch', 'fuzzy-commands', 'reverse'], scorecard: ['fuzzy-commands', 'labels', 'no-self'], labels: [],
   fixes: ['limit'], label: [...OUTPUT, 'assistant-only', 'model', 'max-steps', 'taxonomy', 'max-content-chars', 'delay', 'user-phase', 'user-action', 'max-tokens', 'temperature'],
   attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [],
-  setup: ['extras', 'source'], doctor: [], telemetry: [], telemetry_destination: ['use-launch-token'], enable_telemetry: [], disable_telemetry: [], help: [], cancel: [], report: [],
+  setup: ['extras', 'source'], doctor: [], update: ['check'], telemetry: [], telemetry_destination: ['use-launch-token'], enable_telemetry: [], disable_telemetry: [], help: [], cancel: [], report: [],
 }
 const SESSION = ['overview', 'pane', 'brief', 'view', ...Object.keys(FLAGS).filter(k => FLAGS[k] === VIEW), 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution', 'sessions']
-const NO_POSITIONALS = ['overview', 'brief', 'help', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'cancel', 'report']
-const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'telemetry', 'telemetry_destination', 'enable_telemetry', 'disable_telemetry', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
+const NO_POSITIONALS = ['overview', 'brief', 'help', 'doctor', 'update', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'cancel', 'report']
+const SESSIONLESS = new Set(['help', 'setup', 'doctor', 'update', 'telemetry', 'telemetry_destination', 'enable_telemetry', 'disable_telemetry', 'sessions', 'schemas', 'converge', 'labels', 'collect', 'converge-cli'])
 
 export function isDashboardPortCommand({ sub, positional }: Pick<Parsed, 'sub' | 'positional'>): boolean {
   return sub === 'dashboard' && positional[0] === 'port'

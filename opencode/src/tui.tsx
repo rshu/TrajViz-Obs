@@ -11,6 +11,7 @@ import { usageFeature } from './usage-features.js'
 import { TABS, commandText, compact as compactNumber, duration, errorMessage as errorText, failures, metrics, safeText, sections, statusText, type Section } from './tui-model.js'
 import { agentFailureTone, healthRowTone, healthStatusLabel, metricTone, resultFragments, type Tone } from './presentation.js'
 import { TerminalCharts, TerminalText, terminalPalette } from './tui-charts.js'
+import { updatePlugin } from './update.js'
 import type { EmptySnapshot, Snapshot } from './types.js'
 
 type SnapshotDoc = Snapshot | EmptySnapshot
@@ -44,6 +45,7 @@ export function setup(context: Plugin.Context): () => void {
   let disposed = false
   const aborts = new Set<AbortController>()
   const jobs = new Map<string, AbortController>()
+  const nativeUpdates = new Set<string>()
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const refreshing = new Set<string>()
   const dirty = new Set<string>()
@@ -186,6 +188,7 @@ export function setup(context: Plugin.Context): () => void {
     const runID = state.running[id]
     if (!runID) { notice('No obs command is running for this session.'); return }
     jobs.get(runID)?.abort()
+    if (nativeUpdates.has(runID)) { notice('Stopped waiting for the Obs update. A dispatched update may still finish on the server.'); return }
     try {
       const result = await rpc().cancel({ runID }, { location: location(id) })
       notice(result.cancelled ? 'Cancelling obs command…' : 'The obs command has already finished.')
@@ -275,6 +278,21 @@ export function setup(context: Plugin.Context): () => void {
     let preflightOutcome: 'error' | 'rejected' = 'error'
     try {
       const parsed = parseArgs(args), sessionless = isSessionlessCommand(parsed)
+      if (parsed.sub === 'update') {
+        const client = context.client
+        nativeUpdates.add(runID)
+        const sourceLocation = location(base)
+        const directory = sourceLocation ? { ...sourceLocation } : { directory: (await client.location.get(undefined, { signal: controller.signal })).directory }
+        const result = await updatePlugin(client, {
+          check: parsed.flags.check === true, location: directory, signal: controller.signal,
+          current: () => !disposed && context.client === client,
+          progress: text => { if (!disposed && context.client === client) update(draft => { draft.jobs[runID]!.text = displayResult(text) }) },
+          confirm: async question => Boolean(await context.ui.dialog.confirm({ title: safeText(question.title), message: safeText(question.message), label: { confirm: 'Update', cancel: 'Cancel' } })),
+        })
+        if (!disposed) update(draft => { draft.jobs[runID]!.text = displayResult(result.text); draft.jobs[runID]!.pending = false })
+        if (!disposed && presentation === 'dialog') showResult(runID)
+        return
+      }
       if (!sessionless) {
         // Questions preserve apostrophes; the generic shell lexer can treat one as an open quote.
         const analyze = parsed.sub === 'analyze' ? analyzeSelection(args) : undefined
@@ -345,6 +363,7 @@ export function setup(context: Plugin.Context): () => void {
     } finally {
       aborts.delete(controller)
       jobs.delete(runID)
+      nativeUpdates.delete(runID)
       if (!disposed) update(draft => {
         delete draft.running[base]
         if (draft.jobs[runID]) draft.jobs[runID]!.pending = false
@@ -524,10 +543,10 @@ export function setup(context: Plugin.Context): () => void {
     for (const timer of timers.values()) clearTimeout(timer)
     for (const controller of aborts) controller.abort()
     for (const [base, runID] of Object.entries(state.running)) if (jobs.has(runID)) {
-      void rpc().cancel({ runID }, { location: location(base) }).catch(() => {})
+      if (!nativeUpdates.has(runID)) void rpc().cancel({ runID }, { location: location(base) }).catch(() => {})
       update(draft => {
         if (draft.running[base] === runID) delete draft.running[base]
-        if (draft.jobs[runID]) { draft.jobs[runID]!.pending = false; draft.jobs[runID]!.text = 'Obs command interrupted by plugin reload.' }
+        if (draft.jobs[runID]) { draft.jobs[runID]!.pending = false; draft.jobs[runID]!.text = nativeUpdates.has(runID) ? 'The plugin reloaded during its update. Run /obs update --check to verify the installed version.' : 'Obs command interrupted by plugin reload.' }
       })
     }
     context.ui.panel.close()
