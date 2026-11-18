@@ -21,5 +21,6 @@ for (const name of ['args.ts', 'delivery-status.ts', 'telemetry-version.ts']) {
 }
 
 await cp(path.join(root, 'shared/command-args.ts'), path.join(root, 'opencode/src/shared/command-args.ts'))
+await cp(path.join(root, 'shared/local-update.ts'), path.join(root, 'opencode/src/shared/local-update.ts'))
 const grammar = path.join(root, 'opencode/src/shared/command-args.ts')
 await writeFile(grammar, (await readFile(grammar, 'utf8')).replace("'../hooks/lib/args.js'", "'./args.js'"))

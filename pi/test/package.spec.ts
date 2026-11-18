@@ -114,8 +114,9 @@ describe('Pi distribution', () => {
     expect(files.map(file => file.path)).toContain('runtime/bridge/trajviz_obs_cli.py')
     expect(files.map(file => file.path)).toContain('runtime/bridge/trajviz_obs/pi.py')
     expect(files.map(file => file.path)).toContain('runtime/bridge/telemetry_client.py')
+    expect(files.map(file => file.path)).toContain('runtime/local-update.ts')
     for (const file of files) {
-      expect(file.path === 'package.json' || file.path === 'README.md' || file.path === 'LICENSE' || file.path === 'dist/trajviz-obs.js' || /^runtime\/bridge\/.+\.py$/.test(file.path)).toBe(true)
+      expect(file.path === 'package.json' || file.path === 'README.md' || file.path === 'LICENSE' || file.path === 'dist/trajviz-obs.js' || file.path === 'runtime/local-update.ts' || /^runtime\/bridge\/.+\.py$/.test(file.path)).toBe(true)
       expect(file.path).not.toMatch(/(?:^|\/)(?:node_modules|docs|tests?|src|scripts|__pycache__|\.venv|\.env)(?:\/|$)/)
       expect(file.path).not.toMatch(/(?:^|\/)(?:\.claude|\.claude-plugin|opencode|telemetry)\//)
     }

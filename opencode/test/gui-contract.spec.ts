@@ -27,6 +27,7 @@ function connection(server = 'server-a', id = 'ses_shared') {
     cancel: mock(async (_input: unknown, _options?: Options) => ({ cancelled: true })),
     usageStatus: mock(async (_input: object, _options?: Options) => ({ enabled: false })),
     usageInteraction: mock(async (_input: UsageInteraction, _options?: Options) => ({})),
+    localUpdateCheck: mock(async (_input: unknown, _options?: Options) => ({ state: 'current' as const, text: 'The local checkout is current.' })),
     events: { on: mock((_name: string, _listener: unknown) => () => {}) },
   }
   const messages = mock(async (_input: unknown, _options?: Options): Promise<{ data: Record<string, unknown>[]; cursor: { next?: string } }> => ({ data: [], cursor: {} }))

@@ -16,3 +16,4 @@ for (const name of ['bootstrap.py', 'trajviz_obs_cli.py', 'telemetry_client.py',
   await cp(path.join(root, 'bridge', name), path.join(output, name))
 }
 await cp(path.join(root, 'LICENSE'), path.join(root, 'pi/LICENSE'))
+await cp(path.join(root, 'shared/local-update.ts'), path.join(root, 'pi/runtime/local-update.ts'))

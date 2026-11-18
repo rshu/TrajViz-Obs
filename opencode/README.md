@@ -4,7 +4,7 @@ Inspect session health, tools, subagents, context use, and step labels with `/ob
 
 ## Install
 
-Requires [OpenCode 2](https://opencode.ai/docs/), Git, [Bun](https://bun.sh) **1.3.0+**, and either [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Tested on terminal **2.2.5** and Desktop **2.2.7** on macOS, with Bun **1.3.14**. Check your terminal versions with `opencode --version` and `bun --version`.
+Requires [OpenCode 2](https://opencode.ai/docs/), Git, [Bun](https://bun.sh) **1.3.0+**, and either [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Tested on terminal **2.2.5** and Desktop **2.3.2** on macOS, with Bun **1.3.14**. Check your terminal versions with `opencode --version` and `bun --version`.
 
 ### 1. Build the adapter and find its path
 
@@ -46,7 +46,13 @@ Alternatively, enable it for **one project only** by putting the entry in `openc
 
 #### OpenCode Desktop
 
-1. Quit OpenCode Desktop completely (**Cmd+Q** on macOS), then reopen it.
+1. Finish active tasks and quit Desktop (**Cmd+Q** on macOS). Restart its managed server with the matching Desktop CLI, then reopen Desktop. For the standard macOS installation:
+
+   ```sh
+   "/Applications/OpenCode.app/Contents/Resources/opencode-cli" service restart
+   ```
+
+   Use the server's original launch environment if you customized its configuration or data directories. Quitting Desktop alone can leave its server running; a different terminal OpenCode version can replace that service with its own version.
 2. With Desktop's built-in local server selected, open **Settings → Extensions → Plugins**. Find **trajviz-obs** and make sure its switch is on; this enables the Desktop commands and pane.
 3. Open a project and session, complete an assistant response, then enter these commands one at a time in the chat composer:
 
@@ -78,9 +84,13 @@ In either interface, `/obs help` lists commands and `/obs doctor` checks setup. 
 
 Run `/obs update --check` in the terminal or Desktop to inspect the connected server's Obs installation. `/obs update` applies an available host-managed package update after confirmation: click **Update** in Desktop, or press **u** in the terminal (**x** or **Esc** cancels). It targets only Obs, keeps configuration and telemetry preferences, and lets OpenCode reload the affected plugin instances. Exact version and commit pins stay pinned. On a shared or remote server, the update affects its installation for all clients; the confirmation names the server and project.
 
-For the local-checkout installation above, `/obs update` shows manual commands for its configured adapter directory. Pull the checkout, repeat `bun install --frozen-lockfile` and `bun run build` in its `opencode` directory, then repeat the restart step above. The command leaves the checkout unchanged.
+For the local-checkout installation above, `/obs update --check` shows the installed and available versions and Git revisions. `/obs update` reviews the exact revision, asks for confirmation, fast-forwards the checkout, installs locked dependencies, and builds both interfaces automatically. Finish all tasks on that server first. Automatic local updates require a clean official checkout on `main` tracking `origin/main`; local changes, custom branches, linked worktrees, or incomplete builds require manual attention. Git transport rewrites are shown in the confirmation.
+
+After a successful build, restart the connected server and reopen the interface to load the updated server code. Use the matching-version CLI and original launch environment; for Desktop's managed server, repeat the restart step above. The update changes the shared repository, so other projects or agents using the same checkout also receive its file changes. Configuration, credentials, and telemetry preferences stay in place.
 
 A reconnect closes any unconfirmed update prompt. Cancelling before dispatch leaves the package unchanged. After dispatch, cancellation stops waiting, but the server may still finish. If the plugin reloads or disconnects, wait for OpenCode to reconnect and run `/obs update --check` before trying another update. The read-only `obs` agent tool cannot update installations.
+
+If an older plugin does not recognize the update command or its server API, run `git pull --ff-only` in the checkout, then run `bun install --frozen-lockfile` and `bun run build` inside its `opencode` directory. Restart the server and interface afterward.
 
 To disable the adapter, remove its entry from the configuration you edited and repeat the restart step.
 

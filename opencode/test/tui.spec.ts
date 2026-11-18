@@ -22,6 +22,7 @@ function host(options: Record<string, unknown> = {}, onSession = true) {
     cancel: mock(async (_input: unknown, _options?: unknown) => ({ cancelled: true })),
     usageStatus: mock(async (_input: object, _options?: unknown) => ({ enabled: false })),
     usageInteraction: mock(async (_input: UsageInteraction, _options?: unknown) => ({})),
+    localUpdateCheck: mock(async (_input: unknown, _options?: unknown) => ({ state: 'current' as const, text: 'The local checkout is current.' })),
     events: { on: (name: string, callback: (event: { data: Record<string, string> }) => void) => { listeners.set(name, callback); return () => { unsubscribed.push(name); listeners.delete(name) } } },
   }
   const sessionGet = mock(async (input: { sessionID: string }, _options?: unknown) => ({ id: input.sessionID, location: { directory: '/test-project' } }))
@@ -160,6 +161,7 @@ describe('OpenCode command adapter', () => {
       expect(h.rpc.run).not.toHaveBeenCalled(); expect(h.rpc.sync).not.toHaveBeenCalled(); expect(h.messageList).not.toHaveBeenCalled()
       expect(h.rpc.usageStatus).not.toHaveBeenCalled(); expect(h.rpc.usageInteraction).not.toHaveBeenCalled()
       expect(h.persisted.get('settings')).toEqual(preferences)
+      expect(h.rpc.localUpdateCheck).toHaveBeenCalledTimes(1)
       expect(JSON.stringify(h.memory.get('ui-v1'))).toContain('local checkout')
     } finally { h.cleanup() }
   })

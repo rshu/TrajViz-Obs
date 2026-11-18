@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { execFile } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
-import { cp, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { cp, mkdtemp, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { DefaultPackageManager, DefaultResourceLoader, createAgentSession, SessionManager, SettingsManager, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent'
 import { prepareUpdate, manualUpdateCommand, type UpdateOptions } from '../src/update.js'
 import { Controller } from '../src/index.js'
@@ -71,6 +72,37 @@ async function fixture(scope: 'user' | 'project' = 'user', source = SOURCE) {
     updating: (callback: () => void) => { duringUpdate = callback } }
 }
 
+async function localFixture(h: Awaited<ReturnType<typeof fixture>>) {
+  const root = await realpath(h.root)
+  await writeFile(path.join(h.root, 'pi/package.json'), JSON.stringify({ name: 'trajviz-obs-pi', version: '0.1.0' }))
+  await writeFile(h.globalFile, JSON.stringify({ packages: [h.root] })); await writeFile(h.projectFile, '{}')
+  h.options.sourceInfo = { path: h.entry, source: h.root, scope: 'user', origin: 'package' }
+  const local = { checks: 0, updates: 0, accepted: true, transport: 'https://github.com/rshu/TrajViz-Obs.git', state: 'available' as 'available' | 'current' | 'blocked' | 'error',
+    applied: 'updated' as 'updated' | 'error' | 'cancelled', questions: [] as { title: string; message: string }[],
+    loadedAt: [] as (number | undefined)[],
+    checking: () => {}, applying: () => {}, confirming: () => {} }
+  h.options.confirm = async question => { local.questions.push(question); local.confirming(); return local.accepted }
+  h.options.localUpdater = options => {
+    local.loadedAt.push(options?.loadedAt)
+    expect(options?.adapter).toBe('pi'); expect(options?.entryURL).toBe(pathToFileURL(h.entry).href)
+    expect(options?.workerSource).toContain('local-update.ts')
+    return {
+      check: async abort => {
+        abort?.throwIfAborted(); await options?.validateSource?.(path.join(root, 'pi')); local.checks++; local.checking()
+        return { state: local.state, text: 'Local TrajViz Obs 0.1.0\nInstalled: current-revision\nAvailable: reviewed-revision\nVersion: 0.1.0 → 0.1.1',
+          ...(local.state === 'available' ? { plan: { token: 'controlled-local-plan', root, branch: 'main', remote: 'https://github.com/rshu/TrajViz-Obs.git', effectiveRemote: local.transport, current: h.current, available: NEXT,
+            version: '0.1.0', currentVersion: '0.1.0', availableVersion: '0.1.1', expiresAt: Date.now() + 300_000, steps: ['Fast-forward the reviewed revision', 'Reload Pi when idle'] } } : {}) }
+      },
+      apply: async (token, optionsApply) => {
+        expect(token).toBe('controlled-local-plan'); optionsApply?.signal?.throwIfAborted()
+        await options?.validateSource?.(path.join(root, 'pi')); local.updates++; local.applying()
+        return { state: local.applied, text: local.applied === 'updated' ? 'Obs checkout updated · 0.1.1 · reviewed-revision.' : 'Local update failed; repair the checkout manually.' }
+      },
+    }
+  }
+  return local
+}
+
 describe('Pi plugin update inspection and native management', () => {
   test('read-only check reports version and available commit without touching settings or Git state', async () => {
     const h = await fixture(), settings = await readFile(h.globalFile), config = await readFile(path.join(h.root, '.git/config'))
@@ -130,11 +162,12 @@ describe('Pi plugin update inspection and native management', () => {
     expect(await readFile(consent, 'utf8')).toBe('off\n'); expect(await readFile(other, 'utf8')).toBe('Unrelated installation stays intact')
   }, 15_000)
 
-  test('local checkouts return quoted manual guidance and never read or mutate a package installation', async () => {
+  test('an unidentified checkout returns quoted manual guidance without mutating a package installation', async () => {
     const h = await fixture()
-    const options = { ...h.options, sourceInfo: { ...h.options.sourceInfo!, source: h.root }, manager: () => { throw new Error('Must not construct native manager') } }
+    const options = { ...h.options, sourceInfo: undefined, entryPath: h.entry, manager: () => { throw new Error('Must not construct native manager') } }
     const result = await prepareUpdate(h.context, false, signal(), options)
     expect(result.outcome).toBe('rejected'); expect(result.applyUpdate).toBeUndefined()
+    expect(result.text).toContain('could not be matched to a configured installation')
     expect(result.text).toContain('pull --ff-only'); expect(result.text).toContain('/reload'); expect(h.state().updates).toBe(0)
   })
 
@@ -306,9 +339,7 @@ describe('Pi plugin update inspection and native management', () => {
     }
     const h = await fixture(), unsafe = path.join(h.folder, 'unsafe\ncheckout')
     const { rename } = await import('node:fs/promises'); await rename(h.root, unsafe)
-    const result = await prepareUpdate(h.context, false, signal(), { ...h.options,
-      sourceInfo: { ...h.options.sourceInfo!, path: path.join(unsafe, 'pi/trajviz-obs.ts'), source: unsafe },
-    })
+    const result = await prepareUpdate(h.context, false, signal(), { ...h.options, sourceInfo: undefined, entryPath: path.join(unsafe, 'pi/trajviz-obs.ts') })
     expect(result.text).toContain('Open the plugin’s local checkout in a terminal')
     expect(result.text).not.toContain('git -C'); expect(result.text).not.toContain(unsafe)
     expect(result.text).not.toContain('unsafecheckout'); expect(result.applyUpdate).toBeUndefined()
@@ -321,9 +352,105 @@ describe('Pi plugin update inspection and native management', () => {
   })
 })
 
+describe('Pi local checkout update review', () => {
+  test('check shows installed and available versions without confirmation or native package mutations', async () => {
+    const h = await fixture(), local = await localFixture(h)
+    const global = await readFile(h.globalFile), project = await readFile(h.projectFile)
+    const result = await prepareUpdate(h.context, true, signal(), h.options)
+    expect(result.text).toContain('0.1.0 → 0.1.1'); expect(result.text).toContain('reviewed-revision')
+    expect(result.applyUpdate).toBeUndefined(); expect(local.questions).toEqual([]); expect(local.updates).toBe(0)
+    expect(h.state().updates).toBe(0); expect(await readFile(h.globalFile)).toEqual(global); expect(await readFile(h.projectFile)).toEqual(project)
+  })
+
+  test('apply confirms the exact shared repository and reviewed revision before returning a mutation', async () => {
+    const h = await fixture(), local = await localFixture(h)
+    const result = await prepareUpdate(h.context, false, signal(), h.options)
+    expect(local.questions).toHaveLength(1)
+    for (const value of [h.root, 'main', 'https://github.com/rshu/TrajViz-Obs.git', NEXT, 'other coding-agent adapters']) expect(local.questions[0]!.message).toContain(value)
+    expect(local.updates).toBe(0); expect(result.applyUpdate).toBeDefined()
+    const applied = await result.applyUpdate!()
+    expect(local.updates).toBe(1); expect(applied.reload).toBe(true); expect(h.state().updates).toBe(0)
+  })
+
+  test('confirmation exposes a rewritten transport endpoint without repeating the configured origin', async () => {
+    const h = await fixture(), local = await localFixture(h)
+    local.transport = 'https://[redacted]@mirror.example.invalid/repo?[redacted]'
+    await prepareUpdate(h.context, false, signal(), h.options)
+    expect(local.questions[0]!.message).toContain(`Transport: ${local.transport}`)
+    expect(local.questions[0]!.message.split('\n').length).toBeLessThan(12)
+  })
+
+  test('declining or cancelling confirmation leaves the checkout and active controller unchanged', async () => {
+    const h = await fixture(), local = await localFixture(h); local.accepted = false
+    const declined = await prepareUpdate(h.context, false, signal(), h.options)
+    expect(declined.outcome).toBe('cancelled'); expect(declined.applyUpdate).toBeUndefined(); expect(local.updates).toBe(0)
+    const abort = new AbortController(); local.confirming = () => abort.abort()
+    await expect(prepareUpdate(h.context, false, abort.signal, h.options)).rejects.toThrow()
+    expect(local.updates).toBe(0); expect((await git(['rev-parse', 'HEAD'], h.root)).trim()).toBe(h.current)
+  })
+
+  test('an available plan needs a native UI confirmation, while current and blocked states never prompt', async () => {
+    const h = await fixture(), local = await localFixture(h); delete h.options.confirm
+    expect((await prepareUpdate(h.context, false, signal(), h.options)).outcome).toBe('rejected')
+    for (const state of ['current', 'blocked', 'error'] as const) {
+      local.state = state
+      const result = await prepareUpdate(h.context, false, signal(), h.options)
+      expect(result.applyUpdate).toBeUndefined()
+      expect(result.outcome).toBe(state === 'current' ? 'success' : state === 'blocked' ? 'rejected' : 'error')
+    }
+    expect(local.questions).toEqual([]); expect(local.updates).toBe(0)
+  })
+
+  for (const changed of ['registration', 'source', 'busy', 'queued', 'trust', 'offline'] as const) test(`a local ${changed} change after confirmation blocks apply`, async () => {
+    const h = await fixture(), local = await localFixture(h)
+    h.options.currentSourceInfo = () => h.options.sourceInfo
+    const prepared = await prepareUpdate(h.context, false, signal(), h.options)
+    if (changed === 'registration') await writeFile(h.globalFile, '{}')
+    else if (changed === 'source') h.options.sourceInfo = { ...h.options.sourceInfo!, source: '/different/checkout' }
+    else if (changed === 'busy') h.context.isIdle = () => false
+    else if (changed === 'queued') h.context.hasPendingMessages = () => true
+    else if (changed === 'trust') h.trust(false)
+    else env('PI_OFFLINE', '1')
+    if (changed === 'busy' || changed === 'queued') expect((await prepared.applyUpdate!()).outcome).toBe('error')
+    else await expect(prepared.applyUpdate!()).rejects.toThrow()
+    expect(local.updates).toBe(0); expect(h.state().updates).toBe(0)
+  })
+
+  test('new agent work during the final native registration read cannot dispatch a local worker', async () => {
+    const h = await fixture(), local = await localFixture(h), create = h.options.manager!
+    let preparing = true
+    h.options.manager = settings => {
+      const native = create(settings)
+      return { ...native, listConfiguredPackages: () => { const rows = native.listConfiguredPackages(); if (!preparing) h.context.isIdle = () => false; return rows } }
+    }
+    const prepared = await prepareUpdate(h.context, false, signal(), h.options); preparing = false
+    await expect(prepared.applyUpdate!()).rejects.toThrow('Pi started new work')
+    expect(local.updates).toBe(0); expect(h.state().updates).toBe(0)
+  })
+
+  test('built local bundles remain manual and do not run a source-only update', async () => {
+    const h = await fixture(), local = await localFixture(h), built = path.join(h.root, 'pi/dist/trajviz-obs.js')
+    await mkdir(path.dirname(built)); await writeFile(built, 'export default function() {}')
+    h.options.sourceInfo = { ...h.options.sourceInfo!, path: await realpath(built) }; delete h.options.localUpdater
+    const result = await prepareUpdate(h.context, false, signal(), h.options)
+    expect(result.text).toContain('built package'); expect(result.applyUpdate).toBeUndefined()
+    expect(local.checks).toBe(0); expect(local.questions).toEqual([]); expect(local.updates).toBe(0)
+  })
+
+  test('a symlinked native source path remains visible to the checkout provenance guard', async () => {
+    const h = await fixture(); await localFixture(h); delete h.options.localUpdater
+    const link = path.join(await realpath(h.folder), 'linked-extension.ts'); await symlink(h.entry, link)
+    h.options.sourceInfo = { path: link, source: 'local', scope: 'temporary', origin: 'top-level' }
+    const result = await prepareUpdate(h.context, false, signal(), h.options)
+    expect(result.outcome).toBe('rejected'); expect(result.text).toContain('independent local source checkout')
+    expect(result.applyUpdate).toBeUndefined(); expect(h.state().updates).toBe(0)
+  })
+})
+
 describe('Pi direct update command lifecycle', () => {
-  async function controllerFixture() {
+  async function controllerFixture(useLocal = false) {
     const h = await fixture(), notifications: string[] = []
+    const local = useLocal ? await localFixture(h) : undefined
     const backend = new Backend(h.project, { cacheRoot: path.join(h.folder, 'cache') })
     let activeRevisions = 0, closed = false, reloads = 0
     const run = backend.revisions.run.bind(backend.revisions)
@@ -332,12 +459,12 @@ describe('Pi direct update command lifecycle', () => {
     backend.close = async () => { await close(); closed = true }
     const context = { ...h.context, mode: 'rpc', hasUI: true, isIdle: () => true, hasPendingMessages: () => false,
       sessionManager: SessionManager.inMemory(h.project), getContextUsage: () => undefined,
-      ui: { notify: (value: string) => notifications.push(value) },
+      ui: { notify: (value: string) => notifications.push(value), confirm: async (title: string, message: string) => { local?.questions.push({ title, message }); return local?.accepted ?? true } },
       reload: async () => { expect(closed).toBe(true); expect(activeRevisions).toBe(0); reloads++ },
     } as unknown as ExtensionCommandContext
     const controller = new Controller(backend, context, '1.5.2', () => h.options); controllers.push(controller)
     h.updating(() => { expect(closed).toBe(true); expect(activeRevisions).toBe(0) })
-    return { ...h, backend, controller, context, notifications, lifecycle: () => ({ closed, activeRevisions, reloads }) }
+    return { ...h, local, backend, controller, context, notifications, lifecycle: () => ({ closed, activeRevisions, reloads }) }
   }
 
   test('SDK execution cannot apply updates, while check remains read-only', async () => {
@@ -352,6 +479,51 @@ describe('Pi direct update command lifecycle', () => {
     await h.controller.command('update', h.context)
     expect(h.state().updates).toBe(1); expect(h.lifecycle()).toEqual({ closed: true, activeRevisions: 0, reloads: 1 })
     expect(h.notifications.at(-1)).toContain('Reloading Pi extensions')
+  })
+
+  test('a confirmed local source update uses the same idle quiescence and native reload lifecycle', async () => {
+    const h = await controllerFixture(true)
+    h.local!.applying = () => { expect(h.lifecycle().closed).toBe(true); expect(h.lifecycle().activeRevisions).toBe(0) }
+    await h.controller.command('update --check', h.context)
+    expect(h.local!.questions).toEqual([]); expect(h.lifecycle().closed).toBe(false)
+    await h.controller.command('update', h.context)
+    expect(h.local!.questions).toHaveLength(1); expect(h.local!.updates).toBe(1)
+    expect(h.local!.loadedAt).toHaveLength(2); expect(h.local!.loadedAt[0]).toBeNumber(); expect(h.local!.loadedAt[1]).toBe(h.local!.loadedAt[0])
+    expect(h.state().updates).toBe(0); expect(h.lifecycle()).toEqual({ closed: true, activeRevisions: 0, reloads: 1 })
+  })
+
+  test('declining a local update keeps Obs loaded; SDK execution cannot bypass confirmation', async () => {
+    const h = await controllerFixture(true); h.local!.accepted = false
+    expect((await h.controller.execute('update')).outcome).toBe('rejected')
+    await h.controller.command('update', h.context)
+    expect(h.local!.updates).toBe(0); expect(h.lifecycle().closed).toBe(false); expect(h.lifecycle().reloads).toBe(0)
+    expect(h.notifications.at(-1)).toContain('cancelled'); expect((await h.controller.execute('help')).text).toContain('/obs')
+  })
+
+  test('local confirmation dismisses the progress overlay before the native dialog opens', async () => {
+    const h = await controllerFixture(true); let overlayOpen = false, confirmations = 0
+    h.context.mode = 'tui'
+    Object.assign(h.context.ui, {
+      setWidget() {}, setStatus() {},
+      custom: (factory: any) => new Promise(resolve => {
+        overlayOpen = true
+        factory({ terminal: { rows: 24, columns: 80 }, requestRender() {} }, { fg: (_name: string, text: string) => text }, {}, (value: unknown) => { overlayOpen = false; resolve(value) })
+      }),
+      confirm: async (_title: string, message: string, options: { signal: AbortSignal }) => {
+        expect(overlayOpen).toBe(false); expect(options.signal.aborted).toBe(false)
+        expect(message.split('\n').length).toBeLessThan(12); expect(message).toContain(NEXT)
+        confirmations++; return false
+      },
+    })
+    await h.controller.command('update', h.context)
+    expect(confirmations).toBe(1); expect(h.local!.updates).toBe(0); expect(h.lifecycle().closed).toBe(false)
+  })
+
+  test('a failed local update never reloads or claims success', async () => {
+    const h = await controllerFixture(true); h.local!.applied = 'error'
+    await h.controller.command('update', h.context)
+    expect(h.local!.updates).toBe(1); expect(h.lifecycle().reloads).toBe(0)
+    expect(h.notifications.at(-1)).toContain('repair the checkout manually')
   })
 
   test('check never reloads and running or queued agent work blocks apply', async () => {

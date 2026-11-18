@@ -1,13 +1,13 @@
 {
   "name": "trajviz-obs-pi",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "TrajViz session observability for Pi",
   "type": "module",
   "license": "MIT",
   "keywords": ["pi-package", "pi", "observability", "trajectory"],
   "repository": { "type": "git", "url": "https://github.com/rshu/TrajViz-Obs.git", "directory": "pi" },
   "pi": { "extensions": ["./dist/trajviz-obs.js"] },
-  "files": ["dist/trajviz-obs.js", "runtime/bridge/**/*.py", "README.md", "LICENSE"],
+  "files": ["dist/trajviz-obs.js", "runtime/bridge/**/*.py", "runtime/local-update.ts", "README.md", "LICENSE"],
   "scripts": {
     "build": "node scripts/package.mjs && bun build src/index.ts --target=node --external '@earendil-works/*' --outfile dist/trajviz-obs.js",
     "typecheck": "tsc --noEmit",

@@ -45,9 +45,11 @@ For a local checkout, use `pi install /absolute/path/to/TrajViz-Obs`. Keep the c
 
 For project installations, run update and removal commands from that project after approving its settings in Pi.
 
-Run `/obs update --check` to inspect this plugin’s installation and available Git revision. Wait for Pi to finish its task before running `/obs update`. It updates a clean Pi-managed Git installation and reloads Pi’s extensions if Pi is still idle. If new work starts during the update, run `/reload` after it finishes. Explicit refs, local changes, and ambiguous user/project registrations require manual updates. Local checkouts receive manual pull and reload instructions. Failed remote checks show the available revision as unknown.
+Run `/obs update --check` to inspect this plugin’s installation and available revision. Local source checkouts also show the installed and available versions. Wait for Pi to finish its task, then run `/obs update`. Pi-managed Git installations use Pi's package manager; local source checkouts show a confirmation and fast-forward the reviewed revision automatically. Local updates require a clean official checkout on `main` tracking `origin/main`; no Bun build is needed for Pi source installations.
 
-From a terminal, run `pi update git:github.com/rshu/TrajViz-Obs`, then restart Pi or run `/reload`. Use the same terminal command to repair an incomplete update, then restart Pi. For a local checkout, run `git pull --ff-only` in the checkout instead.
+Pi reloads its extensions when the update finishes and Pi is still idle. If new work starts, run `/reload` afterward. Other sessions using the checkout also need `/reload`. Explicit refs, local changes, custom branches, linked worktrees, built local packages, and ambiguous registrations require manual attention. Failed remote checks show the available revision or version as unknown.
+
+If an older plugin does not recognize `/obs update`, run `pi update git:github.com/rshu/TrajViz-Obs` for its managed Git installation, then restart Pi or run `/reload`. Use that native command to repair an incomplete managed update. For a local checkout, run `git pull --ff-only` in the checkout instead; a failed local update reports its repair state under `.git/trajviz-obs-update`.
 
 To remove the Git installation, run `pi remove git:github.com/rshu/TrajViz-Obs`; for a local checkout, pass its path instead. Add `--local` when removing a project installation, then restart Pi or run `/reload`.
 

@@ -29,7 +29,7 @@ Confirm the marketplace and installation scope, then restart Claude Code or run 
 
 ### OpenCode 2 terminal and Desktop
 
-Requires [OpenCode 2](https://opencode.ai/docs/), Git, and [Bun](https://bun.sh) **1.3.0+**. Tested on terminal **2.2.5** and Desktop **2.2.7** on macOS.
+Requires [OpenCode 2](https://opencode.ai/docs/), Git, and [Bun](https://bun.sh) **1.3.0+**. Tested on terminal **2.2.5** and Desktop **2.3.2** on macOS.
 
 Build the adapter:
 
@@ -53,7 +53,7 @@ Add the adapter to `~/.config/opencode/opencode.json` on macOS/Linux, replacing 
 Keep the checkout in place. Restart the interface you use:
 
 - **Terminal:** close the TUI, run `opencode service restart`, then run `opencode` from your project.
-- **Desktop:** quit completely (**Cmd+Q** on macOS), reopen, then enable **trajviz-obs** in **Settings → Extensions → Plugins** on the built-in local server.
+- **Desktop:** quit (**Cmd+Q** on macOS), restart its managed server with `"/Applications/OpenCode.app/Contents/Resources/opencode-cli" service restart`, then reopen. Enable **trajviz-obs** in **Settings → Extensions → Plugins** on the built-in local server. Use the matching Desktop CLI and the server's original launch environment; quitting the app alone can leave its server running.
 
 Run `/obs help` to verify installation. See the [OpenCode guide](opencode/README.md) for custom config paths, project-only installs, standalone and remote servers, updates, and removal.
 
@@ -115,6 +115,8 @@ In Claude Code, run `/obs pane` to open or focus the pane. With the pane focused
 | Ask for analysis or fixes | `/obs analyze [question]`, `/obs fixes` |
 | Label steps by phase and action | `/obs label --max-steps 20` |
 | List all commands and options | `/obs help` |
+
+In OpenCode and Pi, `/obs update` can also update a clean local source checkout on the official repository's `main` branch after confirmation. OpenCode installs dependencies and rebuilds the adapter; Pi source installs need no build. Follow the update result's reload or restart guidance. See the [OpenCode](opencode/README.md#update-or-remove) and [Pi](pi/README.md#update-or-remove) guides for requirements and recovery.
 
 Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path>` to a session command. Run bare `/obs` to return to the current session.
 

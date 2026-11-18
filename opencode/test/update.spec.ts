@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from 'bun:test'
 import type { OpenCodeClient, PluginInfo } from '@opencode/client'
 import manifest from '../package.json'
+import type { LocalUpdateResult } from '../../shared/local-update.js'
 import { pinnedTarget, updatePlugin } from '../src/update.js'
 
 function harness() {
@@ -11,13 +12,22 @@ function harness() {
     update: mock(async (_input: unknown, _options?: unknown) => { if (info.source.type === 'package') { info.source.version = 'controlled-updated'; delete info.source.outdated } }),
   }
   const server = { info: mock(async (_options?: unknown) => ({ version: '2.2.5', urls: ['https://private:secret@server.example:4096/path?token=hidden'] })) }
-  const client = { plugin, server } as unknown as OpenCodeClient
+  const session = { active: mock(async (_options?: unknown): Promise<Record<string, { type: 'running' }>> => ({})) }
+  const local = {
+    localUpdateCheck: mock(async (_input: unknown, _options?: unknown): Promise<LocalUpdateResult> => ({
+      state: 'available', text: 'Installed: 1.0.0 · aaaa\nAvailable: 1.0.1 · bbbb',
+      plan: { token: 'reviewed-local-plan', root: '/server/TrajViz-Obs', branch: 'main', remote: 'https://github.com/rshu/TrajViz-Obs.git', effectiveRemote: '/server/update-mirror', current: 'a'.repeat(40), available: 'b'.repeat(40), version: '1.0.0', currentVersion: '1.0.0', availableVersion: '1.0.1', expiresAt: Date.now() + 60_000, steps: ['Fast-forward the shared checkout', 'bun install --frozen-lockfile', 'bun run build', 'Restart after the build finishes'] },
+    })),
+    localUpdateStart: mock(async (_input: unknown, _options?: unknown) => ({ accepted: true as const })),
+    localUpdatePoll: mock(async (_input: unknown, _options?: unknown): Promise<{ state: 'pending'; progress?: string } | { state: 'finished'; result: LocalUpdateResult } | { state: 'expired' }> => ({ state: 'finished', result: { state: 'updated', restartRequired: true, text: 'Checkout updated and built. Restart the connected server after current work finishes.' } })),
+  }
+  const client = { plugin, server, session, rpc: () => local } as unknown as OpenCodeClient
   const controller = new AbortController(), progress = mock((_text: string) => {}), confirm = mock(async (_question: { title: string; message: string }, _signal: AbortSignal) => true)
   const options = { check: false, location: { directory: '/remote/project' }, signal: controller.signal, confirm, progress, current: () => true }
-  return { info, plugin, server, client, controller, progress, confirm, options, run: () => updatePlugin(client, options) }
+  return { info, plugin, server, session, local, client, controller, progress, confirm, options, run: () => updatePlugin(client, options) }
 }
 
-describe('OpenCode native package updates', () => {
+describe('OpenCode plugin updates', () => {
   test('only the exact configured target and connected-server location are updated', async () => {
     const h = harness()
     const result = await h.run()
@@ -51,23 +61,148 @@ describe('OpenCode native package updates', () => {
     expect(h.plugin.update).not.toHaveBeenCalled(); expect(h.confirm).not.toHaveBeenCalled()
   })
 
-  test('local checkout returns safely quoted server-side build instructions without fetching or updating', async () => {
+  test('local check-only uses the server plan without applying or asking for confirmation', async () => {
     const h = harness(); h.info.source = { type: 'local', path: "/server/owner's checkout/opencode" }
+    h.options.check = true
     const result = await h.run()
-    expect(result.state).toBe('manual')
+    expect(result.state).toBe('available')
     expect(result.text).toContain(`Loaded UI version: ${manifest.version}`)
-    expect(result.text).toContain(`cd '/server/owner'"'"'s checkout/opencode'`)
-    expect(result.text).toContain('git pull --ff-only\nbun install --frozen-lockfile\nbun run build')
-    expect(result.text).toContain('remote server must be restarted on its own machine')
+    expect(result.text).toContain('Installed: 1.0.0'); expect(result.text).toContain('Available: 1.0.1')
+    expect(h.local.localUpdateCheck.mock.calls[0]).toEqual([{ sourcePath: "/server/owner's checkout/opencode" }, { location: { directory: '/remote/project' }, signal: h.controller.signal }])
+    expect(h.local.localUpdateStart).not.toHaveBeenCalled(); expect(h.session.active).not.toHaveBeenCalled()
     expect(h.plugin.check).not.toHaveBeenCalled(); expect(h.plugin.update).not.toHaveBeenCalled(); expect(h.confirm).not.toHaveBeenCalled()
   })
 
-  test('Windows local instructions use a literal PowerShell directory and unsafe path controls never become shell commands', async () => {
-    const h = harness(); h.info.source = { type: 'local', path: "C:\\owner's folder\\opencode" }
-    expect((await h.run()).text).toContain("Set-Location -LiteralPath 'C:\\owner''s folder\\opencode'")
-    h.info.source = { type: 'local', path: '/private/new\nline' }
+  test('local updates run one confirmed server job against the exact captured source and location', async () => {
+    const h = harness(); h.info.source = { type: 'local', path: '/server/TrajViz-Obs/opencode' }
+    h.confirm.mockImplementation(async () => { h.options.location.directory = '/new/project'; return true })
+    h.local.localUpdatePoll.mockResolvedValueOnce({ state: 'pending', progress: 'Building the adapter…' })
     const result = await h.run()
-    expect(result.text).not.toContain('cd '); expect(result.text).not.toContain('/private/new')
+    expect(result.state).toBe('updated'); expect(result.restartRequired).toBe(true)
+    const [input, options] = h.local.localUpdateStart.mock.calls[0] as [{ sourcePath: string; token: string; runID: string }, unknown]
+    expect(input).toMatchObject({ sourcePath: '/server/TrajViz-Obs/opencode', token: 'reviewed-local-plan' })
+    expect(input.runID).toMatch(/^[\da-f-]{36}$/)
+    expect(options).toEqual({ location: { directory: '/remote/project' }, signal: h.controller.signal })
+    for (const [pollInput, pollOptions] of h.local.localUpdatePoll.mock.calls) {
+      expect(pollInput).toEqual({ sourcePath: input.sourcePath, runID: input.runID }); expect(pollOptions).toEqual(options)
+    }
+    const prompt = h.confirm.mock.calls[0]?.[0].message
+    for (const expected of ['https://server.example:4096', 'Checkout: /server/TrajViz-Obs', 'Branch: main', 'https://github.com/rshu/TrajViz-Obs.git', 'Transport: /server/update-mirror', 'a'.repeat(40), 'b'.repeat(40), 'bun install --frozen-lockfile', 'bun run build', 'Restart the server only after']) expect(prompt).toContain(expected)
+    expect(h.local.localUpdateStart).toHaveBeenCalledTimes(1); expect(h.session.active).toHaveBeenCalledTimes(2)
+    expect(h.plugin.update).not.toHaveBeenCalled(); expect(h.plugin.check).not.toHaveBeenCalled()
+    expect(h.progress.mock.calls.some(([text]) => text === 'Building the adapter…')).toBe(true)
+  })
+
+  test('Windows paths remain exact data, not generated client-side shell commands', async () => {
+    const h = harness(); h.info.source = { type: 'local', path: "C:\\owner's folder\\opencode" }
+    h.options.check = true
+    await h.run()
+    expect(h.local.localUpdateCheck.mock.calls[0]?.[0]).toEqual({ sourcePath: "C:\\owner's folder\\opencode" })
+    expect(h.local.localUpdateStart).not.toHaveBeenCalled()
+  })
+
+  test('blocked/current local checks retain the server explanation and never ask to apply', async () => {
+    const h = harness(); h.info.source = { type: 'local', path: '/server/TrajViz-Obs/opencode' }
+    h.local.localUpdateCheck.mockResolvedValueOnce({ state: 'blocked', text: 'Save local changes and retry.' })
+    expect((await h.run()).text).toContain('Save local changes')
+    h.local.localUpdateCheck.mockResolvedValueOnce({ state: 'current', restartRequired: true, text: 'Checkout current; restart the old server.' })
+    const result = await h.run()
+    expect(result.state).toBe('current'); expect(result.restartRequired).toBe(true)
+    expect(h.confirm).not.toHaveBeenCalled(); expect(h.local.localUpdateStart).not.toHaveBeenCalled()
+  })
+
+  test('an unavailable or older server gets bounded read-only retries and restart guidance', async () => {
+    for (const type of ['rpc.unavailable', 'rpc.method_not_found']) {
+      const h = harness(); h.info.source = { type: 'local', path: '/server/TrajViz-Obs/opencode' }
+      h.local.localUpdateCheck.mockRejectedValue({ type, message: 'The old server does not know localUpdateCheck.' })
+      const result = await h.run()
+      expect(result.state).toBe('error'); expect(result.text).toContain('Local update support is unavailable')
+      expect(result.text).toContain('matching-version OpenCode CLI'); expect(result.text).toContain('"/Applications/OpenCode.app/Contents/Resources/opencode-cli" service restart')
+      expect(result.text).toContain('quitting Desktop alone leaves its service running'); expect(result.text).toContain('Then run /obs update again')
+      expect(h.local.localUpdateCheck).toHaveBeenCalledTimes(type === 'rpc.unavailable' ? 4 : 1)
+      expect(h.local.localUpdateStart).not.toHaveBeenCalled(); expect(h.confirm).not.toHaveBeenCalled()
+    }
+  })
+
+  test('cold workspace registration recovers through read-only checks before a single confirmed start', async () => {
+    const h = harness(); h.info.source = { type: 'local', path: '/server/TrajViz-Obs/opencode' }
+    h.local.localUpdateCheck.mockRejectedValueOnce({ type: 'rpc.unavailable', message: 'Workspace is starting' })
+    expect((await h.run()).state).toBe('updated')
+    expect(h.local.localUpdateCheck).toHaveBeenCalledTimes(2); expect(h.local.localUpdateStart).toHaveBeenCalledTimes(1)
+  })
+
+  test('declining or cancelling the local review never starts the server job', async () => {
+    const h = harness(); h.info.source = { type: 'local', path: '/server/TrajViz-Obs/opencode' }
+    h.confirm.mockResolvedValueOnce(false)
+    expect((await h.run()).text).toContain('No checkout was changed')
+    const opened = Promise.withResolvers<void>(), accepted = Promise.withResolvers<boolean>()
+    h.confirm.mockImplementation(async () => { opened.resolve(); return accepted.promise })
+    const running = h.run(); await opened.promise; h.controller.abort()
+    expect((await running).state).toBe('cancelled')
+    accepted.resolve(true); await Promise.resolve()
+    expect(h.local.localUpdateStart).not.toHaveBeenCalled()
+  })
+
+  test('running server tasks before review or starting during review prevent local mutation', async () => {
+    for (const alreadyRunning of [true, false]) {
+      const h = harness(); h.info.source = { type: 'local', path: '/server/TrajViz-Obs/opencode' }
+      if (!alreadyRunning) h.session.active.mockResolvedValueOnce({})
+      h.session.active.mockResolvedValue({ ses_other: { type: 'running' } })
+      expect((await h.run()).text).toContain('Wait for all running tasks')
+      expect(h.local.localUpdateStart).not.toHaveBeenCalled()
+      expect(h.confirm.mock.calls).toHaveLength(alreadyRunning ? 0 : 1)
+    }
+  })
+
+  test('changed native sources, reconnects, and final progress cancellation cannot apply a local plan', async () => {
+    for (const changed of ['source', 'connection', 'cancel'] as const) {
+      const h = harness(); h.info.source = { type: 'local', path: '/server/TrajViz-Obs/opencode' }
+      let current = true; h.options.current = () => current
+      h.confirm.mockImplementation(async () => {
+        if (changed === 'source') h.info.source = { type: 'local', path: '/server/other/opencode' }
+        if (changed === 'connection') current = false
+        return true
+      })
+      h.progress.mockImplementation(text => { if (changed === 'cancel' && text.startsWith('Updating and building')) h.controller.abort() })
+      expect((await h.run()).state).toBe(changed === 'cancel' ? 'cancelled' : 'error')
+      expect(h.local.localUpdateStart).not.toHaveBeenCalled()
+    }
+  })
+
+  test('a lost local start acknowledgement is resolved only by polling the same job', async () => {
+    const h = harness(); h.info.source = { type: 'local', path: '/server/TrajViz-Obs/opencode' }
+    h.local.localUpdateStart.mockRejectedValueOnce(new Error('Acknowledgement lost'))
+    expect((await h.run()).state).toBe('updated')
+    expect(h.local.localUpdateStart).toHaveBeenCalledTimes(1); expect(h.local.localUpdatePoll).toHaveBeenCalledTimes(1)
+    h.local.localUpdateStart.mockRejectedValueOnce(new Error('Acknowledgement lost'))
+    h.local.localUpdatePoll.mockResolvedValueOnce({ state: 'expired' })
+    expect((await h.run()).text).toContain('do not restart the server or start another update')
+    expect(h.local.localUpdateStart).toHaveBeenCalledTimes(2)
+  })
+
+  test('cancellation after local dispatch leaves the background build alone and reports uncertain completion', async () => {
+    const h = harness(); h.info.source = { type: 'local', path: '/server/TrajViz-Obs/opencode' }
+    const entered = Promise.withResolvers<void>()
+    h.local.localUpdatePoll.mockImplementation(async (_input, options) => {
+      entered.resolve()
+      await new Promise<void>((_resolve, reject) => (options as { signal: AbortSignal }).signal.addEventListener('abort', () => reject(new Error('Cancelled')), { once: true }))
+      return { state: 'expired' }
+    })
+    const running = h.run(); await entered.promise; h.controller.abort()
+    const result = await running
+    expect(result.state).toBe('cancelled'); expect(result.text).toContain('may still be updating or building')
+    expect(result.text).not.toContain('No checkout was changed'); expect(h.local.localUpdateStart).toHaveBeenCalledTimes(1)
+  })
+
+  test('local plan failures and partial build errors remain explicit without claiming success', async () => {
+    const h = harness(); h.info.source = { type: 'local', path: '/server/TrajViz-Obs/opencode' }
+    h.local.localUpdateCheck.mockResolvedValueOnce({ state: 'available', text: 'Missing plan' })
+    expect((await h.run()).text).toContain('did not provide a reviewed')
+    h.local.localUpdateCheck.mockRejectedValueOnce(new Error('Server unavailable'))
+    expect((await h.run()).text).toContain('Server unavailable')
+    h.local.localUpdatePoll.mockResolvedValueOnce({ state: 'finished', result: { state: 'error', text: 'Build failed; repair before restart.' } })
+    const failed = await h.run()
+    expect(failed.state).toBe('error'); expect(failed.text).toContain('repair before restart')
   })
 
   test('exact versions and complete Git commits stay pinned', async () => {

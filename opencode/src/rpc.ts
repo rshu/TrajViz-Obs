@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { EmptySnapshot, Snapshot } from './types.js'
 import { validateSource, type NativeSource } from './collect.js'
 import { USAGE_FEATURES } from './usage-features.js'
+import type { LocalUpdateResult } from './shared/local-update.js'
 
 export type CommandResult = {
   text: string
@@ -33,10 +34,22 @@ const result = z.object({
   confirmation: z.object({ id: z.string(), title: z.string(), message: z.string() }).optional(),
 })
 const runInput = z.object({ sessionID, args: z.string().max(32768), runID: z.string().min(1).max(256), useSynced: z.boolean().optional(), paneSnapshot: z.literal(true).optional(), confirmationID: z.string().optional(), model: z.object({ providerID: z.string(), id: z.string(), variant: z.string().optional() }).optional() })
+const localSource = z.string().min(1).max(8192)
+const localResult = z.custom<LocalUpdateResult>(value => {
+  if (!value || typeof value !== 'object') return false
+  const result = value as LocalUpdateResult
+  return typeof result.text === 'string' && ['available', 'current', 'blocked', 'error', 'cancelled', 'updated'].includes(result.state)
+})
 
 export const Obs = Rpc.define({
   id: 'trajviz-obs',
   methods: {
+    localUpdateCheck: { input: z.strictObject({ sourcePath: localSource }), output: localResult },
+    localUpdateStart: { input: z.strictObject({ sourcePath: localSource, token: z.string().uuid(), runID: z.string().uuid() }), output: z.object({ accepted: z.literal(true) }) },
+    localUpdatePoll: {
+      input: z.strictObject({ sourcePath: localSource, runID: z.string().uuid() }),
+      output: z.discriminatedUnion('state', [z.object({ state: z.literal('pending'), progress: z.string().optional() }), z.object({ state: z.literal('finished'), result: localResult }), z.object({ state: z.literal('expired') })]),
+    },
     sync: { input: z.object({ source: z.custom<NativeSource>(v => { try { validateSource(v); return true } catch { return false } }), requestID: z.string().uuid().optional() }), output: z.object({ sessionID }) },
     resolve: { input: z.object({ sessionID, selector: z.string().optional(), captureSessionID: z.string().min(1).max(4096).optional() }), output: z.object({ sessionID, path: z.string().optional() }) },
     run: {
