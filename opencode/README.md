@@ -76,11 +76,11 @@ In either interface, `/obs help` lists commands and `/obs doctor` checks setup. 
 
 ### Update or remove
 
-Run `/obs update --check` in the terminal or Desktop to inspect the connected server's Obs installation. `/obs update` applies an available host-managed package update after confirmation. It targets only Obs, keeps configuration and telemetry preferences, and lets OpenCode reload the affected plugin instances. Exact version and commit pins stay pinned. On a shared or remote server, the update affects its installation for all clients; the confirmation names the server and project.
+Run `/obs update --check` in the terminal or Desktop to inspect the connected server's Obs installation. `/obs update` applies an available host-managed package update after confirmation: click **Update** in Desktop, or press **u** in the terminal (**x** or **Esc** cancels). It targets only Obs, keeps configuration and telemetry preferences, and lets OpenCode reload the affected plugin instances. Exact version and commit pins stay pinned. On a shared or remote server, the update affects its installation for all clients; the confirmation names the server and project.
 
 For the local-checkout installation above, `/obs update` shows manual commands for its configured adapter directory. Pull the checkout, repeat `bun install --frozen-lockfile` and `bun run build` in its `opencode` directory, then repeat the restart step above. The command leaves the checkout unchanged.
 
-If the plugin reloads or the connection closes during a package update, wait for OpenCode to reconnect and run `/obs update --check` to verify its state. Cancelling stops waiting; an update already sent to the server may still finish. The read-only `obs` agent tool cannot update installations.
+A reconnect closes any unconfirmed update prompt. Cancelling before dispatch leaves the package unchanged. After dispatch, cancellation stops waiting, but the server may still finish. If the plugin reloads or disconnects, wait for OpenCode to reconnect and run `/obs update --check` before trying another update. The read-only `obs` agent tool cannot update installations.
 
 To disable the adapter, remove its entry from the configuration you edited and repeat the restart step.
 
@@ -129,7 +129,7 @@ Live captures are limited to 32 MiB and 64 sessions in one family. For larger in
 
 Run `/obs enable_telemetry` to opt in or `/obs disable_telemetry` to turn it off in Desktop or the terminal. Both save the preference on the connected OpenCode server, where it takes effect immediately and persists across restarts. Disabling pauses queued uploads. After enabling, reopen any existing dashboards to include browser interactions.
 
-Run `/obs telemetry` to check delivery or `/obs telemetry_destination` to see the collector. `/obs telemetry_destination https://telemetry.example.com` changes it immediately on the connected server and adds `/v1/events` automatically. `default` restores the server’s launch setting or the loopback collector. For authenticated delivery, set `TRAJVIZ_OBS_TELEMETRY_TOKEN` and the full `/v1/events` URL in `TRAJVIZ_OBS_TELEMETRY_URL` in the server’s launch environment. The server uses that token only for this exact endpoint, including when a client specifies `--use-launch-token`. [Telemetry setup](https://github.com/rshu/TrajViz-Obs#usage-telemetry)
+Run `/obs telemetry` to check delivery or `/obs telemetry_destination` to see the collector. `/obs telemetry_destination https://telemetry.example.com` changes it immediately on the connected server and adds `/v1/events` automatically. `default` restores the server’s launch setting or the loopback collector. For authenticated delivery, set `TRAJVIZ_OBS_TELEMETRY_TOKEN` and the full `/v1/events` URL in `TRAJVIZ_OBS_TELEMETRY_URL` in the server’s launch environment. The server uses that token only for this exact endpoint, including when a client specifies `--use-launch-token`. [Telemetry setup](https://github.com/rshu/TrajViz-Obs/blob/main/telemetry/README.md#plugin-configuration)
 
 Desktop and terminal clients on a shared OpenCode server share its telemetry installation ID. Agent version, when available, is the connected OpenCode server version.
 
