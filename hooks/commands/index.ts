@@ -13,6 +13,7 @@ import { overview, SESSION_USAGE } from './overview'
 import { pane } from './pane'
 import { sessions } from './sessions'
 import { toggles } from './toggles'
+import { updatePlugin } from './update'
 
 export type CommandContext = {
   /** The argument string as typed after `/obs` (what `parsed` was read from). */
@@ -45,10 +46,10 @@ const COMMAND_FLAGS: Record<string, readonly string[]> = {
   compare: ['anchor-patch', 'fuzzy-commands', 'reverse'], scorecard: ['fuzzy-commands', 'labels', 'no-self'], labels: [],
   fixes: ['limit'], label: [...OUTPUT_FLAGS, 'assistant-only', 'model', 'max-steps', 'taxonomy', 'max-content-chars', 'delay', 'user-phase', 'user-action', 'max-tokens', 'temperature'],
   attribution: ['reference-root', 'agent', 'instance'], sessions: [], watch: [], statusline: [], setup: ['extras', 'source'], doctor: [],
-  telemetry: [], telemetry_destination: ['use-launch-token'], enable_telemetry: [], disable_telemetry: [], help: [],
+  telemetry: [], telemetry_destination: ['use-launch-token'], enable_telemetry: [], disable_telemetry: [], help: [], update: ['check'],
 }
 
-const NO_POSITIONALS = ['overview', 'help', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline']
+const NO_POSITIONALS = ['overview', 'help', 'doctor', 'telemetry', 'enable_telemetry', 'disable_telemetry', 'setup', 'json', 'bundle', 'fixes', 'label', 'attribution', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'update']
 const SESSION_COMMANDS = ['overview', 'pane', 'view', 'issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'json', 'bundle', 'dashboard', 'compare', 'scorecard', 'analyze', 'fixes', 'label', 'attribution', 'sessions']
 
 export async function dispatch($: EngineInterface, ctx: CommandContext): Promise<CommandRunResult> {
@@ -173,6 +174,8 @@ async function route($: EngineInterface, ctx: CommandContext): Promise<CommandRu
       return toggles($, ctx)
     case 'help':
       return help($, ctx)
+    case 'update':
+      return updatePlugin($, ctx)
     case 'report':
       return { text: 'The /obs report command was removed. Use /obs dashboard to inspect the session or /obs dashboard --html PATH to save an offline copy.' }
     default:

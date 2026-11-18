@@ -27,11 +27,11 @@ export const HELP_TEXT = [
   '    label options: --taxonomy PATH --user-phase TAG --user-action TAG --max-content-chars N --max-tokens N',
   '    llm=env also accepts --delay SEC (0–3600) and --temperature N (or LABEL_TEMPERATURE).',
   'Setup',
-  '  setup [--extras ...] [--source ...]   doctor   sessions [N]   watch [on|off]   statusline [on|off]',
+  '  setup [--extras ...] [--source ...]   doctor   sessions [N]   watch [on|off]   statusline [on|off]   help',
+  '  update --check   read-only version check    update   native plugin update (reload afterward)',
   '  enable_telemetry | disable_telemetry   change usage telemetry consent    telemetry   check delivery',
   '  telemetry_destination [URL [--use-launch-token] | default]   show or save the collector',
   '  attribution [--reference-root DIR] [--agent A] [--instance I]   collect <cursor|opencode|codearts> ...',
-  '  help   this table',
 ].join('\n')
 
 // A function declaration, as every handler is: validate follows `$` across an

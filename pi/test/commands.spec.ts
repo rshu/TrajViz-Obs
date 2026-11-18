@@ -8,7 +8,7 @@ import path from 'node:path'
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent'
 import type { Backend, Source } from '../src/backend.js'
 import { runCommand, type Actions } from '../src/commands.js'
-import { Usage, usageFeature } from '../src/telemetry.js'
+import { Usage, usageFeature, PLUGIN_VERSION } from '../src/telemetry.js'
 import { SNAPSHOT } from '../../hooks/testdata/snapshot.js'
 
 let root: string
@@ -360,7 +360,7 @@ describe('Pi telemetry preferences and delivery', () => {
       const events = batches.flatMap(batch => batch.events).filter(event => event.feature === 'view')
       expect(new Set(events.map(event => event.outcome))).toEqual(new Set(['success', 'error', 'cancelled', 'empty', 'rejected', 'confirmation']))
       expect(batches.every(batch => batch.adapter === 'pi')).toBe(true)
-      expect(events.every(event => event.version === '0.1.0' && event.agent_version === '1.5.2')).toBe(true)
+      expect(events.every(event => event.version === PLUGIN_VERSION && event.agent_version === '1.5.2')).toBe(true)
       expect(await usage.control('off', signal())).toContain('Off')
       const delivered = batches.length
       usage.report({ feature: 'overview', surface: 'terminal', outcome: 'success', durationMs: 1 })

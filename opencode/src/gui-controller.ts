@@ -6,6 +6,7 @@ import { analyzeSelection, parseArgs, passArgs, quoteOption } from './shared/arg
 import { isSessionlessCommand, validateArguments } from './command-args.js'
 import { usageFeature } from './usage-features.js'
 import { commandText, errorMessage as message, safeText, TABS } from './tui-model.js'
+import { updatePlugin } from './update.js'
 import type { Snapshot, EmptySnapshot } from './types.js'
 
 /** An origin never changes servers while an operation is in flight. */
@@ -13,7 +14,9 @@ export type GuiOrigin = {
   key: string
   id: string
   client(): OpenCodeClient
+  connected?(): boolean
   location(): LocationRef | undefined
+  server?: string
 }
 export type GuiTarget = { id: string; selector?: string; captureSessionID?: string }
 export type GuiJob = { id: string; args: string; origin: GuiOrigin; target?: GuiTarget; text: string; pending: boolean; url?: string; path?: string; data?: unknown; snapshot?: Snapshot | EmptySnapshot }
@@ -36,7 +39,7 @@ const rpcUnavailable = (error: unknown): boolean => typeof error === 'object' &&
 export class GuiController {
   readonly views = new Map<string, GuiView>()
   readonly jobs = new Map<string, GuiJob>()
-  private readonly active = new Map<string, { controller: AbortController; client: OpenCodeClient; location?: LocationRef }>()
+  private readonly active = new Map<string, { controller: AbortController; client: OpenCodeClient; location?: LocationRef; nativeUpdate?: true }>()
   private readonly refreshes = new Map<string, AbortController>()
   private readonly generations = new Map<string, number>()
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -171,7 +174,7 @@ export class GuiController {
     }
     const id = crypto.randomUUID(), controller = this.controller(), client = origin.client()
     const job: GuiJob = { id, args, origin, text: `Running /obs ${args || 'overview'}…`, pending: true }
-    this.jobs.set(id, job); this.active.set(id, { controller, client }); view.running = id; view.latest = id
+    this.jobs.set(id, job); this.active.set(id, { controller, client, ...(parseArgs(args).sub === 'update' ? { nativeUpdate: true as const } : {}) }); view.running = id; view.latest = id
     if (!args) delete view.selected
     this.hooks.changed()
     return { id, done: this.execute(job, controller, client, model, paneSnapshot) }
@@ -191,6 +194,17 @@ export class GuiController {
       const sessionless = isSessionlessCommand(parsed)
       const active = this.active.get(job.id)
       if (active) active.location = location
+      if (parsed.sub === 'update') {
+        if (active) active.nativeUpdate = true
+        const result = await updatePlugin(client, {
+          check: parsed.flags.check === true, location, signal, server: origin.server,
+          current: () => !this.closed && origin.client() === client && origin.connected?.() !== false,
+          progress: text => { if (!this.closed && origin.client() === client) { job.text = display(text); this.hooks.changed() } },
+          confirm: question => this.hooks.confirm({ ...question, id: job.id }, signal),
+        })
+        if (!this.closed) job.text = display(result.text)
+        return
+      }
       if (!sessionless) {
         const analyze = parsed.sub === 'analyze' ? analyzeSelection(args) : undefined
         const selector = analyze ? analyze.session : parsed.flags.session, captureID = analyze ? analyze.captureSessionId : parsed.flags['session-id']
@@ -292,13 +306,21 @@ export class GuiController {
     const id = this.view(origin).running, job = id ? this.active.get(id) : undefined
     if (!id || !job) { this.hooks.notice('No obs command is running.'); return }
     job.controller.abort()
-    this.cancelRemote(job.client, id, job.location)
+    if (!job.nativeUpdate) this.cancelRemote(job.client, id, job.location)
+  }
+  cancelStaleUpdates(reconnected?: OpenCodeClient): void {
+    for (const [id, active] of this.active) {
+      if (!active.nativeUpdate) continue
+      const origin = this.jobs.get(id)?.origin
+      try { if (reconnected === active.client || origin && (origin.client() !== active.client || origin.connected?.() === false)) active.controller.abort() }
+      catch { active.controller.abort() }
+    }
   }
   dispose() {
     this.closed = true
     for (const timer of this.timers.values()) clearTimeout(timer)
     for (const controller of this.refreshes.values()) controller.abort()
-    for (const [id, job] of this.active) { job.controller.abort(); this.cancelRemote(job.client, id, job.location) }
+    for (const [id, job] of this.active) { job.controller.abort(); if (!job.nativeUpdate) this.cancelRemote(job.client, id, job.location) }
     this.timers.clear(); this.refreshes.clear(); this.active.clear()
   }
 }

@@ -91,12 +91,12 @@ export const SUBCOMMANDS: readonly string[] = [
   'dashboard', 'converge',
   'compare', 'scorecard', 'converge-cli', 'labels',
   'analyze', 'fixes', 'label',
-  'attribution', 'collect', 'sessions', 'watch', 'statusline', 'setup', 'doctor', 'telemetry', 'telemetry_destination', 'help',
+  'attribution', 'collect', 'sessions', 'watch', 'statusline', 'setup', 'doctor', 'update', 'telemetry', 'telemetry_destination', 'help',
 ]
 
 const DEFAULT_SUB = 'overview'
 /** Flags that never consume the next positional, regardless of their order. */
-export const BOOLEAN_FLAGS: readonly string[] = ['with-trajectory', 'views-only', 'dark', 'inline-plotly', 'json', 'fuzzy-commands', 'reverse', 'no-self', 'assistant-only', 'use-launch-token']
+export const BOOLEAN_FLAGS: readonly string[] = ['with-trajectory', 'views-only', 'dark', 'inline-plotly', 'json', 'fuzzy-commands', 'reverse', 'no-self', 'assistant-only', 'use-launch-token', 'check']
 
 export const DASHBOARD_PORT_USAGE = 'Usage: /obs dashboard port [auto|default|1–65535]'
 export const TELEMETRY_DESTINATION_USAGE = 'Usage: /obs telemetry_destination [URL [--use-launch-token] | default]'

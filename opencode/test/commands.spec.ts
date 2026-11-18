@@ -38,6 +38,14 @@ function fixture(responses: Record<string, unknown> = {}, options: Options = {})
 }
 
 describe('OpenCode obs command contract', () => {
+  test('server command RPC cannot update packages or invoke diagnostic work', async () => {
+    for (const args of ['update', 'update --check']) {
+      const h = fixture()
+      expect((await h.execute(args)).text).toContain('OpenCode terminal or Desktop UI')
+      expect(h.calls).toEqual([]); expect(h.selections).toEqual([]); expect(h.served).toEqual([])
+    }
+  })
+
   test('rejects ignored flags, values, extra positionals and malformed paging before work', async () => {
     for (const args of ['overview extra', 'view health --unused', 'json --view', 'bundle -o', 'pane close extra', 'watch on extra', 'statusline off --session s', 'cancel now', 'view health --json=false', 'view health --limit 501', 'view health --offset -1', 'sessions 0', 'dashboard --port 0', 'dashboard stop --port 7860', 'converge --data-root', 'label --model',
       'dashboard port 0', 'dashboard port 65536', 'dashboard port auto --port 9000', 'dashboard port default --session ses_other', 'dashboard port auto extra', 'telemetry_destination --use-launch-token', 'telemetry_destination default --use-launch-token', 'telemetry_destination https://collector.example --use-launch-token=false', 'telemetry_destination https://collector.example extra', 'telemetry_destination https://collector.example --session ses_other', 'telemetry destination']) {

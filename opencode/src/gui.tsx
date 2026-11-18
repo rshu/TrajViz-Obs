@@ -1,6 +1,6 @@
 import { Command, ComposerPill, MenuItem, Panel, Plugin, Store, Style, createKeyed, type SessionRef, type PanelProps } from '@opencode/plugin/gui'
 import { Schema } from 'effect'
-import { ErrorBoundary, For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
+import { ErrorBoundary, For, Show, createEffect, createRoot, createSignal, getOwner, onCleanup, onMount, runWithOwner } from 'solid-js'
 import { DesktopCharts } from './gui-charts.js'
 import { captureSession } from './collect.js'
 import { GuiController, type GuiOrigin } from './gui-controller.js'
@@ -39,15 +39,31 @@ const stamp = (value: string) => { const date = new Date(value); return Number.i
 
 /** Native Desktop commands do not submit prompts or alter the conversation. */
 export function setup(ctx: GuiContext): () => void {
+  const confirmationOwner = getOwner()
+  const confirm = (plan: { title: string; message: string }, signal: AbortSignal): Promise<boolean> => new Promise(resolve => {
+    if (signal.aborted) { resolve(false); return }
+    runWithOwner(confirmationOwner, () => createRoot(dispose => {
+      let settled = false
+      const finish = (accepted: boolean) => {
+        if (settled) return
+        settled = true; signal.removeEventListener('abort', abort); resolve(accepted); dispose()
+      }
+      const abort = () => finish(false)
+      onCleanup(() => { signal.removeEventListener('abort', abort); if (!settled) { settled = true; resolve(false) } })
+      signal.addEventListener('abort', abort, { once: true })
+      try { void ctx.dialogs.confirm({ title: safeText(plan.title), description: safeText(plan.message), confirm: plan.title === 'Update TrajViz Obs?' ? 'Update' : 'Run', cancel: 'Cancel' }).then(finish, () => finish(false)) }
+      catch { finish(false) }
+    }))
+  })
   const [revision, setRevision] = createSignal(0)
   const settings = () => ({ watch: ctx.stores.settings.value.watch ?? (ctx.options.watch !== false), statusline: ctx.stores.settings.value.statusline ?? (ctx.options.statusline === true) })
   const notice = (text: string, error = false) => { ctx.toast.show({ title: 'TrajViz Obs', description: safeText(text), variant: error ? 'error' : 'default' }) }
   const controller = new GuiController({
     changed: () => setRevision(value => value + 1), notice,
-    confirm: (plan, signal) => signal.aborted ? Promise.resolve(false) : ctx.dialogs.confirm({ title: safeText(plan.title), description: safeText(plan.message), confirm: 'Run', cancel: 'Cancel' }),
+    confirm,
   }, ctx.signal)
   const key = `${ctx.id}:${PANEL}`
-  const origin = (session: SessionRef): GuiOrigin => ({ key: session.key, id: session.id, client: () => session.server.client, location: () => session.location })
+  const origin = (session: SessionRef): GuiOrigin => ({ key: session.key, id: session.id, client: () => session.server.client, connected: () => session.server.connected, location: () => session.location, server: session.server.name })
   const read = <T,>(get: () => T): T => { revision(); return get() }
   const active = () => ctx.sessions.current()
   const currentOrigin = async (): Promise<GuiOrigin> => {
@@ -55,7 +71,7 @@ export function setup(ctx: GuiContext): () => void {
     if (session) return origin(session)
     const server = ctx.servers.list().map(id => ctx.servers.get(id)).find(server => server?.builtin)
     if (!server) throw new Error('Open a project or connect a server first.')
-    return { key: `${server.id}\nhome`, id: 'home', client: () => server.client, location: () => undefined }
+    return { key: `${server.id}\nhome`, id: 'home', client: () => server.client, connected: () => server.connected, location: () => undefined, server: server.name }
   }
   const openPane = (session?: SessionRef) => {
     const target = session ?? active()
@@ -237,6 +253,7 @@ export function setup(ctx: GuiContext): () => void {
   ctx.add(ComposerPill, { id: 'status', show: input => settings().statusline ? { label: read(() => statusText(controller.snapshot(origin(input.session)))), title: 'TrajViz Obs', icon: 'window-analytics', run: () => openPane(input.session) } : undefined })
 
   // Keep a responder on every authenticated host, including while the pane/watch is closed.
+  createEffect(() => { revision(); controller.cancelStaleUpdates() })
   createKeyed(() => ctx.servers.list().map(id => ctx.servers.get(id)).filter((server): server is NonNullable<typeof server> => !!server).map(server => ({ server, client: server.client })), hosts => {
     for (const { server, client } of hosts) {
       const rpc = client.rpc(Obs)
@@ -265,6 +282,7 @@ export function setup(ctx: GuiContext): () => void {
       })
       const stopNative = server.data.listen(({ details }) => {
         if (details.type === 'server.connected') {
+          controller.cancelStaleUpdates(client)
           controller.resetInteractionConsent(client)
         } else if (/^session\.(?:step\.|execution\.|compaction\.|tool\.|usage\.|revert\.|deleted|moved)/.test(details.type)) {
           const data = details.data as { sessionID?: unknown }

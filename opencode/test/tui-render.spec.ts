@@ -2,6 +2,55 @@ import { expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
+test('native update confirmation keeps its actions visible while long server details scroll', () => {
+  const code = `
+    import { testRender } from '@opentui/solid'
+    import { createStore, produce } from 'solid-js/store'
+    import { setup } from './src/tui.tsx'
+    const noop=()=>{}, bindings=new Map(), frames=[]
+    let renderDialog, closeDialog, confirmationLayer
+    const plugin={id:'trajviz-obs',source:{type:'package',target:'trajviz-obs-opencode@latest',version:'controlled',outdated:true},features:{server:true,tui:true},state:{status:'active'}}
+    const storage=(_key,{initial})=>{const [value,set]=createStore(initial);return[value,change=>set(produce(change))]}
+    const context={
+      options:{watch:false,statusline:false},location:{directory:'/a/long/remote/project/'.repeat(12)},storage:{store:storage,memory:storage},
+      client:{rpc:()=>({events:{on:()=>noop}}),plugin:{list:async()=>({data:[plugin]}),check:async()=>({data:[plugin]}),update:async()=>{throw new Error('Render must not update a package')}},server:{info:async()=>({version:'2.2.5',urls:['https://controlled.example:4096']})}},
+      data:{listen:()=>noop,session:{get:()=>undefined},location:{default:()=>undefined}},theme:{text:{base:'white',muted:'gray'}},
+      keymap:{layer:factory=>{const layer=factory();for(const command of layer.commands??[])if(command.id)bindings.set(command.id,command);if(layer.commands?.some(command=>command.id==='trajviz-obs.update.accept'))confirmationLayer=layer}},
+      ui:{router:{current:()=>({type:'home'})},panel:{current:()=>undefined,close:noop},slot:()=>noop,toast:{show:noop},dialog:{set:noop,
+        show:(render,onClose)=>{const prior=closeDialog;renderDialog=render;closeDialog=onClose;prior?.()},
+        clear:()=>{const prior=closeDialog;closeDialog=undefined;prior?.()},
+      }},
+    }
+    const cleanup=setup(context)
+    const running=bindings.get('trajviz-obs.command').run('update')
+    for(let i=0;i<100&&!confirmationLayer?.enabled();i++)await Bun.sleep(1)
+    if(!confirmationLayer?.enabled())throw new Error('No native confirmation opened')
+    try{
+      for(const width of [32,60,110])for(const height of [18,28]){
+        const view=await testRender(()=>renderDialog(),{width,height,screenMode:'alternate-screen',consoleMode:'disabled'})
+        try{
+          await view.renderOnce();await view.flush()
+          const first=view.captureCharFrame(),body=view.renderer.root.getChildren()[0],scroll=body.getChildren().find(child=>child.type==='scrollbox'||typeof child.scrollTo==='function')
+          if(!scroll)throw new Error('Confirmation details need a scroll area')
+          scroll.scrollTo(scroll.scrollHeight);await view.renderOnce();await view.flush()
+          frames.push({width,height,first,end:view.captureCharFrame(),priority:confirmationLayer.priority})
+        }finally{await view.dispose()}
+      }
+    }finally{cleanup();await running}
+    console.log(JSON.stringify(frames))
+  `
+  const cwd = fileURLToPath(new URL('..', import.meta.url))
+  const frames = JSON.parse(execFileSync(process.execPath, ['--preload', '@opentui/solid/preload', '--eval', code], { cwd, encoding: 'utf8', timeout: 15_000 })) as { width: number; height: number; first: string; end: string; priority: number }[]
+  expect(frames).toHaveLength(6)
+  for (const frame of frames) {
+    expect(frame.priority).toBeGreaterThan(0)
+    expect(frame.first).toContain('Update TrajViz Obs?')
+    expect(frame.first).toContain('[u Update]'); expect(frame.first).toContain('[x Cancel]')
+    expect(frame.end).toContain('[u Update]'); expect(frame.end).toContain('[x Cancel]')
+    expect(frame.end).toContain('interrupted.')
+  }
+})
+
 test('native wrapped pane navigation keeps every control above the session body', () => {
   // Use the production Solid transform in a fresh process, so logic-only tests
   // cannot cache a JSX module before the renderer's compiler is installed.

@@ -1,5 +1,11 @@
 import { expect, test } from 'claude-code/testing'
 import { analyzeSelection, argvValue, parseArgs, quoteOption, selectionError, suggest, tokenize, valueArgv } from './lib/args'
+import { commandFeature } from './lib/telemetry'
+
+test('plugin update administration is excluded from usage events', () => {
+  expect(commandFeature(parseArgs('update'))).toBeUndefined()
+  expect(commandFeature(parseArgs('update --check'))).toBeUndefined()
+})
 
 test('parseArgs splits sub, flags, k=v and passthrough', async () => {
   expect(parseArgs('view tool_usage agent=main --limit 10 --json -- --x')).toEqual({
@@ -16,6 +22,7 @@ test('parseArgs splits sub, flags, k=v and passthrough', async () => {
   expect(parseArgs('view --json steps')).toEqual({ sub: 'view', positional: ['steps'], flags: { json: true }, passthrough: [] })
   expect(parseArgs('scorecard --no-self def --fuzzy-commands ghi').positional).toEqual(['def', 'ghi'])
   expect(parseArgs('label --assistant-only --max-steps 2').flags).toEqual({ 'assistant-only': true, 'max-steps': '2' })
+  expect(parseArgs('update --check extra')).toEqual({ sub: 'update', positional: ['extra'], flags: { check: true }, passthrough: [] })
   expect(tokenize(`analyze "why so slow?" it's`)).toEqual(['analyze', 'why so slow?', 'its'])
   expect(tokenize(`a 'b c' d\\ e`)).toEqual(['a', 'b c', 'd e'])
   expect(suggest('isues')).toBe('issues')

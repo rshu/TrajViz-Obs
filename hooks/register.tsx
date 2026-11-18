@@ -24,7 +24,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'obs',
       description: "Visualize and diagnose this session's trajectory with TrajViz",
-      argumentHint: '[overview|dashboard|pane|issues|health|analyze|fixes|json|help] [--session id]',
+      argumentHint: '[overview|dashboard|pane|issues|health|analyze|fixes|json|update|help] [--session id]',
       immediate: true,
     })
     // --tools '' and some hosts deliberately disable model tools. The slash

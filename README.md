@@ -27,7 +27,16 @@ Confirm the marketplace and installation scope, then restart Claude Code or run 
 
 `/obs` prepares a private TrajViz runtime on first use; `/obs dashboard` adds its dashboard dependencies automatically. First-time setup requires network access. You can also run `/obs setup` before a task, then `/obs doctor` to check setup.
 
-To update:
+To check or update from a running Claude Code session:
+
+```text
+/obs update --check
+/obs update
+```
+
+The check is read-only and follows the configured marketplace ref. Offline checks identify cached metadata. The updater uses Claude Code's native commands for this installation and scope; local checkouts show manual instructions. Run `/reload-plugins` or restart Claude Code after an update.
+
+If `/obs update` is unavailable, update from your shell:
 
 ```sh
 claude plugin marketplace update trajviz-obs
@@ -54,6 +63,7 @@ In Claude Code, run `/obs pane` to open or focus the pane. With the pane focused
 | Inspect recorded workflow evidence | `/obs attribution` |
 | Open or close the live pane | `/obs pane`, `/obs pane close` |
 | Open the browser dashboard | `/obs dashboard` |
+| Check or update the plugin | `/obs update --check`, `/obs update` |
 | Export data | `/obs json`, `/obs bundle`, `/obs dashboard --html session.html` |
 | Compare runs | `/obs compare <session-id>`, `/obs converge` |
 | Ask for analysis or fixes | `/obs analyze [question]`, `/obs fixes` |

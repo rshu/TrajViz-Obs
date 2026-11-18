@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `/obs update --check` and `/obs update` for host-managed plugin installations, with manual update instructions for local checkouts.
+- Preserve configured pins, installation scope, project trust, and telemetry consent during plugin updates.
 - Add the Pi 0.1.0 extension, tested with Pi 1.5.2: native commands, live charts, AI analysis, labeling, and exports.
 - Follow Pi's active session branch and preserve native durations, cost provenance, pending tools, and nested execution evidence.
 - Include Pi in opt-in usage telemetry and reports while retaining older report compatibility.

@@ -45,7 +45,9 @@ For a local checkout, use `pi install /absolute/path/to/TrajViz-Obs`. Keep the c
 
 For project installations, run update and removal commands from that project after approving its settings in Pi.
 
-To update a Git installation, run `pi update git:github.com/rshu/TrajViz-Obs`, then restart Pi or run `/reload`. For a local checkout, run `git pull --ff-only` in the checkout instead.
+Run `/obs update --check` to inspect this plugin’s installation and available Git revision. `/obs update` updates a clean Pi-managed Git installation and reloads its extensions if Pi is still idle. If new work starts during the update, run `/reload` after it finishes. Wait for Pi to finish its task before updating. Explicit refs, local changes, and ambiguous user/project registrations require manual updates. Local checkouts receive manual pull and reload instructions. Failed remote checks show the available revision as unknown.
+
+From a terminal, run `pi update git:github.com/rshu/TrajViz-Obs`, then restart Pi or run `/reload`. For a local checkout, run `git pull --ff-only` in the checkout instead.
 
 To remove the Git installation, run `pi remove git:github.com/rshu/TrajViz-Obs`; for a local checkout, pass its path instead. Add `--local` when removing a project installation, then restart Pi or run `/reload`.
 
@@ -65,6 +67,7 @@ To remove the Git installation, run `pi remove git:github.com/rshu/TrajViz-Obs`;
 | Label steps | `/obs label --max-steps 20` |
 | List this project's saved sessions | `/obs sessions 20` |
 | Check setup | `/obs doctor`, `/obs setup` |
+| Check or install plugin updates | `/obs update --check`, `/obs update` |
 | List every command and option | `/obs help` |
 
 The overlay supports **1–7** or **← →** to switch tabs, **↑ ↓ / Page Up / Page Down** to scroll, **r** to refresh, **d** to open the dashboard, and **w** to toggle watch. Escape also cancels a running Obs command's progress panel. `/obs cancel` cancels an active command through an RPC client.
