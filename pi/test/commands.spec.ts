@@ -339,14 +339,24 @@ describe('Pi telemetry preferences and delivery', () => {
       expect(usage.dashboardArgs()).toContain('pi')
       usage.report({ feature: 'activation', surface: 'terminal', outcome: 'success', durationMs: 0 })
       await usage.flush()
-      const negotiated = Date.now() + 2000
-      while (!batches.length && Date.now() < negotiated) await new Promise(resolve => setTimeout(resolve, 25))
-      // The first accepted request negotiates agent-version support with the collector.
-      while ((await usage.control('status', signal())).includes('Last successful upload · None recorded') && Date.now() < negotiated) await new Promise(resolve => setTimeout(resolve, 25))
-      for (const outcome of ['success', 'error', 'cancelled', 'empty', 'rejected', 'confirmation'] as const) usage.report({ feature: 'view', surface: 'terminal', outcome, durationMs: 125 })
-      await usage.flush()
-      const deadline = Date.now() + 8000
-      while (batches.flatMap(batch => batch.events).filter(event => event.feature === 'view').length < 6 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25))
+      const waitForDelivery = async (count: number) => {
+        const deadline = Date.now() + 8000
+        while (Date.now() < deadline) {
+          const received = batches.flatMap(batch => batch.events).filter(event => event.feature === 'view').length
+          if (batches.length && received >= count && (await usage.control('status', signal())).includes('Queued events · 0 / 512')) return
+          await new Promise(resolve => setTimeout(resolve, 25))
+        }
+        throw new Error(`Collector delivery was not acknowledged for ${count} view events`)
+      }
+      // Receipt precedes the durable ACK. Wait for both before starting the next
+      // bounded sender, including the activation that negotiates agent-version support.
+      await waitForDelivery(0)
+      let count = 0
+      for (const outcome of ['success', 'error', 'cancelled', 'empty', 'rejected', 'confirmation'] as const) {
+        usage.report({ feature: 'view', surface: 'terminal', outcome, durationMs: 125 })
+        await usage.flush()
+        await waitForDelivery(++count)
+      }
       const events = batches.flatMap(batch => batch.events).filter(event => event.feature === 'view')
       expect(new Set(events.map(event => event.outcome))).toEqual(new Set(['success', 'error', 'cancelled', 'empty', 'rejected', 'confirmation']))
       expect(batches.every(batch => batch.adapter === 'pi')).toBe(true)
@@ -361,7 +371,7 @@ describe('Pi telemetry preferences and delivery', () => {
       await new Promise<void>(resolve => server.close(() => resolve()))
       for (const name of names) if (old[name] === undefined) delete process.env[name]; else process.env[name] = old[name]
     }
-  }, 15000)
+  }, 30000)
 })
 
 describe('Pi commands through the real shared bridge', () => {
