@@ -45,9 +45,9 @@ For a local checkout, use `pi install /absolute/path/to/TrajViz-Obs`. Keep the c
 
 For project installations, run update and removal commands from that project after approving its settings in Pi.
 
-Run `/obs update --check` to inspect this plugin’s installation and available Git revision. `/obs update` updates a clean Pi-managed Git installation and reloads its extensions if Pi is still idle. If new work starts during the update, run `/reload` after it finishes. Wait for Pi to finish its task before updating. Explicit refs, local changes, and ambiguous user/project registrations require manual updates. Local checkouts receive manual pull and reload instructions. Failed remote checks show the available revision as unknown.
+Run `/obs update --check` to inspect this plugin’s installation and available Git revision. Wait for Pi to finish its task before running `/obs update`. It updates a clean Pi-managed Git installation and reloads Pi’s extensions if Pi is still idle. If new work starts during the update, run `/reload` after it finishes. Explicit refs, local changes, and ambiguous user/project registrations require manual updates. Local checkouts receive manual pull and reload instructions. Failed remote checks show the available revision as unknown.
 
-From a terminal, run `pi update git:github.com/rshu/TrajViz-Obs`, then restart Pi or run `/reload`. For a local checkout, run `git pull --ff-only` in the checkout instead.
+From a terminal, run `pi update git:github.com/rshu/TrajViz-Obs`, then restart Pi or run `/reload`. Use the same terminal command to repair an incomplete update, then restart Pi. For a local checkout, run `git pull --ff-only` in the checkout instead.
 
 To remove the Git installation, run `pi remove git:github.com/rshu/TrajViz-Obs`; for a local checkout, pass its path instead. Add `--local` when removing a project installation, then restart Pi or run `/reload`.
 
@@ -70,7 +70,7 @@ To remove the Git installation, run `pi remove git:github.com/rshu/TrajViz-Obs`;
 | Check or install plugin updates | `/obs update --check`, `/obs update` |
 | List every command and option | `/obs help` |
 
-The overlay supports **1–7** or **← →** to switch tabs, **↑ ↓ / Page Up / Page Down** to scroll, **r** to refresh, **d** to open the dashboard, and **w** to toggle watch. Escape also cancels a running Obs command's progress panel. `/obs cancel` cancels an active command through an RPC client.
+The overlay supports **1–7** or **← →** to switch tabs, **↑ ↓ / Page Up / Page Down** to scroll, **r** to refresh, **d** to open the dashboard, and **w** to toggle watch. Escape cancels work while its progress panel is open; `/obs cancel` does the same through an RPC client. Once a plugin update starts applying, let it finish.
 
 Watch refreshes the widget and overlay after turns and tree navigation. `/obs watch off` stops automatic refreshes. `/obs statusline off` removes the footer summary. The browser dashboard loads the latest private capture when you press **Load** or reload its page; rerunning `/obs dashboard` also loads the latest capture.
 
@@ -114,7 +114,7 @@ Usage telemetry is off by default. `/obs enable_telemetry` opts in, `/obs disabl
 - Pi's terminal overlay uses Pi's native UI APIs. RPC clients receive command results as notifications. Print and JSON modes do not have a slash-command result UI; use interactive Pi or an RPC client for `/obs`.
 - Pi subagents are implemented by extensions. Nested tool records are preserved, but child processes are not presented as confirmed subagents without explicit relationships. A fork is session ancestry.
 - Timing uses Pi's native durations when available and recorded timestamps otherwise. Missing evidence appears as unknown. Cost estimates supplied by Pi depend on its configured model pricing.
-- Automatic captures are capped at 64 MiB. Export a large native session and inspect it manually when needed. The browser dashboard shows at most 2,000 steps. JSON and bundle exports retain the complete parsed trajectory. Keep exports private when they contain project data.
+- Automatic captures are capped at 64 MiB. Inspect larger saved sessions with `--session <path-to-session.jsonl>`. The browser dashboard shows at most 2,000 steps. JSON and bundle exports retain the complete parsed trajectory. Keep exports private when they contain project data.
 - Real-session validation covers macOS. Linux and Windows need platform-specific runtime testing.
 
 ## Development

@@ -27,6 +27,8 @@ Confirm the marketplace and installation scope, then restart Claude Code or run 
 
 `/obs` prepares a private TrajViz runtime on first use; `/obs dashboard` adds its dashboard dependencies automatically. First-time setup requires network access. You can also run `/obs setup` before a task, then `/obs doctor` to check setup.
 
+### Update or remove
+
 To check or update from a running Claude Code session:
 
 ```text
@@ -34,7 +36,7 @@ To check or update from a running Claude Code session:
 /obs update
 ```
 
-The check is read-only and follows the configured marketplace ref. Offline checks identify cached metadata. The updater uses Claude Code's native commands for this installation and scope; local checkouts show manual instructions. Run `/reload-plugins` or restart Claude Code after an update.
+The check is read-only and follows the configured marketplace ref; cached results are marked when the remote version is unavailable. `/obs update` uses Claude Code's native updater for the loaded installation and scope, preserving its ref. Local checkouts receive manual instructions; administrator-managed installations require your administrator. Run `/reload-plugins` or restart Claude Code after an update.
 
 If `/obs update` is unavailable, update from your shell:
 
@@ -43,7 +45,7 @@ claude plugin marketplace update trajviz-obs
 claude plugin update trajviz-obs@trajviz-obs
 ```
 
-Run the update from the project where you use the plugin. It selects that project's most specific installation; add `--scope user`, `--scope project`, or `--scope local` to choose explicitly. Restart Claude Code or run `/reload-plugins` after updating.
+Run the shell update from the project where you use the plugin. It selects that project's most specific installation; add `--scope user`, `--scope project`, or `--scope local` to choose explicitly.
 
 To remove a user installation, run `claude plugin uninstall trajviz-obs@trajviz-obs --scope user`, then reload plugins. Use `--scope project` or `--scope local` if you installed it in that scope.
 
@@ -179,7 +181,9 @@ Events contain allowlisted feature names, outcomes, coarse timing, plugin and co
 
 ## Troubleshooting and limits
 
-Run `/obs doctor` to check setup or `/obs setup` to install dependencies. If `/obs` is missing, check the Claude Code debug log for disabled function hooks or an API mismatch. In OpenCode, follow the adapter’s restart and verification steps. [OpenCode setup](opencode/README.md#3-restart-and-verify) If the dashboard is empty, export `/obs bundle` and load its ZIP manually. Over SSH, forward the displayed port; set `openBrowser=false` to disable browser opening.
+Run `/obs doctor` to check setup or `/obs setup` to install dependencies. If `/obs` is missing in Claude Code, check its debug log for disabled function hooks or an API mismatch. For the other hosts, follow the [OpenCode restart and verification steps](opencode/README.md#3-restart-and-verify) or [Pi installation steps](pi/README.md#install).
+
+If the dashboard is empty, export `/obs bundle` and load its ZIP manually. Over SSH, forward the displayed port; set `openBrowser=false` to disable browser opening.
 
 - Timing uses native host durations when available and recorded timestamps otherwise; workflow-spawned work and subagent finish times may be incomplete.
 - Operation-based OTLP captures support observed metrics and inspection; transcript alignment and reference-based capability diagnosis require supported native transcripts.
@@ -201,6 +205,6 @@ uv sync --project bridge --locked --extra dev
 bridge/.venv/bin/python scripts/check.py
 ```
 
-For Pi adapter checks, see [Pi development](pi/README.md#development). These checks make no external model calls. For real-session testing, see `python3 scripts/e2e.py --help`; it uses your Claude Code account and incurs model usage. Keep test output outside the repository.
+For adapter checks, see [OpenCode development](opencode/README.md#development) or [Pi development](pi/README.md#development). These checks make no external model calls. For real-session testing, see `python3 scripts/e2e.py --help`; it uses your Claude Code account and incurs model usage. Keep test output outside the repository.
 
 MIT licensed. TrajViz is a separate MIT-licensed project; this plugin is not an Anthropic product.
