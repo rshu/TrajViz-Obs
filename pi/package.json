@@ -1,0 +1,26 @@
+{
+  "name": "trajviz-obs-pi",
+  "version": "0.1.0",
+  "description": "TrajViz session observability for Pi",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package", "pi", "observability", "trajectory"],
+  "repository": { "type": "git", "url": "https://github.com/rshu/TrajViz-Obs.git", "directory": "pi" },
+  "pi": { "extensions": ["./dist/trajviz-obs.js"] },
+  "files": ["dist/trajviz-obs.js", "runtime/bridge/**/*.py", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "node scripts/package.mjs && bun build src/index.ts --target=node --external '@earendil-works/*' --outfile dist/trajviz-obs.js",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test ./test",
+    "prepack": "bun run build"
+  },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "@earendil-works/pi-tui": "*" },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@earendil-works/pi-tui": "1.5.2",
+    "@types/bun": "1.3.1",
+    "@types/node": "22.18.6",
+    "typescript": "5.9.3"
+  },
+  "engines": { "node": ">=22.19.0" }
+}

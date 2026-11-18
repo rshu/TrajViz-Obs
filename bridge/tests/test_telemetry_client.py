@@ -73,7 +73,7 @@ def test_allowed_endpoints_keep_their_exact_configured_scope(url):
     assert settings.configuration == "ready" and settings.endpoint == url
 
 
-@pytest.mark.parametrize("adapter", ["claude-code", "opencode"])
+@pytest.mark.parametrize("adapter", ["claude-code", "opencode", "pi"])
 def test_consent_controls_the_local_fallback_without_sending_a_remote_token(opted_in, monkeypatch, capsys, adapter):
     monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
     monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY_URL")
@@ -194,11 +194,13 @@ def test_destination_accepts_base_url_and_saves_exact_event_endpoint(base, opted
     assert json.loads(marker.read_text())["url"] == endpoint
 
 
-def test_destination_switch_never_forwards_an_unbound_launch_token(opted_in, monkeypatch, capsys):
-    adapter = ["--adapter", "claude-code"]
+@pytest.mark.parametrize("adapter_name", ["claude-code", "pi"])
+def test_destination_switch_never_forwards_an_unbound_launch_token(opted_in, monkeypatch, capsys, adapter_name):
+    adapter = ["--adapter", adapter_name]
+    command = [*ARGV, *adapter]
     base = "https://collector.example.test"
     saved = f"{base}/v1/events"
-    marker = opted_in / "claude-code-destination.json"
+    marker = opted_in / f"{adapter_name}-destination.json"
     attempts = []
 
     def send(endpoint, _payload, *, token):
@@ -207,26 +209,26 @@ def test_destination_switch_never_forwards_an_unbound_launch_token(opted_in, mon
 
     monkeypatch.setattr(client, "_send", send)
     monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", TOKEN)
-    assert client.main(ARGV) == 0
+    assert client.main(command) == 0
     assert client.main(["--set-destination", base, *adapter]) == 0
     status = json.loads(capsys.readouterr().out)
     assert status["credential_configured"] is False
-    assert client.main(ARGV) == 0
+    assert client.main(command) == 0
     assert attempts == [(ENDPOINT, TOKEN), (saved, None)]
 
     assert client.main(["--set-destination", saved, "--use-launch-token", *adapter]) == 0
     output = capsys.readouterr().out
     assert json.loads(output)["credential_configured"] is True
     assert TOKEN not in output and TOKEN not in marker.read_text()
-    assert client.main(ARGV) == 0
+    assert client.main(command) == 0
     assert attempts[-1] == (saved, TOKEN)
 
     monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", ROTATED)
-    assert client.main(ARGV) == 0
+    assert client.main(command) == 0
     assert attempts == [(ENDPOINT, TOKEN), (saved, None), (saved, TOKEN)]
-    assert client.delivery_status(client.os.environ, "claude-code")["configuration"] == "invalid_token"
+    assert client.delivery_status(client.os.environ, adapter_name)["configuration"] == "invalid_token"
     monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_URL", saved)
-    assert client.main(ARGV) == 0
+    assert client.main(command) == 0
     assert attempts[-1] == (saved, ROTATED)
 
 
@@ -792,7 +794,7 @@ def test_status_reads_legacy_queue_without_migrating_it(opted_in, monkeypatch):
         assert database.execute("SELECT rejected FROM sender_health").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("adapter", ["claude-code", "opencode"])
+@pytest.mark.parametrize("adapter", ["claude-code", "opencode", "pi"])
 def test_collector_negotiation_preserves_legacy_queue_and_adds_host_version(opted_in, monkeypatch, adapter):
     sent = []
 

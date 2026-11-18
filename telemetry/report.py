@@ -10,7 +10,7 @@ from bridge.telemetry_protocol import ADAPTERS, DURATION_BUCKETS, valid_agent_ve
 from .collector import DEFAULT_RETENTION_DAYS, database_connection, retention_cutoff
 
 REPORT_FORMAT = "trajviz-obs-usage-report"
-REPORT_SCHEMA_VERSION = 3
+REPORT_SCHEMA_VERSION = 4
 _EXECUTED_OUTCOMES = ("success", "error")
 _COMPLETED_OUTCOMES = (*_EXECUTED_OUTCOMES, "cancelled")
 
@@ -117,6 +117,8 @@ def _activity(connection, start: str, today: date, days: int, monthly_start: str
     # Adapter names and installation IDs are allowlisted, so ':' separates the
     # installation identity components unambiguously. Hex encodes the digest
     # only inside the count to identify distinct address/installation pairs.
+    adapter_params = {f"adapter_{index}": adapter for index, adapter in enumerate(ADAPTERS)}
+    adapter_values = ", ".join(f"(:{key})" for key in adapter_params)
     rows = connection.execute(
         f"""
         WITH base AS (
@@ -124,7 +126,7 @@ def _activity(connection, start: str, today: date, days: int, monthly_start: str
                    count(*) AS event_count
             FROM events WHERE day BETWEEN min(:start, :month) AND :end
             GROUP BY 1, 2, 3, 4, 5
-        ), adapters(adapter) AS (VALUES (NULL), (:claude), (:opencode)),
+        ), adapters(adapter) AS (VALUES (NULL), {adapter_values}),
         windows(scope, start) AS (VALUES ('today', :end), ('period', :start), ('last_30_days', :month)),
         scoped AS (
             SELECT scope, a.adapter AS group_adapter, NULL AS group_day, NULL AS group_version,
@@ -150,7 +152,7 @@ def _activity(connection, start: str, today: date, days: int, monthly_start: str
                sum(CASE WHEN agent_version IS NOT NULL THEN event_count ELSE 0 END) AS events_with_agent_version
         FROM scoped GROUP BY scope, group_adapter, group_day, group_version
         """,
-        {"start": start, "month": monthly_start, "end": today.isoformat(), "claude": ADAPTERS[0], "opencode": ADAPTERS[1]},
+        {"start": start, "month": monthly_start, "end": today.isoformat(), **adapter_params},
     )
     aggregates = {}
     versions = []

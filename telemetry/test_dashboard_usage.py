@@ -26,7 +26,7 @@ from .report import report
     ("dashboard", ("render", "tab", "inspect", "load", "export", "compare", "analyze", "attribution")),
     ("converge", ("render", "tab", "compare")),
 ])
-@pytest.mark.parametrize("adapter", ["claude-code", "opencode"])
+@pytest.mark.parametrize("adapter", ["claude-code", "opencode", "pi"])
 @pytest.mark.parametrize("enabled", [True, False])
 def test_dashboard_usage_callbacks(tmp_path, client_bridge, kind, actions, adapter, enabled):
     source = native_run(tmp_path / "private-test-path.jsonl", "aaaaaaaa-0000-4000-8000-000000000001")

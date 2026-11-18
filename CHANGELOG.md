@@ -2,11 +2,14 @@
 
 ## Unreleased
 
+- Add the Pi 0.1.0 extension, tested with Pi 1.5.2: native commands, live charts, AI analysis, labeling, and exports.
+- Follow Pi's active session branch and preserve native durations, cost provenance, pending tools, and nested execution evidence.
+- Include Pi in opt-in usage telemetry and reports while retaining older report compatibility.
 - Add the Chart guide and per-step token breakdown to Summary. Open Workflow steps directly from duration charts and Deep Dive tables.
 - Expand Deep Dive with timing, tokens, efficiency, tools, models, and evidence-aware hotspot and per-message tables.
 - Switch between compressed idle gaps and true wall-clock time on the execution timeline. Exclude Claude Code resume display records from session timing.
 - Set dashboard ports and telemetry destinations from `/obs` while a session is running.
-- Add opt-in usage telemetry, with local consent controls and delivery status for both plugins.
+- Add opt-in usage telemetry, with local consent controls and delivery status for all three plugins.
 
 ## Claude Code 0.3.9 — 2026-11-13
 

@@ -424,10 +424,13 @@ class _Projection:
     def user_repeats(self):
         from agent_trajviz.insight.patterns import detect_user_repeats
 
+        from .pi import is_user_prompt
+
         conversations = defaultdict(list)
         for step in self.steps:
             if (step.get("role") == "user" and not step.get("is_sub_agent")
-                    and not step.get("parent_session_id")):
+                    and not step.get("parent_session_id")
+                    and (not self._original.raw.get("_pi_format") or is_user_prompt(step))):
                 conversations[step.get("session_id") or ""].append(step)
         repeats = [row for steps in conversations.values() for row in detect_user_repeats(steps)]
         return sorted(repeats, key=lambda row: (-row["count"], row["steps"][0]))
@@ -591,6 +594,11 @@ def project_view(run, view):
                     segment["tokens"] = None
     elif view.id == "step_durations":
         _project_step_durations(data, steps)
+    elif view.id == "tool_outcomes":
+        calls = [call for step in run.steps for call in step.get("tool_calls", [])]
+        for row, call in zip(data["calls"], calls, strict=True):
+            if not _outcome(call):
+                row["ok"] = None
     dependencies = {"token_usage": tuple(f"tokens.{key}" for key in TOKEN_LABELS),
                     "agent_tokens": tuple(f"tokens.{key}" for key in TOKEN_LABELS),
                     "agent_swimlane": ("tokens.total",),

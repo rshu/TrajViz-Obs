@@ -30,7 +30,7 @@ def test_report_schema_matches_format_and_ingest_allowlists():
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     assert schema["properties"]["format"]["const"] == REPORT_FORMAT
-    assert schema["properties"]["schema_version"]["enum"] == [1, 2, REPORT_SCHEMA_VERSION]
+    assert schema["properties"]["schema_version"]["enum"] == [1, 2, 3, REPORT_SCHEMA_VERSION]
     definitions = schema["$defs"]
     assert definitions["adapter"]["enum"] == list(ADAPTERS)
     assert definitions["surface_name"]["enum"] == list(SURFACES)
@@ -56,6 +56,7 @@ def test_empty_and_populated_reports_match_schema(tmp_path):
         ("claude-code", "terminal", "overview", "success", "100ms_1s", "0.3.8"),
         ("claude-code", "browser", "dashboard.render", "observed", "lt_100ms", "0.3.8"),
         ("opencode", "desktop", "pane.tab", "cancelled", "lt_100ms", "0.5.4-rc.1"),
+        ("pi", "terminal", "pane.refresh", "success", "lt_100ms", "0.1.0"),
     ):
         batch = validate_payload({
             "schema_version": 1, "adapter": adapter, "installation_id": uuid4().hex, "events": [{
@@ -67,25 +68,41 @@ def test_empty_and_populated_reports_match_schema(tmp_path):
 
     populated = report(database, today=today, days=14)
     validator.validate(populated)
-    legacy = {key: value for key, value in populated.items() if key not in {"activity", "usage"}}
+    previous = deepcopy(populated)
+    previous["schema_version"] = 3
+    for key in ("adoption", "daily", "engagement", "features", "surfaces", "versions", "retention"):
+        previous[key] = [row for row in previous[key] if row["adapter"] != "pi"]
+    for key in ("by_adapter", "by_agent_version"):
+        previous["activity"][key] = [row for row in previous["activity"][key] if row["adapter"] != "pi"]
+    previous["usage"]["rolling"]["by_adapter"] = previous["usage"]["rolling"]["by_adapter"][:2]
+    previous["usage"]["features"] = [row for row in previous["usage"]["features"] if row["adapter"] != "pi"]
+    validator.validate(previous)
+    assert not validator.is_valid({**populated, "schema_version": 3})
+    missing_pi = deepcopy(populated)
+    missing_pi["adoption"] = missing_pi["adoption"][:2]
+    assert not validator.is_valid(missing_pi)
+    mislabeled_legacy = deepcopy(previous)
+    mislabeled_legacy["features"][0]["adapter"] = "pi"
+    assert not validator.is_valid(mislabeled_legacy)
+    legacy = {key: value for key, value in previous.items() if key not in {"activity", "usage"}}
     validator.validate({**legacy, "schema_version": 1})
-    validator.validate({**legacy, "schema_version": 2, "activity": populated["activity"]})
+    validator.validate({**legacy, "schema_version": 2, "activity": previous["activity"]})
     assert not validator.is_valid({**legacy, "schema_version": 2})
     assert not validator.is_valid({**legacy, "activity": populated["activity"]})
     assert not validator.is_valid({**populated, "schema_version": 2})
     assert not validator.is_valid({**populated, "schema_version": 1})
     activity = populated["activity"]
-    assert activity["period"]["distinct_installations"] == 3
+    assert activity["period"]["distinct_installations"] == 4
     assert activity["period"]["distinct_addresses"] is None
     for row in (activity["today"], activity["daily"][0], activity["by_adapter"][0],
                 activity["by_agent_version"][0]):
         row["address_digest"] = "private"
         assert not validator.is_valid(populated)
         del row["address_digest"]
-    assert len(populated["features"]) == 3
+    assert len(populated["features"]) == 4
     assert populated["features"][0]["p95_duration_bucket"] is None
 
-    for key, invalid in (("as_of", "2026-02-30"), ("schema_version", 4), ("retention_days", 31)):
+    for key, invalid in (("as_of", "2026-02-30"), ("schema_version", 5), ("retention_days", 31)):
         assert not validator.is_valid({**populated, key: invalid})
 
     with_identifier = deepcopy(populated)

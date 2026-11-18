@@ -173,6 +173,7 @@ def main() -> None:
             "claude_directory": directory,
             "claude_git_marketplace": {"status": "unavailable", "reason": "no_publisher_install_counter"},
             "opencode": {"status": "unavailable", "reason": "no_publisher_install_counter"},
+            "pi": {"status": "unavailable", "reason": "no_publisher_install_counter"},
         },
     }, indent=2))
 

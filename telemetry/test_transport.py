@@ -22,15 +22,67 @@ from .collector import (
     create_production_app,
     database_connection,
 )
+from .report import report
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def send_event(sender, cwd, env, adapter, surface, feature, outcome="success", duration=0, version="0.3.8"):
+def send_event(sender, cwd, env, adapter, surface, feature, outcome="success", duration=0, version="0.3.8",
+               agent_version=None):
+    host = ["--agent-version", agent_version] if agent_version else []
     subprocess.run([sys.executable, "-I", str(sender),
                     "--adapter", adapter, "--surface", surface, "--feature", feature,
-                    "--outcome", outcome, "--duration-ms", str(duration), "--version", version],
+                    "--outcome", outcome, "--duration-ms", str(duration), "--version", version, *host],
                    env=env, cwd=cwd, timeout=10, check=True, capture_output=True)
+
+
+def test_pi_negotiated_versions_consent_and_shared_network_counts(tmp_path, client_bridge):
+    """Each adapter keeps its own consent and identity while IPs deduplicate across them."""
+    sender = client_bridge / "telemetry_client.py"
+    database = tmp_path / "usage.sqlite3"
+    queue = tmp_path / "sender"
+    app = create_app(database, address_key="91" * 32)
+    with make_server("127.0.0.1", 0, app, handler_class=_QuietHandler) as collector:
+        Thread(target=collector.serve_forever, daemon=True).start()
+        env = {**os.environ, "TRAJVIZ_OBS_TELEMETRY": "1", "TRAJVIZ_OBS_TELEMETRY_TOKEN": "",
+               "TRAJVIZ_OBS_TELEMETRY_URL": f"http://127.0.0.1:{collector.server_port}{EVENTS_PATH}",
+               "TRAJVIZ_OBS_TELEMETRY_STATE_DIR": str(queue)}
+        try:
+            for adapter, host in (("claude-code", "2.1.311"), ("opencode", "2.2.7"), ("pi", "1.4.0")):
+                send_event(sender, tmp_path, env, adapter, "terminal", "activation", agent_version=host)
+                send_event(sender, tmp_path, env, adapter, "terminal", "help", agent_version=host)
+            send_event(sender, tmp_path, env, "pi", "terminal", "pane.tab", agent_version="1.4.1")
+            send_event(sender, tmp_path, env, "pi", "terminal", "analyze", "cancelled", agent_version="1.4.1")
+            subprocess.run([sys.executable, "-I", str(sender), "--adapter", "pi", "--set-consent", "off"],
+                           cwd=tmp_path, env=env, check=True, capture_output=True, timeout=10)
+            send_event(sender, tmp_path, env, "pi", "terminal", "overview", agent_version="1.4.1")
+            send_event(sender, tmp_path, env, "claude-code", "terminal", "overview", agent_version="2.1.311")
+        finally:
+            collector.shutdown()
+
+    snapshot = report(database, today=datetime.now(UTC).date(), days=1)
+    assert snapshot["schema_version"] == 4
+    assert [(row["adapter"], row["active_today"]) for row in snapshot["adoption"]] == [
+        ("claude-code", 1), ("opencode", 1), ("pi", 1),
+    ]
+    activity = snapshot["activity"]["today"]
+    assert activity["distinct_addresses"] == 1
+    assert activity["distinct_installations"] == activity["distinct_address_installation_pairs"] == 3
+    assert activity["events"] == 9 and activity["events_with_agent_version"] == 6
+    versions = {(row["adapter"], row["agent_version"]): row for row in snapshot["activity"]["by_agent_version"]}
+    assert versions["pi", "1.4.0"]["events"] == 1
+    assert versions["pi", "1.4.1"]["events"] == 2
+    features = {(row["adapter"], row["feature"]): row for row in snapshot["usage"]["features"]}
+    assert features["pi", "pane.tab"]["category"] == "pane"
+    assert features["pi", "analyze"]["cancelled_rate"] == 1
+    assert ("pi", "overview") not in features
+    assert features["claude-code", "overview"]["success_rate"] == 1
+    with database_connection(database, read_only=True) as connection:
+        identities = [row[0] for row in connection.execute("SELECT installation_id FROM installations")]
+    assert len(set(identities)) == 3
+    exported = json.dumps(snapshot)
+    assert all(identity not in exported for identity in identities)
+    assert "127.0.0.1" not in exported
 
 
 def test_isolated_senders_and_report(tmp_path, client_bridge):
@@ -82,7 +134,7 @@ def test_isolated_senders_and_report(tmp_path, client_bridge):
                             cwd=ROOT, check=True, capture_output=True, timeout=10, text=True)
     summary = json.loads(result.stdout)
     assert [(entry["adapter"], entry["active_today"]) for entry in summary["adoption"]] == [
-        ("claude-code", 1), ("opencode", 1),
+        ("claude-code", 1), ("opencode", 1), ("pi", 0),
     ]
     features = {entry["feature"]: entry for entry in summary["features"]}
     assert features["help"]["outcomes"] == {"success": 1}
@@ -169,9 +221,9 @@ def test_cohort_reconciles_after_lost_acknowledgement(tmp_path, client_bridge):
                             cwd=ROOT, check=True, capture_output=True, timeout=10, text=True)
     summary = json.loads(result.stdout)
     assert [(row["adapter"], row["new_installations"], row["engaged_in_period"]) for row in summary["adoption"]] == [
-        ("claude-code", 2, 1), ("opencode", 2, 2),
+        ("claude-code", 2, 1), ("opencode", 2, 2), ("pi", 0, 0),
     ]
-    assert [row["invocations"] for row in summary["engagement"]] == [4, 4]
+    assert [row["invocations"] for row in summary["engagement"]] == [4, 4, 0]
     assert summary["usage"]["rolling"]["last_7_days"]["active_installations"] == 4
     assert summary["usage"]["rolling"]["last_30_days"]["returning_installations"] == 0
     by_feature = {(row["adapter"], row["feature"]): row for row in summary["usage"]["features"]}

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -12,7 +14,7 @@ import pytest
 from trajviz_obs.compat import load_run, protect_run_outputs
 from trajviz_obs.errors import BridgeError
 from trajviz_obs.llm_cmd import apply_replies, plan_prompts
-from trajviz_obs.outputs import protect_inputs
+from trajviz_obs.outputs import host_inputs, protect_inputs, staged_path
 from trajviz_obs.views_cmd import _write_json
 
 
@@ -178,3 +180,125 @@ def test_failed_json_serialization_retains_previous_artifact_without_staging_fil
     with pytest.raises(ValueError):
         _write_json(destination, {"invalid": float("nan")})
     assert destination.read_text() == '{"previous":true}\n' and list(tmp_path.iterdir()) == [destination]
+
+
+@pytest.mark.parametrize(("command", "name"), [
+    ("json", "trajectory.json"), ("schemas", "summary.schema.json"), ("schemas", "workflow.schema.json"),
+    ("bundle", "portable.zip"), ("label", "labels.json"),
+])
+def test_host_protects_actual_source_when_bridge_reads_a_private_capture(command, name, fixture_run,
+                                                                       fixture_session, tmp_path):
+    capture = tmp_path / "private-capture.json"
+    capture.write_text(json.dumps(fixture_run.to_dict(include_raw=True)))
+    out = tmp_path / "out"
+    out.mkdir()
+    native = out / name
+    before = fixture_session.read_bytes()
+    native.write_bytes(before)
+    if command in {"json", "schemas"}:
+        argv = [command, "--out", str(out)]
+        if command == "json":
+            argv += ["--transcript", str(capture), "--view", "summary"]
+    else:
+        argv = [command, "--transcript", str(capture), "--out", str(native)]
+    launcher = Path(__file__).resolve().parents[1] / "trajviz_obs_cli.py"
+    result = subprocess.run([sys.executable, "-I", str(launcher), f"--host-input={native}", *argv],
+                            capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert json.loads(result.stdout)["error"]["code"] == "bad_output"
+    assert native.read_bytes() == before
+    assert list(out.iterdir()) == [native]  # bulk writers fail before replacing even an earlier schema/view
+
+
+@pytest.mark.parametrize("alias", ["hardlink", "symlink", "parent-symlink"])
+@pytest.mark.parametrize("command", ["json", "schemas"])
+def test_host_output_guard_follows_child_aliases_without_denying_the_directory(alias, command, fixture_run,
+                                                                            fixture_session, tmp_path, run_cli):
+    capture = tmp_path / "private.json"
+    capture.write_text(json.dumps(fixture_run.to_dict(include_raw=True)))
+    native = tmp_path / "native.jsonl"
+    original = fixture_session.read_bytes()
+    native.write_bytes(original)
+    out = tmp_path / "export"
+    out.mkdir()
+    name = "trajectory.json" if command == "json" else "workflow.schema.json"
+    if alias == "hardlink":
+        os.link(native, out / name)
+    else:
+        (out / name).symlink_to(native)
+        if alias == "parent-symlink":
+            linked = tmp_path / "linked-folder"
+            linked.symlink_to(out, target_is_directory=True)
+            out = linked
+    argv = [command, "--out", str(out)]
+    if command == "json":
+        argv += ["--transcript", str(capture), "--view", "summary"]
+    code, doc = run_cli([f"--host-input={native}", *argv])
+    assert code == 1 and doc["error"]["code"] == "bad_output", doc
+    assert native.read_bytes() == original
+    assert [child.name for child in out.iterdir()] == [name]
+
+
+def test_host_protection_is_shared_by_worker_threads_and_resets_after_failure(tmp_path):
+    source = tmp_path / "native.jsonl"
+    source.write_text("Keep native source")
+    other = tmp_path / "other.jsonl"
+    other.write_text("Keep other source")
+    with host_inputs([source]):
+        with host_inputs([other]), ThreadPoolExecutor(max_workers=1) as pool:
+            for destination in (source, other):
+                with pytest.raises(BridgeError, match="overwrite input session"):
+                    pool.submit(_write_json, destination, {"do": "not replace"}).result()
+        with pytest.raises(BridgeError):
+            protect_inputs([source], ())
+        protect_inputs([other], ())
+        with (host_inputs([]), ThreadPoolExecutor(max_workers=1) as pool,
+              pytest.raises(BridgeError, match="overwrite input session")):
+            pool.submit(_write_json, source, {"still": "protected by outer scope"}).result()
+    _write_json(source, {"now": "unprotected temporary fixture"})
+    assert json.loads(source.read_text()) == {"now": "unprotected temporary fixture"}
+
+
+def test_cli_host_scope_does_not_leak_into_a_later_command(tmp_path, run_cli):
+    native = tmp_path / "workflow.schema.json"
+    native.write_text("Keep native source")
+    code, doc = run_cli([f"--host-input={native}", "schemas", "--out", str(tmp_path)])
+    assert code == 1 and doc["error"]["code"] == "bad_output"
+    assert native.read_text() == "Keep native source" and list(tmp_path.iterdir()) == [native]
+    code, doc = run_cli(["schemas", "--out", str(tmp_path)])
+    assert code == 0 and doc["files"]
+    assert isinstance(json.loads(native.read_text()), dict)
+
+
+def test_host_guard_allows_adjacent_exports_and_remains_private(tmp_path, fixture_run, fixture_session, run_cli):
+    native = tmp_path / "native.jsonl"
+    original = fixture_session.read_bytes()
+    native.write_bytes(original)
+    capture = tmp_path / "private.json"
+    capture.write_text(json.dumps(fixture_run.to_dict(include_raw=True)))
+    code, doc = run_cli([f"--host-input={native}", f"--host-input={capture}", "json", "--transcript", str(capture),
+                         "--out", str(tmp_path), "--view", "summary"])
+    assert code == 0 and "trajectory.json" in doc["files"]
+    assert native.read_bytes() == original
+    code, help_doc = run_cli(["--help"])
+    assert code == 0 and "host-input" not in help_doc["help"]
+    code, invalid = run_cli(["--host-input=relative.jsonl", "doctor"])
+    assert code == 2 and invalid["error"]["code"] == "usage"
+
+
+def test_staged_writer_rechecks_a_destination_alias_before_installing(tmp_path):
+    source, destination = tmp_path / "native.jsonl", tmp_path / "result.json"
+    source.write_text("Keep native source")
+    with (host_inputs([source]), pytest.raises(BridgeError, match="overwrite input session"),
+          staged_path(destination) as stage):
+        stage.write_text("Generated result")
+        destination.symlink_to(source)
+    assert source.read_text() == "Keep native source"
+    assert not list(tmp_path.glob(".trajviz-obs-*"))
+
+
+def test_staged_writer_without_host_inputs_still_replaces_a_symlink_atomically(tmp_path):
+    destination = tmp_path / "result.json"
+    destination.symlink_to(destination.name)
+    _write_json(destination, {"complete": True})
+    assert not destination.is_symlink() and json.loads(destination.read_text()) == {"complete": True}

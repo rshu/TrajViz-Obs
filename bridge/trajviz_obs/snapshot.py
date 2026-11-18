@@ -89,7 +89,10 @@ def _sample_rows(rows: list[dict], n: int, fields: tuple[str, ...]) -> list[dict
 
 
 def _native_cost(run: Trajectory) -> float | None:
-    """Reported OpenCode cost for the exact confirmed family, never estimated."""
+    """Pi's native total or OpenCode's reported family cost, without recalculating prices."""
+    if run.raw.get("_pi_format"):
+        value = run.raw.get("_pi_reported_cost_usd")
+        return value if _number(value) and value >= 0 else None
     if not isinstance(run.raw.get(NATIVE_KEY), dict):
         return None
     manifest = run.raw.get("session_manifest")
@@ -239,6 +242,13 @@ def _context(run: Trajectory, pressure: dict, n: int) -> tuple[dict, dict]:
     points = main["points"] if main else []
     window = window_info(run)
     current = points[-1]["occupancy"] if points else None
+    from .pi import CAPTURE_KEY
+
+    capture = run.raw.get(CAPTURE_KEY)
+    if isinstance(capture, dict) and "context_tokens" in capture:
+        # The live SDK knows the current model-visible context, including
+        # edits and compaction. Explicit null is an observation of uncertainty.
+        current = capture["context_tokens"]
     from .opencode import NATIVE_KEY
 
     if NATIVE_KEY in run.raw:
@@ -252,8 +262,11 @@ def _context(run: Trajectory, pressure: dict, n: int) -> tuple[dict, dict]:
         window["window_note"] = ((window.get("window_note") or "") + " Latest logged model request; "
                                  "post-compaction occupancy is unknown until another measured response.").strip()
     pct = round(current / window["window"] * 100, 1) if current is not None and window["window"] else None
+    peak, peak_pct = stats.get("peak_occupancy"), stats.get("peak_pct")
+    if isinstance(capture, dict) and current is not None and (peak is None or current > peak):
+        peak, peak_pct = current, pct
     context = {**window, "current_occupancy": current, "current_pct": pct,
-               "peak_occupancy": stats.get("peak_occupancy"), "peak_pct": stats.get("peak_pct"),
+               "peak_occupancy": peak, "peak_pct": peak_pct,
                "compaction_count": stats.get("compaction_count"), "largest_drop": stats.get("largest_drop")}
     sampled = _sample_rows(points, n, ("occupancy",))
     series = {"turns": [point["step"] for point in sampled],
@@ -349,6 +362,13 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
     *duration_ms* is the time already spent (loading); the document's ``duration_ms`` adds this call's own.
     """
     started = time.monotonic()
+    pi_prompts = None
+    if run.raw.get("_pi_format"):
+        from .pi import is_user_prompt
+
+        pi_prompts = [step for step in run.steps if is_user_prompt(step)]
+        prompts = [str(step.get("text_preview") or "")[:200] for step in pi_prompts]
+        facts = TranscriptFacts(facts.title, prompts[:20], len(pi_prompts), facts.meta_count)
     built = {view_id: project_view(run, view) for view_id, view in run.views(only=VIEWS).items()}
     views = {view_id: view.data for view_id, view in built.items()}
     summary, session, metrics = views["summary"], views["session"], views["metrics"]
@@ -375,7 +395,8 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
         "title": facts.title or session.get("title"),
         "task": facts.prompts[0] if facts.prompts else None,
         "counts": {"records": summary["steps"], "assistant_steps": summary["assistant_steps"],
-                   "user_records": metrics.get("user_steps"), "prompts": facts.prompt_count,
+                   "user_records": len(pi_prompts) if pi_prompts is not None else metrics.get("user_steps"),
+                   "prompts": facts.prompt_count,
                    "compactions": pressure["stats"].get("compaction_count"), "agents": summary["agents"],
                    "tool_calls": summary["tool_calls"], "issues": len(views["issues"])},
         "tokens": {k: summary["tokens"].get(k) for k in
@@ -437,6 +458,9 @@ def build_snapshot(run: Trajectory, *, transcript_path: str, facts: TranscriptFa
     }
     if (cost := _native_cost(run)) is not None:
         snap["engine_usage"] = {"cost": {"usd": cost}}
+        if run.raw.get("_pi_format"):
+            snap["engine_usage"]["cost"]["source"] = (
+                "provider" if run.raw.get("_pi_reported_cost_source") == "provider" else "estimate")
     if snap["availability"].get("context_pressure", {}).get("status") == "unavailable":
         for key in ("current_occupancy", "current_pct", "peak_occupancy", "peak_pct", "compaction_count", "largest_drop"):
             snap["context"][key] = None
