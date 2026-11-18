@@ -1,14 +1,21 @@
 import { execFile } from 'node:child_process'
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { DefaultPackageManager, SettingsManager, getAgentDir, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { LocalCheckoutUpdater } from '../../shared/local-update.js'
 
 type SourceInfo = { path: string; source: string; scope: 'user' | 'project' | 'temporary'; origin: 'package' | 'top-level' }
 type Manager = Pick<DefaultPackageManager, 'listConfiguredPackages' | 'update'>
 type Git = (args: string[], cwd: string, signal?: AbortSignal) => Promise<string>
-export type UpdateResult = { text: string; outcome?: 'success' | 'error' | 'rejected'; reload?: true; applyUpdate?: () => Promise<UpdateResult> }
-export type UpdateOptions = { sourceInfo?: SourceInfo; entryPath?: string; agentDir?: string; settings?: SettingsManager; git?: Git; manager?: (settings: SettingsManager) => Manager }
+export type UpdateResult = { text: string; outcome?: 'success' | 'error' | 'rejected' | 'cancelled'; reload?: true; applyUpdate?: () => Promise<UpdateResult> }
+export type UpdateOptions = {
+  sourceInfo?: SourceInfo; currentSourceInfo?: () => SourceInfo | undefined; entryPath?: string; agentDir?: string
+  settings?: SettingsManager; git?: Git; manager?: (settings: SettingsManager) => Manager
+  localLoadedAt?: number
+  confirm?: (question: { title: string; message: string }, signal: AbortSignal) => Promise<boolean>
+  localUpdater?: (options: ConstructorParameters<typeof LocalCheckoutUpdater>[0]) => Pick<LocalCheckoutUpdater, 'check' | 'apply'>
+}
 const inside = (root: string, file: string) => { const relative = path.relative(root, file); return !relative || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)) }
 export function manualUpdateCommand(root: string, platform = process.platform): string | undefined {
   if (/[\x00-\x1f\x7f-\x9f]/.test(root)) return
@@ -50,6 +57,57 @@ async function localRoot(entry: string): Promise<string> {
   return found
 }
 function offline(): boolean { return /^(1|true|yes)$/i.test(process.env.PI_OFFLINE ?? '') }
+async function localUpdate(ctx: Pick<ExtensionContext, 'cwd' | 'isProjectTrusted' | 'isIdle' | 'hasPendingMessages'>, check: boolean, signal: AbortSignal, entry: string, info: SourceInfo, options: UpdateOptions): Promise<UpdateResult> {
+  const trusted = ctx.isProjectTrusted()
+  if (info.scope === 'project' && !trusted) return { text: 'Approve this project’s settings in Pi before updating its plugin.', outcome: 'rejected' }
+  if (offline()) return { text: 'Local TrajViz Obs checkout\nAvailable revision: unknown (Pi offline mode). No update performed.', outcome: check ? 'success' : 'rejected' }
+  const original = JSON.stringify([info.path, info.source, info.scope, info.origin])
+  let applying = false
+  const idle = () => { if (applying && (!ctx.isIdle() || ctx.hasPendingMessages())) throw new Error('Pi started new work. Wait for it to finish before updating.') }
+  const validateSource = async (adapter: string) => {
+    idle()
+    if (ctx.isProjectTrusted() !== trusted || offline()) throw new Error('Trust or offline settings changed. Review a new update plan.')
+    const current = options.currentSourceInfo ? options.currentSourceInfo() : info
+    if (!current || JSON.stringify([current.path, current.source, current.scope, current.origin]) !== original || await realpath(current.path) !== entry || !inside(adapter, entry)) throw new Error('The loaded Pi extension changed. Run /reload before updating.')
+    idle()
+    if (info.origin !== 'package' || info.scope === 'temporary') return
+    const agentDir = options.agentDir ?? getAgentDir()
+    const settings = options.settings ?? SettingsManager.create(ctx.cwd, agentDir, { projectTrusted: trusted })
+    await settings.reload()
+    if (settings.drainErrors().length) throw new Error('Pi package settings could not be read safely. Repair them before updating.')
+    const manager = options.manager?.(settings) ?? new DefaultPackageManager({ cwd: ctx.cwd, agentDir, settingsManager: settings })
+    const configured = manager.listConfiguredPackages()
+    const matches = []
+    for (const pkg of configured) if (pkg.installedPath) {
+      try { if (inside(await realpath(pkg.installedPath), entry)) matches.push(pkg) } catch { /* An unrelated missing package is not this loaded source. */ }
+    }
+    if (matches.length !== 1 || matches[0]!.scope !== info.scope || matches[0]!.source !== info.source) throw new Error('The local Pi package registration changed or is ambiguous. Run /reload before updating.')
+    idle()
+  }
+  const sourceWorker = fileURLToPath(new URL('../../shared/local-update.ts', import.meta.url))
+  let workerSource = fileURLToPath(new URL('../runtime/local-update.ts', import.meta.url))
+  try { if ((await lstat(sourceWorker)).isFile()) workerSource = sourceWorker } catch { /* Bundled installs package their own standalone worker. */ }
+  const factory = options.localUpdater ?? (options => new LocalCheckoutUpdater(options))
+  const updater = factory({ adapter: 'pi', entryURL: pathToFileURL(options.entryPath ?? info.path).href, workerSource, validateSource, loadedAt: options.localLoadedAt })
+  const inspected = await updater.check(signal)
+  signal.throwIfAborted()
+  if (check || inspected.state !== 'available' || !inspected.plan) return { text: inspected.text, outcome: inspected.state === 'blocked' ? 'rejected' : inspected.state === 'error' ? 'error' : inspected.state === 'cancelled' ? 'cancelled' : 'success' }
+  if (!options.confirm) return { text: `${inspected.text}\nUse the direct /obs update command in an interactive Pi session to review and confirm this update.`, outcome: 'rejected' }
+  const plan = inspected.plan
+  const transport = plan.effectiveRemote && plan.effectiveRemote !== plan.remote ? `\nTransport: ${plan.effectiveRemote}` : ''
+  const accepted = await options.confirm({ title: 'Update the local TrajViz Obs checkout?', message: `Checkout: ${plan.root}\nBranch: ${plan.branch} → origin/main\nOrigin: ${plan.remote}${transport}\nVersion: ${plan.currentVersion} → ${plan.availableVersion}\nInstalled: ${plan.current.slice(0, 12)}\nReviewed revision: ${plan.available}\n\nFast-forward this shared repository, including other coding-agent adapters.\nReload Pi when idle; other Pi sessions also need /reload.` }, signal)
+  signal.throwIfAborted()
+  if (!accepted) return { text: 'Local Obs update cancelled. No checkout files were changed.', outcome: 'cancelled' }
+  return { text: `Applying the reviewed local Obs revision ${plan.available.slice(0, 12)}. Let it finish before exiting Pi.`, applyUpdate: async () => {
+    if (!ctx.isIdle() || ctx.hasPendingMessages()) return { text: 'Pi started new work. No checkout update was started. Run /reload after the task finishes, then try again.', outcome: 'error' }
+    applying = true
+    try {
+      const applied = await updater.apply(plan.token, { signal })
+      return applied.state === 'updated' ? { text: applied.text, reload: true, outcome: 'success' }
+        : { text: `${applied.text}\nAfter resolving this problem, run /reload when Pi is idle.`, outcome: applied.state === 'cancelled' ? 'cancelled' : 'error' }
+    } finally { applying = false }
+  } }
+}
 function generated(status: string, file: string): boolean {
   if (status === '??' && file === 'package-lock.json') return true
   return status === '!!' && (file === 'node_modules/' || /(?:^|\/)__pycache__\/$/.test(file) || /\.py[co]$/.test(file))
@@ -89,11 +147,11 @@ export async function prepareUpdate(ctx: Pick<ExtensionContext, 'cwd' | 'isProje
     const instructions = command
       ? `Update this checkout yourself${process.platform === 'win32' ? ' in PowerShell' : ''}, then run /reload:\n${command}`
       : 'Open the plugin’s local checkout in a terminal and update it manually, then run /reload.'
-    return { outcome: check ? 'success' : 'rejected', text: `Local TrajViz Obs checkout · ${(await manifest(root)).version ?? 'version unknown'}\n${instructions}\n/obs update does not modify local checkouts.` }
+    return { outcome: check ? 'success' : 'rejected', text: `Local TrajViz Obs checkout · ${(await manifest(root)).version ?? 'version unknown'}\nThe loaded extension could not be matched to a configured installation.\n${instructions}` }
   }
   if (!info || info.origin !== 'package' || !gitSource(info.source)) {
     if (info?.source.startsWith('npm:')) return { text: 'This package source is not supported by /obs update. Use Pi’s package manager, then /reload.', outcome: 'rejected' }
-    return manual()
+    return info ? localUpdate(ctx, check, signal, entry, info, options) : manual()
   }
   if (info.scope === 'temporary') return { text: 'Temporary Pi packages cannot be updated here. Install the package with pi install first.', outcome: 'rejected' }
   const trusted = ctx.isProjectTrusted()

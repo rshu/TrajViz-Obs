@@ -62,6 +62,7 @@ export class Controller {
   private widget = false
   private closed = false
   private closing?: Promise<void>
+  private readonly localLoadedAt = Date.now()
   constructor(readonly backend: Backend, ctx: ExtensionContext, hostVersion = VERSION, private readonly updateOptions: () => UpdateOptions = () => ({})) {
     this.ctx = ctx
     this.state = { tab: 0, watch: backend.options.watch !== false }
@@ -147,7 +148,17 @@ export class Controller {
         watch: value => this.setWatch(value),
         statusline: value => { if (value !== undefined) this.status = value; this.draw(); return this.status },
         closePane: () => this.dismissPane(), progress,
-        update: (check, signal) => check || direct ? prepareUpdate(ctx, check, signal, this.updateOptions()) : Promise.resolve(rejected('Plugin updates require the direct /obs update command.')),
+        update: (check, signal) => check || direct ? prepareUpdate(ctx, check, signal, {
+          ...this.updateOptions(),
+          localLoadedAt: this.localLoadedAt,
+          confirm: direct && ctx.hasUI ? (question, signal) => {
+            // A native dialog must own input and the full viewport. Leaving the
+            // progress overlay open can hide both its review text and choices.
+            this.closeProgress?.(); this.closeProgress = undefined
+            this.progressToken = undefined; this.progressRender = undefined
+            return ctx.ui.confirm(question.title, question.message, { signal })
+          } : undefined,
+        }) : Promise.resolve(rejected('Plugin updates require the direct /obs update command.')),
       }, this.usage))
       active.signal.throwIfAborted()
       if (result.snapshot) {
@@ -242,8 +253,8 @@ export class Controller {
     const result = await pending
     if (result.applyUpdate) {
       if (!ctx.isIdle() || ctx.hasPendingMessages()) { ctx.ui.notify('Pi started new work while checking the update. Wait for it to finish, then run /obs update again.', 'warning'); return }
-      // End execute() and its revision before shutdown. A native managed update
-      // rewrites bridge files, so stop dashboards and workers before applying it.
+      // End execute() and its revision before shutdown. Updates rewrite shared
+      // bridge files, so stop dashboards and workers before applying them.
       ctx.ui.notify(result.text, 'info')
       try { await this.close() }
       catch { ctx.ui.notify('Obs could not stop cleanly. No plugin update was started. Run /reload after the current task finishes, or restart Pi.', 'error'); return }
@@ -302,7 +313,8 @@ export default function trajvizObs(pi: ExtensionAPI): void {
     const current = generation
     return initializing ??= loadOptions(ctx.cwd).then(options => {
       if (generation !== current) throw new Error('Obs is unloading. Restart Pi or /reload.')
-      controller = new Controller(new Backend(ctx.cwd, options), ctx, VERSION, () => ({ sourceInfo: pi.getCommands().find(command => command.name === 'obs' && command.source === 'extension')?.sourceInfo })); return controller
+      const sourceInfo = () => pi.getCommands().find(command => command.name === 'obs' && command.source === 'extension')?.sourceInfo
+      controller = new Controller(new Backend(ctx.cwd, options), ctx, VERSION, () => ({ sourceInfo: sourceInfo(), currentSourceInfo: sourceInfo })); return controller
     }).finally(() => { initializing = undefined })
   }
   pi.registerCommand('obs', {

@@ -8,6 +8,10 @@ import { errorMessage } from './tui-model.js'
 import { CommandJobs } from './jobs.js'
 import { commandUsageOutcome, createUsageReporter, type UsageOutcome, type UsageSurface } from './telemetry.js'
 import { usageFeature } from './usage-features.js'
+import { realpath } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { LocalCheckoutUpdater } from './shared/local-update.js'
+import { LocalUpdateJobs } from './local-update-jobs.js'
 
 const optionsSchema = z.object({
   python: z.string().optional(), trajvizSource: z.string().min(1).optional(), cacheRoot: z.string().min(1).optional(),
@@ -31,8 +35,43 @@ export default Plugin.define({
     const asyncJobs = new CommandJobs({ cancelWork: runID => { jobs.get(runID)?.abort(); cancelModel(backend, runID) } })
     const lifetime = new AbortController()
     const tasks = new Set<Promise<unknown>>()
+    const readers = new Map<AbortController, Promise<unknown>>()
     const track = <T>(task: Promise<T>): Promise<T> => { tasks.add(task); void task.then(() => tasks.delete(task), () => tasks.delete(task)); return task }
+    function read<T>(requested: AbortSignal, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+      if (localUpdates.busy) return Promise.reject(new Error('Obs is updating its checkout. Let the update finish before refreshing diagnostics.'))
+      const controller = new AbortController(), signal = AbortSignal.any([requested, lifetime.signal, controller.signal])
+      const pending = Promise.resolve().then(() => { signal.throwIfAborted(); return work(signal) })
+      readers.set(controller, pending)
+      void pending.finally(() => readers.delete(controller)).catch(() => {})
+      return track(pending)
+    }
+    const samePath = (left: string, right: string) => process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right
+    async function localSource(expected?: string): Promise<string> {
+      lifetime.signal.throwIfAborted()
+      const rows = (await ctx.plugin.list()).data.filter(row => row.id === 'trajviz-obs')
+      lifetime.signal.throwIfAborted()
+      if (rows.length !== 1 || rows[0]!.source.type !== 'local' || rows[0]!.state.status !== 'active') throw new Error('The server did not identify an active local Obs installation. Reconnect and check again.')
+      const source = rows[0]!.source
+      if (expected !== undefined && source.path !== expected) throw new Error('The configured Obs source changed. Check its installation before retrying.')
+      const directory = await realpath(source.path), loaded = await realpath(fileURLToPath(new URL('..', import.meta.url)))
+      lifetime.signal.throwIfAborted()
+      if (!samePath(directory, loaded)) throw new Error('The loaded Obs server and its configured checkout differ. Restart the server before updating.')
+      return directory
+    }
+    const localUpdater = new LocalCheckoutUpdater({
+      adapter: 'opencode', loadedAt: Date.now(), entryURL: import.meta.url, workerSource: fileURLToPath(new URL('./shared/local-update.ts', import.meta.url)),
+      validateSource: async directory => { if (!samePath(await localSource(), directory)) throw new Error('The local Obs installation changed before its update.') },
+    })
+    const localUpdates = new LocalUpdateJobs(localUpdater, async () => {
+      lifetime.signal.throwIfAborted()
+      if (jobs.size || awaiting.size) throw new Error('Finish running Obs commands before updating the shared checkout.')
+      for (const controller of readers.keys()) controller.abort(new Error('Obs is preparing a confirmed plugin update.'))
+      await Promise.allSettled(readers.values())
+      await Promise.all([backend.stop('dashboard'), backend.stop('converge')])
+      await localSource()
+    })
     async function run(input: RunInput, surface: UsageSurface, requestSignal?: AbortSignal) {
+      if (localUpdates.busy) return { text: 'Obs is updating its local checkout. Let it finish, then reload the plugin before running diagnostics.' }
       if (jobs.has(input.runID)) throw new Error('This obs command is already running.')
       const requested = report.enabled() ? usageFeature(input.args) : undefined
       // The client already reports the pane gesture. An overview here only seeds its saved session.
@@ -72,12 +111,15 @@ export default Plugin.define({
       }
     }
     const rpc = await ctx.rpc.register(Obs, {
+      localUpdateCheck: async (input, call) => { await localSource(input.sourcePath); return localUpdater.check(call.signal) },
+      localUpdateStart: async (input, call) => { await localSource(input.sourcePath); call.signal.throwIfAborted(); return localUpdates.start(input) },
+      localUpdatePoll: async input => { await localSource(input.sourcePath); return localUpdates.poll(input) },
       run: (input, call) => track(run(input, 'terminal', call.signal)),
       start: async (input, call) => { call.signal.throwIfAborted(); return asyncJobs.start(input, fixed => track(run(fixed, 'desktop'))) },
       poll: async input => asyncJobs.poll(input),
       sync: input => track(backend.sync(input.source, input.requestID)),
       resolve: input => track(backend.resolve(input.sessionID, input.selector, input.captureSessionID)),
-      snapshot: (input, call) => track(backend.withSources(input.useSynced, () => backend.snapshot(input.sessionID, AbortSignal.any([call.signal,lifetime.signal]), input.selector, input.captureSessionID))),
+      snapshot: (input, call) => read(call.signal, signal => backend.withSources(input.useSynced, () => backend.snapshot(input.sessionID, signal, input.selector, input.captureSessionID))),
       usageStatus: async () => ({ enabled: report.enabled() }),
       usageInteraction: async input => { report(input); return {} },
       cancel: async input => {
@@ -100,10 +142,10 @@ export default Plugin.define({
         name: 'obs', description: 'Read TrajViz diagnostics for this OpenCode session. Returns a brief, issues, health, or one paged TrajViz view; makes no model calls.',
         input: z.object({ what: z.enum(['brief','issues','health','view']), view: z.string().optional(), options: z.record(z.string(), z.union([z.string(),z.number(),z.boolean()])).optional(), limit: z.number().int().min(1).max(500).default(25) }),
         async execute(input, call) {
-          const signal = AbortSignal.any([call.signal, lifetime.signal])
+          if (localUpdates.busy) return { content: 'Obs is updating its checkout. Let the update finish before reading diagnostics.' }
           const started = report.enabled() ? performance.now() : undefined
           let outcome: UsageOutcome = 'error'
-          return track(backend.withSources(false, async () => {
+          return read(call.signal, signal => backend.withSources(false, async () => {
             try {
               const source = await backend.session(call.sessionID, undefined, signal)
               const args = input.what === 'brief' ? ['brief', ...source.argv] : ['view', ...source.argv, ...(input.what === 'view' ? input.view ? [input.view] : [] : [input.what]), '--json', '--limit', String(input.limit)]
@@ -137,6 +179,7 @@ export default Plugin.define({
     tasks.add(observing)
     report({ feature: 'activation', surface: 'unknown', durationMs: 0, outcome: 'success' })
     return async () => {
+      localUpdates.close()
       lifetime.abort()
       asyncJobs.close()
       for (const job of jobs.values()) job.abort()

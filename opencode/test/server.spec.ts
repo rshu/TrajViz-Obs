@@ -7,6 +7,70 @@ import { Backend } from '../src/backend.js'
 import { Runtime } from '../src/runtime.js'
 import { Obs, type CommandResult, type JobPoll, type RunInput, type UsageInteraction } from '../src/rpc.js'
 import * as telemetry from '../src/telemetry.js'
+import { realpath } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { LocalCheckoutUpdater } from '../src/shared/local-update.js'
+
+test('a confirmed local update binds the loaded source and drains diagnostics before mutation', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'trajviz-local-update-server-'))
+  const sourcePath = await realpath(fileURLToPath(new URL('..', import.meta.url)))
+  type Call = { signal: AbortSignal }
+  type Handlers = {
+    localUpdateCheck(input: { sourcePath: string }, call: Call): Promise<unknown>
+    localUpdateStart(input: { sourcePath: string; token: string; runID: string }, call: Call): Promise<unknown>
+    localUpdatePoll(input: { sourcePath: string; runID: string }): Promise<{ state: string }>
+    snapshot(input: { sessionID: string }, call: Call): Promise<unknown>
+  }
+  let handlers!: Handlers, execute!: (input: { what: 'brief' }, call: Call & { sessionID: string }) => Promise<{ content: string }>
+  let reading!: () => void, applying!: () => void, finish!: () => void
+  const readStarted = new Promise<void>(resolve => { reading = resolve })
+  const applyStarted = new Promise<void>(resolve => { applying = resolve })
+  const completed = new Promise<void>(resolve => { finish = resolve })
+  let readSignal: AbortSignal | undefined
+  const snapshot = spyOn(Backend.prototype, 'snapshot').mockImplementation(async (_id, signal) => {
+    readSignal = signal; reading()
+    await new Promise<void>((_resolve, reject) => signal?.addEventListener('abort', () => reject(signal.reason), { once: true }))
+    throw new Error('Unreachable')
+  })
+  const check = spyOn(LocalCheckoutUpdater.prototype, 'check').mockResolvedValue({ state: 'available', text: 'Reviewed source' })
+  const poll = spyOn(LocalCheckoutUpdater.prototype, 'poll').mockResolvedValue({ state: 'expired' })
+  const apply = spyOn(LocalCheckoutUpdater.prototype, 'apply').mockImplementation(async (_token, options) => {
+    await options?.beforeApply?.(); applying(); await completed
+    return { state: 'updated', text: 'Updated safely.', restartRequired: true }
+  })
+  const usage = spyOn(telemetry, 'createUsageReporter').mockReturnValue(Object.assign(() => {}, { enabled: () => false, flush: async () => {} }))
+  const ctx = {
+    options: { cacheRoot: path.join(directory, 'cache') }, location: { directory }, app: { version: '2.2.5' },
+    plugin: { list: async () => ({ data: [{ id: 'trajviz-obs', source: { type: 'local', path: sourcePath }, state: { status: 'active' } }] }) },
+    rpc: { register: async (_definition: unknown, methods: Handlers) => { handlers = methods; return { events: { emit: async () => {} }, dispose: async () => {} } } },
+    tool: { transform: async (edit: (editor: { add(value: { execute: typeof execute }): void }) => void) => { edit({ add: value => { execute = value.execute } }); return { dispose: async () => {} } } },
+    event: { subscribe: async function* ({ signal }: Call) { if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true })) } },
+  } as unknown as Parameters<typeof plugin.setup>[0]
+  let cleanup: Awaited<ReturnType<typeof plugin.setup>>
+  const call = { signal: new AbortController().signal }
+  try {
+    cleanup = await plugin.setup(ctx)
+    await expect(handlers.localUpdateCheck({ sourcePath: '/another/checkout' }, call)).rejects.toThrow('source changed')
+    expect(check).not.toHaveBeenCalled()
+    await handlers.localUpdateCheck({ sourcePath }, call); expect(check).toHaveBeenCalledTimes(1)
+    const pendingRead = handlers.snapshot({ sessionID: 'test' }, call).catch(error => error)
+    await readStarted
+    const input = { sourcePath, token: crypto.randomUUID(), runID: crypto.randomUUID() }
+    expect(await handlers.localUpdateStart(input, call)).toEqual({ accepted: true })
+    await applyStarted
+    expect(readSignal?.aborted).toBe(true); await pendingRead
+    await expect(handlers.snapshot({ sessionID: 'test' }, call)).rejects.toThrow('updating')
+    expect((await execute({ what: 'brief' }, { ...call, sessionID: 'test' })).content).toContain('updating')
+    expect(snapshot).toHaveBeenCalledTimes(1)
+    await handlers.localUpdateStart(input, call); expect(apply).toHaveBeenCalledTimes(1)
+    await cleanup!?.(); cleanup = undefined
+    finish(); await Bun.sleep(0)
+    expect(apply).toHaveBeenCalledTimes(1)
+  } finally {
+    finish(); await cleanup!?.(); snapshot.mockRestore(); check.mockRestore(); poll.mockRestore(); apply.mockRestore(); usage.mockRestore()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('the actual model tool requests fresh Desktop history through authenticated RPC without a service URL', async () => {
   const directory = await mkdtemp(path.join(tmpdir(),'trajviz-desktop-tool-'))

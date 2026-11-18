@@ -1,9 +1,11 @@
 import type { LocationRef, OpenCodeClient, PluginInfo } from '@opencode/client'
 import manifest from '../package.json' with { type: 'json' }
+import { Obs } from './rpc.js'
+import type { LocalUpdateResult } from '../../shared/local-update.js'
 import { errorMessage, safeText } from './tui-model.js'
 
 type Confirmation = { title: string; message: string }
-export type UpdateResult = { text: string; state: 'manual' | 'pinned' | 'available' | 'current' | 'updated' | 'cancelled' | 'error' }
+export type UpdateResult = { text: string; state: 'manual' | 'pinned' | 'available' | 'current' | 'updated' | 'blocked' | 'cancelled' | 'error'; restartRequired?: true }
 type UpdateOptions = {
   check: boolean
   location: LocationRef
@@ -15,10 +17,10 @@ type UpdateOptions = {
 }
 const running = new WeakSet<object>()
 const PLUGIN = 'trajviz-obs'
-const clean = (value: string): string => safeText(value).replace(/\n/g, ' ')
+const display = (value: string): string => safeText(value)
   .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, '$1[redacted]@')
   .replace(/([a-z][a-z0-9+.-]*:\/\/[^?#\s]+)\?[^#\s]*/gi, '$1?[redacted]')
-const quote = (value: string): string => `'${value.replace(/'/g, `'"'"'`)}'`
+const clean = (value: string): string => display(value).replace(/\n/g, ' ')
 const identity = (plugin: PluginInfo): string => plugin.source.type === 'package'
   ? JSON.stringify(['package', plugin.source.target, plugin.source.version ?? null])
   : JSON.stringify(plugin.source)
@@ -27,14 +29,6 @@ const identity = (plugin: PluginInfo): string => plugin.source.type === 'package
 export function pinnedTarget(target: string): boolean {
   return /^(?:@[^/\s]+\/)?[^@/\s]+@=?v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(target.replace(/^npm:/, ''))
     || /#[0-9a-f]{40}(?:[0-9a-f]{24})?(?:::path:.+)?$/i.test(target)
-}
-
-function localInstructions(directory: string): string {
-  if (/[\x00-\x1f\x7f-\x9f]/.test(directory)) return 'Open the configured local adapter directory in a terminal to update it.'
-  const cd = /^(?:[A-Za-z]:[\\/]|\\\\)/.test(directory)
-    ? `Set-Location -LiteralPath '${directory.replace(/'/g, "''")}'`
-    : `cd ${quote(directory)}`
-  return [cd, 'git pull --ff-only', 'bun install --frozen-lockfile', 'bun run build'].join('\n')
 }
 
 async function confirmation(options: UpdateOptions, question: Confirmation): Promise<boolean> {
@@ -52,21 +46,22 @@ async function confirmation(options: UpdateOptions, question: Confirmation): Pro
   } finally { options.signal.removeEventListener('abort', abort) }
 }
 
-async function pause(signal: AbortSignal): Promise<void> {
+async function pause(signal: AbortSignal, milliseconds = 100): Promise<void> {
   signal.throwIfAborted()
   await new Promise<void>((resolve, reject) => {
     const abort = () => { clearTimeout(timer); reject(signal.reason) }
-    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, 100)
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, milliseconds)
     signal.addEventListener('abort', abort, { once: true })
   })
 }
 
-/** Updates only the exact host-managed target; local checkouts never mutate here. */
+/** The connected host owns package updates and confirmed local-checkout builds. */
 export async function updatePlugin(client: OpenCodeClient, options: UpdateOptions): Promise<UpdateResult> {
   if (running.has(client)) return { state: 'error', text: 'An Obs update check is already running on this connection. Wait for it to finish.' }
   running.add(client)
   const location = { ...options.location }
   let dispatched = false
+  let localDispatched = false
   const check = () => {
     options.signal.throwIfAborted()
     if (!options.current()) throw new Error('The server reconnected. Run /obs update --check on the current connection.')
@@ -80,14 +75,83 @@ export async function updatePlugin(client: OpenCodeClient, options: UpdateOption
     if (matches.length !== 1) throw new Error(matches.length ? 'More than one Obs installation matched. Update it through OpenCode’s plugin manager.' : 'The connected server did not identify its Obs installation. Check OpenCode’s plugin settings.')
     return matches[0]!
   }
+  const serverLabel = async (): Promise<string> => {
+    if (options.server) return clean(options.server)
+    const info = await client.server.info({ signal: options.signal })
+    check()
+    return clean([info.hostname, ...info.urls.map(value => {
+      try { const url = new URL(value); return `${url.protocol}//${url.host}` } catch { return '' }
+    })].filter(Boolean).join(' · ') || 'Connected OpenCode server')
+  }
+  const idle = async () => {
+    check()
+    const active = await client.session.active({ signal: options.signal })
+    check()
+    if (Object.keys(active).length) throw new Error('Wait for all running tasks on this OpenCode server to finish before updating the shared local checkout.')
+  }
+  const localResult = (result: LocalUpdateResult): UpdateResult => ({
+    state: result.state,
+    text: `Loaded UI version: ${manifest.version}.\n${display(result.text)}`,
+    ...(result.restartRequired ? { restartRequired: true as const } : {}),
+  })
   try {
     if (typeof location.directory !== 'string' || !location.directory.trim()) throw new Error('The project location is not ready. Open a project and run /obs update again.')
     check(); options.progress('Checking this server’s Obs installation…')
     const plugin = await find(), source = plugin.source
-    if (source.type === 'local') return {
-      state: 'manual', text: [`Obs uses a local checkout. Loaded UI version: ${manifest.version}. OpenCode’s package updater does not update local directories.`,
-        'On the OpenCode server’s machine, update the adapter manually:', localInstructions(source.path),
-        'When current work is finished, restart the connected server and reopen the terminal. For Desktop’s built-in server, fully quit and reopen Desktop. A remote server must be restarted on its own machine.'].join('\n\n'),
+    if (source.type === 'local') {
+      const sourcePath = source.path, rpc = client.rpc(Obs), request = { location, signal: options.signal }
+      options.progress('Checking the local Obs checkout and its remote revision…')
+      let reviewed: LocalUpdateResult
+      for (let attempt = 0;; attempt++) {
+        check()
+        try { reviewed = await rpc.localUpdateCheck({ sourcePath }, request); break }
+        catch (error) {
+          check()
+          const type = typeof error === 'object' && error !== null && 'type' in error ? error.type : undefined
+          const delay = [200, 500, 1000][attempt]
+          // A newly opened workspace can reject read-only calls until its
+          // plugin registers. Never apply this retry to an update start.
+          if (type === 'rpc.unavailable' && delay !== undefined) { await pause(options.signal, delay); continue }
+          if (type === 'rpc.unavailable' || type === 'rpc.method_not_found') {
+            return { state: 'error', text: 'Local update support is unavailable in the running Obs server. It may still be starting or may use older code than the UI. Finish current work, then restart the connected server with its matching-version OpenCode CLI in the original launch environment. For a managed local service, use `opencode service restart`. On macOS, Desktop’s matching CLI is `"/Applications/OpenCode.app/Contents/Resources/opencode-cli" service restart`. Reopen the interface afterward; quitting Desktop alone leaves its service running. Then run /obs update again.' }
+          }
+          throw error
+        }
+      }
+      check()
+      if (options.check || reviewed.state !== 'available') return localResult(reviewed)
+      const plan = reviewed.plan
+      if (!plan) throw new Error('The server did not provide a reviewed local update plan. Restart its Obs plugin and check again.')
+      await idle()
+      const server = await serverLabel()
+      const transport = plan.effectiveRemote && plan.effectiveRemote !== plan.remote ? `\nTransport: ${clean(plan.effectiveRemote)}` : ''
+      const accepted = await confirmation(options, {
+        title: 'Update TrajViz Obs?',
+        message: `Server: ${server}\nProject: ${clean(location.directory)}\nCheckout: ${clean(plan.root)}\nBranch: ${clean(plan.branch)}\nRemote: ${clean(plan.remote)}${transport}\nInstalled: ${clean(plan.current)}\nAvailable: ${clean(plan.available)}\nVersion: ${clean(plan.currentVersion)} → ${clean(plan.availableVersion)}\n\n${plan.steps.map((step, index) => `${index + 1}. ${clean(step)}`).join('\n')}\n\nThis checkout may serve other projects, plugins, and clients. Its shared files and generated adapter outputs will change. Configuration and telemetry preferences are kept. Restart the server only after the update finishes.`,
+      })
+      check()
+      if (!accepted) return { state: 'cancelled', text: 'Obs update cancelled before dispatch. No checkout was changed.' }
+      await idle()
+      if (identity(await find()) !== identity(plugin)) throw new Error('The Obs installation changed while confirmation was open. Run /obs update --check again before updating.')
+      check(); options.progress('Updating and building the local Obs checkout on the server. Let it finish before restarting…')
+      check()
+      const runID = crypto.randomUUID()
+      dispatched = true; localDispatched = true
+      // An acknowledgement can be lost after the server has started. Poll the
+      // same job; never send a second apply request to resolve an uncertain one.
+      let startError: unknown
+      try { await rpc.localUpdateStart({ sourcePath, token: plan.token, runID }, request) }
+      catch (error) { check(); startError = error }
+      for (;;) {
+        check()
+        const state = await rpc.localUpdatePoll({ sourcePath, runID }, request)
+        check()
+        if (state.state === 'finished') return localResult(state.result)
+        if (state.state === 'expired') throw startError ?? new Error('The local update result expired. Check the checkout state before trying again.')
+        startError = undefined
+        if (state.progress) options.progress(display(state.progress))
+        await pause(options.signal)
+      }
     }
     if (source.type !== 'package') return { state: 'manual', text: 'This Obs installation is not a host-managed package. Update its configured source manually, then reload the plugin.' }
     const target = source.target
@@ -107,11 +171,7 @@ export async function updatePlugin(client: OpenCodeClient, options: UpdateOption
     if (!checked.source.outdated) return { state: 'current', text: `OpenCode reports no available update for the configured Obs target: ${clean(target)} (installed ${checked.source.version ? clean(checked.source.version) : 'version unknown'}).` }
     const summary = `${clean(target)} · installed ${checked.source.version ? clean(checked.source.version) : 'version unknown'}`
     if (options.check) return { state: 'available', text: `An Obs package update is available: ${summary}.\nRun /obs update to review and apply it on this server.` }
-    const info = options.server ? undefined : await client.server.info({ signal: options.signal })
-    check()
-    const server = options.server ?? ([info?.hostname, ...(info?.urls ?? []).map(value => {
-      try { const url = new URL(value); return `${url.protocol}//${url.host}` } catch { return '' }
-    })].filter(Boolean).join(' · ') || 'Connected OpenCode server')
+    const server = await serverLabel()
     const accepted = await confirmation(options, {
       title: 'Update TrajViz Obs?',
       message: `Server: ${clean(server)}\nProject: ${clean(location.directory)}\nPackage: ${summary}\n\nOpenCode will update only this configured package and reload affected plugin instances. This installation may be shared by other sessions or clients on the server. Existing plugin work may be interrupted.`,
@@ -138,6 +198,7 @@ export async function updatePlugin(client: OpenCodeClient, options: UpdateOption
       await pause(verification)
     }
   } catch (error) {
+    if (localDispatched) return { state: options.signal.aborted ? 'cancelled' : 'error', text: 'Stopped waiting for the local Obs update. The server may still be updating or building the checkout. Let it finish; do not restart the server or start another update yet. Run /obs update --check after reconnecting to verify its state.' }
     if (dispatched) return { state: options.signal.aborted ? 'cancelled' : 'error', text: 'Stopped waiting for OpenCode’s update result. The server may still finish the update or reload the plugin. Run /obs update --check after reconnecting to verify its state; do not start another update yet.' }
     if (options.signal.aborted) return { state: 'cancelled', text: 'Obs update cancelled before dispatch. No package was changed.' }
     return { state: 'error', text: `Obs update: ${clean(errorMessage(error))}` }

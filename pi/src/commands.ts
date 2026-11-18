@@ -42,7 +42,7 @@ AI · uses your selected Pi model, with a call preview
 
 Setup and preferences
   setup [--extras all|none|charts,app] [--source S]    doctor    sessions [1–500]
-  update [--check] · update a Pi-managed Git install; local checkouts need a manual pull
+  update [--check] · update a Pi-managed Git install or review a clean local main checkout
   watch [on|off]    statusline [on|off]    cancel
   enable_telemetry | disable_telemetry    telemetry
   telemetry_destination [URL [--use-launch-token] | default]
