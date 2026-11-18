@@ -15,7 +15,7 @@ Visualize and diagnose Claude Code, OpenCode 2, and Pi sessions with [TrajViz](h
 
 For **OpenCode 2 terminal or Desktop**, follow the [OpenCode guide](opencode/README.md). For **Pi**, follow the [Pi guide](pi/README.md). The instructions below install the Claude Code plugin.
 
-Requires Claude Code with function hooks (mods) and process execution, plus [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Validated on Claude Code **2.1.311**.
+Requires Claude Code with [mods](https://code.claude.com/docs/en/plugins/mods/overview) and process execution, plus [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Validated on Claude Code **2.1.311**.
 
 In Claude Code:
 
@@ -23,7 +23,9 @@ In Claude Code:
 /plugin install trajviz-obs --marketplace rshu/TrajViz-Obs
 ```
 
-Confirm the marketplace and installation scope, then restart Claude Code. The first `/obs` prepares a private TrajViz runtime. The live dashboard needs the optional `app` dependencies. Initial setup requires network access.
+Confirm the marketplace and installation scope, then restart Claude Code or run `/reload-plugins`. Run `/obs help` to verify the plugin loaded.
+
+`/obs` prepares a private TrajViz runtime on first use; `/obs dashboard` adds its dashboard dependencies automatically. First-time setup requires network access. You can also run `/obs setup` before a task, then `/obs doctor` to check setup.
 
 To update:
 
@@ -32,7 +34,9 @@ claude plugin marketplace update trajviz-obs
 claude plugin update trajviz-obs@trajviz-obs
 ```
 
-Run the update from the project where you use the plugin. It selects that project's most specific installation; add `--scope user`, `--scope project`, or `--scope local` to choose explicitly. Restart Claude Code after updating.
+Run the update from the project where you use the plugin. It selects that project's most specific installation; add `--scope user`, `--scope project`, or `--scope local` to choose explicitly. Restart Claude Code or run `/reload-plugins` after updating.
+
+To remove a user installation, run `claude plugin uninstall trajviz-obs@trajviz-obs --scope user`, then reload plugins. Use `--scope project` or `--scope local` if you installed it in that scope.
 
 ## Use
 

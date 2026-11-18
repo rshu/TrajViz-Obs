@@ -2,14 +2,24 @@
 
 Telemetry is off by default. When enabled, Claude Code, OpenCode, and Pi queue allowlisted usage events locally and send them in the background during plugin activity. The collector validates and deduplicates uploads in SQLite. The local service saves a JSON snapshot of the report. The separate publisher refreshes HTML and JSON on a schedule.
 
-Run the collector commands from the TrajViz-Obs repository root with Python 3.11 or newer.
+Run commands from the TrajViz-Obs repository root with **Python 3.11+**. The service uses only the Python standard library; no `pip install` is needed.
+
+If you do not already have Python 3.11+ selected, use [uv](https://docs.astral.sh/uv/) to create a small environment. In a macOS/Linux shell:
+
+```sh
+uv venv --python 3.11 telemetry/.venv
+source telemetry/.venv/bin/activate
+python --version
+```
+
+The examples below use that environment's `python`. In a new terminal, activate it again before running them.
 
 ## Try it locally
 
 1. Start the local service. With no credential registry configured, it accepts loopback uploads without a token.
 
    ```sh
-   python3 -m telemetry --database "$HOME/.local/state/trajviz-obs/usage.sqlite3" serve
+   python -m telemetry --database "$HOME/.local/state/trajviz-obs/usage.sqlite3" serve
    ```
 
 2. Open [the local report](http://127.0.0.1:8765/) in a browser. It shows the most recent 30 UTC days. The server writes `usage.sqlite3.report.json` next to the database at startup and refreshes it when you reload the report.
@@ -20,12 +30,12 @@ Run the collector commands from the TrajViz-Obs repository root with Python 3.11
 
 | Launch environment variable | Setting |
 | --- | --- |
-| `TRAJVIZ_OBS_TELEMETRY` | Set to `1` to opt in at launch when no consent preference has been saved. |
+| `TRAJVIZ_OBS_TELEMETRY` | Set to `1` to opt in at launch when no consent preference has been saved. Also set `TRAJVIZ_OBS_TELEMETRY_URL` or save a destination; launch opt-in alone does not select the loopback default. |
 | `TRAJVIZ_OBS_TELEMETRY_URL` | Full URL ending in `/v1/events`, with no user info, query, or fragment. An explicit `/obs enable_telemetry` uses `http://127.0.0.1:8765/v1/events` when this is unset. HTTPS is required except on HTTP loopback (`localhost`, `127.0.0.1`, or `::1`). |
 | `TRAJVIZ_OBS_TELEMETRY_TOKEN` | Bearer token issued by the collector. Required for authenticated receivers. |
 | `TRAJVIZ_OBS_TELEMETRY_STATE_DIR` | Optional absolute path for local queue state. Defaults to `~/.local/state/trajviz-obs/telemetry` on macOS and Linux, honoring `XDG_STATE_HOME`, or `%LOCALAPPDATA%\trajviz-obs\telemetry` on Windows when set. |
 
-Set these in Claude Code’s or Pi’s launch environment, or the OpenCode **server’s** launch environment for both terminal and Desktop clients. Claude Code ignores telemetry values in its settings files. On macOS, apps opened from Finder do not inherit terminal exports. Restart the host or server after changing the settings.
+Set these in Claude Code’s or Pi’s launch environment, or the OpenCode **server’s** launch environment for both terminal and Desktop clients. Keep telemetry and state-directory variables out of Claude Code's `settings.env`; conflicting settings disable telemetry controls. On macOS, apps opened from Finder do not inherit terminal exports. Restart the host or server after changing its launch environment. The `/obs` configuration commands below take effect without restarting.
 
 `/obs enable_telemetry` and `/obs disable_telemetry` save the choice per adapter in the local state directory. Changes apply without a restart. Client upgrades preserve that choice. An explicit disable stops recording and pauses queued uploads until telemetry is enabled again. Reopen existing dashboards after enabling telemetry to track browser actions.
 
@@ -52,7 +62,7 @@ application = create_production_app("/var/lib/trajviz-obs/usage.sqlite3")
 | `serve --credentials PATH` and `--require-auth` | The absolute path overrides `TRAJVIZ_OBS_INGEST_CREDENTIALS`. A configured registry authenticates uploads to `/v1/events`. `--require-auth` makes startup fail if no registry is configured. The browser report is available to local users. |
 | `serve --requests-per-minute N` and `--global-requests-per-minute N` | Defaults to 60 per credential and 600 overall per UTC minute for authenticated uploads. Set `1 ≤ per credential ≤ global ≤ 60,000`. The factory accepts the same settings as `requests_per_minute` and `global_requests_per_minute`. |
 
-Use `python3 -c 'import secrets; print(secrets.token_hex(32))'` to generate an address key and store it in your deployment secret store. Keep the same key across workers and restarts for one database. The collector rejects a different key for that database so overlapping reporting windows keep a consistent address count. Omit the key to pause address measurement. Use a fresh database to start a separate counting history with a new key.
+Use `python -c 'import secrets; print(secrets.token_hex(32))'` to generate an address key and store it in your deployment secret store. Keep the same key across workers and restarts for one database. The collector rejects a different key for that database so overlapping reporting windows keep a consistent address count. Omit the key to pause address measurement. Use a fresh database to start a separate counting history with a new key.
 
 Address counts use the WSGI server's `REMOTE_ADDR`. Behind HTTPS proxies, configure the trusted server or middleware to set it from a verified forwarding chain. Block direct access to that listener and strip incoming forwarding headers at the edge. The collector itself ignores forwarding headers. A directly connected local plugin normally appears as one loopback address. [Trusted proxy configuration](https://werkzeug.palletsprojects.com/en/stable/deployment/proxy_fix/)
 
@@ -60,19 +70,25 @@ Issue one credential per installation or shared server. Run registry commands as
 
 ```sh
 registry=/var/lib/trajviz-obs/credentials.json
-python3 -m telemetry credentials --file "$registry" issue pilot-mac
+python -m telemetry credentials --file "$registry" issue pilot-mac
 ```
 
 Use `credentials --file "$registry" list` to see labels or `credentials --file "$registry" revoke pilot-mac` to disable a token.
 
-For the following commands, set `usage_db` to the collector’s database path. Run `python3 -m telemetry --database "$usage_db" status --days 7` for private aggregate delivery counters, including accepted requests, new events, rejections, throttling, and errors. The default window is seven UTC days. Schedule `python3 -m telemetry --database "$usage_db" prune` to remove expired rows and checkpoint SQLite. Keep the database and registry private. Use SQLite’s backup API for a live copy and apply retention to backups. [SQLite backup guide](https://sqlite.org/backup.html)
+For reports and maintenance, open another terminal in the repository, activate the environment above, and set the collector's database path:
+
+```sh
+usage_db="$HOME/.local/state/trajviz-obs/usage.sqlite3"
+```
+
+Use the actual database path if it differs from the local example. Run `python -m telemetry --database "$usage_db" status --days 7` for private aggregate delivery counters, including accepted requests, new events, rejections, throttling, and errors. The default window is seven UTC days. Schedule `python -m telemetry --database "$usage_db" prune` to remove expired rows and checkpoint SQLite. Keep the database and registry private. Use SQLite’s backup API for a live copy and apply retention to backups. [SQLite backup guide](https://sqlite.org/backup.html)
 
 ## Reports
 
 To refresh the report without opening it in a browser, run the publisher as a separate process. It writes both files immediately, then refreshes them from the same snapshot on each interval. Each file replaces its previous copy atomically. Stop the publisher with Ctrl+C or SIGTERM.
 
 ```sh
-python3 -m telemetry --database "$usage_db" publish \
+python -m telemetry --database "$usage_db" publish \
   --html /tmp/trajviz-usage.html --interval-seconds 3600
 ```
 
@@ -98,7 +114,7 @@ Events include a UTC day, adapter, surface, allowlisted feature, outcome, latenc
 
 ## Downloads and installs
 
-Run `python3 -m telemetry.downloads` for external counters. It reports GitHub release asset downloads and npm package downloads separately from opt-in usage. Defaults are `--repo rshu/TrajViz-Obs`, `--package trajviz-obs-opencode`, and `--period last-month`. The other npm windows are `last-day` and `last-week`.
+Run `python -m telemetry.downloads` for external counters. It reports GitHub release asset downloads and npm package downloads separately from opt-in usage. Defaults are `--repo rshu/TrajViz-Obs`, `--package trajviz-obs-opencode`, and `--period last-month`. The other npm windows are `last-day` and `last-week`.
 
 Add `--github-traffic` with an authenticated `gh` session to include 14 days of repository clone totals. To include a live Claude directory install count, pass `--claude-directory-installs START END COUNT` using the inclusive UTC date range and count from the published listing’s live Usage tab. Unavailable counters are marked as such. Repository clone totals cover all adapters; Pi Git installs have no separate public installation counter. Downloads can include repeat fetches and CI, and opt-in installations cover only hosts that send events. [GitHub release assets](https://docs.github.com/en/rest/releases/assets) · [GitHub clone traffic](https://docs.github.com/en/rest/metrics/traffic#get-repository-clones) · [npm download counts](https://github.com/npm/registry/blob/main/docs/download-counts.md) · [Claude developer portal](https://claude.com/docs/connectors/building/after-publishing#track-published-plugin-usage)
 
@@ -108,7 +124,7 @@ From the repository root, run the integration tests with the sender and collecto
 
 ```sh
 uv sync --project bridge --locked --extra dev
-uv run --project bridge --locked --extra dev python3 -m pytest telemetry -q
+uv run --project bridge --locked --extra dev python -m pytest telemetry -q
 ```
 
 To test compatibility with a different client build, set `TRAJVIZ_OBS_CLIENT_CHECKOUT` to that checkout's root.

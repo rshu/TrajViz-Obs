@@ -4,7 +4,7 @@ Inspect session health, tools, subagents, context use, and step labels with `/ob
 
 ## Install
 
-Requires **OpenCode 2**, [Bun](https://bun.sh) **1.3.0+**, and either [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Tested on terminal **2.2.5** and Desktop **2.2.7** on macOS.
+Requires [OpenCode 2](https://opencode.ai/docs/), Git, [Bun](https://bun.sh) **1.3.0+**, and either [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Tested on terminal **2.2.5** and Desktop **2.2.7** on macOS, with Bun **1.3.14**. Check your terminal versions with `opencode --version` and `bun --version`.
 
 ### 1. Build the adapter and find its path
 
@@ -16,7 +16,7 @@ bun run build
 pwd
 ```
 
-If you already have a checkout, update it with `git pull --ff-only`, then run the install/build commands in its `opencode` directory. Copy the absolute directory printed by `pwd`, pointing to this checkout's `opencode` subdirectory.
+If you already have a checkout, update it with `git pull --ff-only`, then run the install/build commands in its `opencode` directory. Copy the absolute directory printed by `pwd`, pointing to this checkout's `opencode` subdirectory. Keep the checkout in place; OpenCode loads the adapter from this path.
 
 ### 2. Configure Desktop or the terminal
 
@@ -72,7 +72,7 @@ opencode
 
 For standalone sessions, close and rerun `opencode --standalone`. With `--server`, restart the connected server and reconnect the TUI instead. Complete an assistant response, then run `/obs` and `/obs dashboard`.
 
-In either interface, the first `/obs` prepares a private TrajViz runtime and needs network access. The live dashboard needs the optional `app` dependencies. Use `/obs doctor` to check setup or `/obs help` to list commands.
+In either interface, `/obs help` lists commands and `/obs doctor` checks setup. The first diagnostic command prepares a private TrajViz runtime; `/obs dashboard` adds its dashboard dependencies automatically. First-time setup requires network access.
 
 ### Update or remove
 
@@ -113,7 +113,7 @@ To set options, replace the adapter's existing string entry with an object:
 
 `llm` defaults to `session`, using OpenCode's selected model. `analysisModel` and `labelModel` accept `session` or `provider/model`. Model commands show their call plan and ask before more than four calls; labeling defaults to 50 steps (`labelMaxSteps`). Native generation uses OpenCode's configured output settings and does not return per-call usage. Per-request `--max-tokens` and `--temperature` require `llm: "env"` and the [environment provider settings](https://github.com/rshu/TrajViz-Obs#configure).
 
-Desktop remembers watch and statusline toggles in its own preferences, overriding these configuration defaults.
+Desktop and the terminal remember watch and statusline toggles independently. Saved preferences override these configuration defaults.
 
 `python` overrides interpreter discovery; `trajvizSource` overrides the TrajViz requirement. `cacheRoot` moves the private runtime and session artifacts. Dashboards bind to localhost and stop with `/obs dashboard stop`, `/obs converge stop`, or plugin unload.
 
