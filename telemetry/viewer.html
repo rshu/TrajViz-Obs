@@ -19,6 +19,7 @@
       --accent: #173d58;
       --claude: #a74d2e;
       --opencode: #176b9a;
+      --pi: #7352ac;
       --negative: #972d3b;
     }
     * { box-sizing: border-box; }
@@ -59,8 +60,10 @@
     .adapter::before { content: ''; height: .57rem; width: .57rem; border-radius: 50%; background: var(--series); }
     .legend .adapter::before { height: 0; width: 1.1rem; border-top: 2px solid var(--series); border-radius: 0; }
     .legend .opencode::before { border-top-style: dashed; }
+    .legend .pi::before { border-top-style: dotted; }
     .claude-code { --series: var(--claude); }
     .opencode { --series: var(--opencode); }
+    .pi { --series: var(--pi); }
     .all-adapters { --series: var(--accent); }
     svg { width: 100%; height: auto; display: block; margin-top: 5px; }
     .chart text { fill: var(--muted); font-size: 13px; }
@@ -124,7 +127,7 @@
     <p id="error" class="error" role="alert" hidden></p>
     <div id="dashboard" hidden>
       <div class="toolbar">
-        <label class="field"><span data-copy="adapter">Coding agent</span> <select id="adapter-filter"><option value="all" data-copy="allAdapters">All agents</option><option value="claude-code">Claude Code</option><option value="opencode">OpenCode</option></select></label>
+        <label class="field"><span data-copy="adapter">Coding agent</span> <select id="adapter-filter"><option value="all" data-copy="allAdapters">All agents</option></select></label>
       </div>
       <div class="pair">
         <section class="panel pad" aria-labelledby="first-seen-title">
@@ -299,8 +302,8 @@
       allVersions: ['All versions', '所有版本'],
       agentVersionsTable: ['Coding agent versions table', '编程智能体版本统计表'],
       agentVersionDefinition: [
-        'These are Claude Code and OpenCode versions. If an installation reports several versions, it counts under each one. Events without a version appear under Unknown.',
-        '这里统计的是 Claude Code 和 OpenCode 的版本。一个安装实例上报了多个版本时，每个版本各计一次。未上报版本的事件归为“未知”。',
+        'These are coding agent versions, separate from plugin versions. If an installation reports several versions, it counts under each one. Events without a version appear under Unknown.',
+        '这里统计的是编程智能体的版本，与插件版本分开。一个安装实例上报了多个版本时，每个版本各计一次。未上报版本的事件归为“未知”。',
       ],
       unknownVersion: ['Unknown', '未知'],
       agentVersionLimit: ['Top {shown} of {total} by event count. The JSON export includes all rows.', '按事件数排名，显示前 {shown} 行，共 {total} 行。JSON 导出文件包含全部数据。'],
@@ -324,7 +327,7 @@
       oversized: ['The report exceeds the 5 MiB viewer limit.', '报告超出查看器的 5 MiB 大小限制。'],
       loadFailed: ['Could not load the report data.', '无法加载报告数据。'],
     };
-    const ADAPTERS = { 'claude-code': 'Claude Code', opencode: 'OpenCode' };
+    const ADAPTERS = { 'claude-code': 'Claude Code', opencode: 'OpenCode', pi: 'Pi' };
     const SURFACES = { terminal: ['Terminal', '终端'], desktop: ['Desktop', '桌面端'], headless: ['Headless', '无界面'], browser: ['Browser', '浏览器'], unknown: ['Unknown', '未知'] };
     const OUTCOMES = new Set(['success', 'error', 'observed', 'empty', 'cancelled', 'rejected', 'confirmation']);
     const BUCKETS = new Set(['lt_100ms', '100ms_1s', '1s_5s', '5s_30s', 'gte_30s']);
@@ -360,12 +363,14 @@
     const ROLLING_WINDOWS = { last_7_days: ['last7Days', 7], last_30_days: ['last30Days', 30] };
     const FEATURE_CATEGORIES = { command: 'commands', pane: 'panes', dashboard: 'dashboards' };
     const FORMAT = 'trajviz-obs-usage-report';
-    const VERSION = 3;
+    const VERSION = 4;
     const MAX_REPORT_SIZE = 5 * 1024 * 1024;
     const VERSION_ROWS = 100;
     const BAR_ROWS = 12;
     const DAY_MS = 86_400_000;
     const ADAPTER_IDS = Object.keys(ADAPTERS);
+    const LEGACY_ADAPTER_IDS = ['claude-code', 'opencode'];
+    let activeAdapterIds = ADAPTER_IDS;
     const VIEW_SECTIONS = ['adoption', 'daily', 'engagement', 'features', 'surfaces', 'versions', 'retention'];
     const BREAKDOWNS = { surfaces: 'surface', versions: 'version' };
     const viewModes = { features: 'table', surfaces: 'table', versions: 'table' };
@@ -423,17 +428,17 @@
       }
     }
 
-    function validateActivity(activity, start, end, periodDays) {
+    function validateActivity(activity, start, end, periodDays, adapterIds) {
       const section = 'observedActivity';
       const windows = Object.fromEntries(Object.keys(ACTIVITY_WINDOWS).map(key => [key, row => matchesFields(row, ACTIVITY_RULES)]));
       const countsByWindow = { ...windows, daily: Array.isArray };
       if (!matchesFields(activity, { ...countsByWindow, by_adapter: Array.isArray, by_agent_version: Array.isArray })) {
         throw new ReportError('invalidSection', section);
       }
-      const adapter = known(ADAPTERS);
-      checkRows(activity.by_adapter, section, { adapter, ...countsByWindow }, row => row.adapter, ADAPTER_IDS.length);
+      const adapter = value => adapterIds.includes(value);
+      checkRows(activity.by_adapter, section, { adapter, ...countsByWindow }, row => row.adapter, adapterIds.length);
       checkRows(activity.by_agent_version, 'agentVersions', { adapter, agent_version: nullable(version), ...ACTIVITY_RULES }, row => `${row.adapter}/${row.agent_version}`);
-      if (activity.by_adapter.length !== ADAPTER_IDS.length) throw new ReportError('missingRows');
+      if (activity.by_adapter.length !== adapterIds.length) throw new ReportError('missingRows');
       const daily = { day: value => day(value) && value >= start && value <= end, ...ACTIVITY_RULES };
       for (const scope of [activity, ...activity.by_adapter]) {
         checkRows(scope.daily, section, daily, row => row.day, periodDays);
@@ -441,7 +446,7 @@
       }
     }
 
-    function validateUsage(usage, end) {
+    function validateUsage(usage, end, adapterIds) {
       if (!exact(usage, ['rolling', 'features'])) throw new ReportError('invalidSection', 'features');
       const windows = Object.fromEntries(Object.entries(ROLLING_WINDOWS).map(([key, [, days]]) => [key, row => matchesFields(row, {
         start: value => day(value) && dateMillis(end) - dateMillis(value) === (days - 1) * DAY_MS,
@@ -450,9 +455,9 @@
       })]));
       const rolling = usage.rolling;
       if (!matchesFields(rolling, { ...windows, by_adapter: Array.isArray })) throw new ReportError('invalidSection', 'activeReturning');
-      const adapter = known(ADAPTERS);
-      checkRows(rolling.by_adapter, 'activeReturning', { adapter, ...windows }, row => row.adapter, ADAPTER_IDS.length);
-      if (rolling.by_adapter.length !== ADAPTER_IDS.length) throw new ReportError('missingRows');
+      const adapter = value => adapterIds.includes(value);
+      checkRows(rolling.by_adapter, 'activeReturning', { adapter, ...windows }, row => row.adapter, adapterIds.length);
+      if (rolling.by_adapter.length !== adapterIds.length) throw new ReportError('missingRows');
       checkRows(usage.features, 'features', {
         ...FEATURE_RULES, adapter, agent_version: nullable(version), category: known(FEATURE_CATEGORIES),
         completed: count, cancelled_rate: nullable(rate),
@@ -462,12 +467,12 @@
     function validate(report) {
       if (!record(report)) throw new ReportError('invalidReport');
       const versioned = own(report, 'format') || own(report, 'schema_version');
-      if (versioned && (report.format !== FORMAT || ![1, 2, VERSION].includes(report.schema_version))) {
+      if (versioned && (report.format !== FORMAT || ![1, 2, 3, VERSION].includes(report.schema_version))) {
         throw new ReportError('unsupportedReport');
       }
       const hasActivity = own(report, 'activity');
       const hasUsage = own(report, 'usage');
-      if (hasActivity !== (versioned && report.schema_version >= 2) || hasUsage !== (versioned && report.schema_version === VERSION)) {
+      if (hasActivity !== (versioned && report.schema_version >= 2) || hasUsage !== (versioned && report.schema_version >= 3)) {
         throw new ReportError('unsupportedReport');
       }
       const fields = ['as_of', 'period_start', 'retained_from', 'retention_days', ...VIEW_SECTIONS];
@@ -484,19 +489,21 @@
         throw new ReportError('datesOutsideRetention');
       }
       const key = row => row.adapter;
-      const checkAdapterRows = (rows, name, rules, keyOf, limit) => checkRows(rows, name, { adapter: known(ADAPTERS), ...rules }, keyOf, limit);
-      checkAdapterRows(report.adoption, 'installationActivity', countFields(ADOPTION), key, 2);
-      checkAdapterRows(report.engagement, 'engagement', { ...countFields(ENGAGEMENT), average_invocations_per_engaged_installation: nullable(average), average_days_per_engaged_installation: nullable(average) }, key, 2);
-      checkAdapterRows(report.daily, 'dailyActivity', { ...countFields(DAILY), day: value => day(value) && value >= start && value <= end }, row => `${row.adapter}/${row.day}`, periodDays * 2);
-      checkAdapterRows(report.features, 'features', { ...FEATURE_RULES, executed: count }, row => `${row.adapter}/${row.feature}`, FEATURES.size * 2);
-      checkAdapterRows(report.surfaces, 'surfaces', { surface: known(SURFACES), invocations: count, installations: count }, row => `${row.adapter}/${row.surface}`, 10);
+      const adapterIds = report.schema_version >= 4 ? ADAPTER_IDS : LEGACY_ADAPTER_IDS;
+      const size = adapterIds.length;
+      const checkAdapterRows = (rows, name, rules, keyOf, limit) => checkRows(rows, name, { adapter: value => adapterIds.includes(value), ...rules }, keyOf, limit);
+      checkAdapterRows(report.adoption, 'installationActivity', countFields(ADOPTION), key, size);
+      checkAdapterRows(report.engagement, 'engagement', { ...countFields(ENGAGEMENT), average_invocations_per_engaged_installation: nullable(average), average_days_per_engaged_installation: nullable(average) }, key, size);
+      checkAdapterRows(report.daily, 'dailyActivity', { ...countFields(DAILY), day: value => day(value) && value >= start && value <= end }, row => `${row.adapter}/${row.day}`, periodDays * size);
+      checkAdapterRows(report.features, 'features', { ...FEATURE_RULES, executed: count }, row => `${row.adapter}/${row.feature}`, FEATURES.size * size);
+      checkAdapterRows(report.surfaces, 'surfaces', { surface: known(SURFACES), invocations: count, installations: count }, row => `${row.adapter}/${row.surface}`, Object.keys(SURFACES).length * size);
       checkAdapterRows(report.versions, 'versions', { version, invocations: count, installations: count }, row => `${row.adapter}/${row.version}`);
-      checkAdapterRows(report.retention, 'retention', { days_after_first_seen: value => value === 7 || value === 30, eligible_installations: count, returned_installations: count, rate: nullable(rate) }, row => `${row.adapter}/${row.days_after_first_seen}`, 4);
-      if (report.adoption.length !== 2 || report.engagement.length !== 2 || report.retention.length !== 4 || report.daily.length !== periodDays * 2) {
+      checkAdapterRows(report.retention, 'retention', { days_after_first_seen: value => value === 7 || value === 30, eligible_installations: count, returned_installations: count, rate: nullable(rate) }, row => `${row.adapter}/${row.days_after_first_seen}`, size * 2);
+      if (report.adoption.length !== size || report.engagement.length !== size || report.retention.length !== size * 2 || report.daily.length !== periodDays * size) {
         throw new ReportError('missingRows');
       }
-      if (hasActivity) validateActivity(report.activity, start, end, periodDays);
-      if (hasUsage) validateUsage(report.usage, end);
+      if (hasActivity) validateActivity(report.activity, start, end, periodDays, adapterIds);
+      if (hasUsage) validateUsage(report.usage, end, adapterIds);
       return report;
     }
 
@@ -571,7 +578,7 @@
       heading(target, title);
       const legend = node('div', undefined, 'legend');
       const selected = selectedAdapter();
-      const adapters = selected !== 'all' ? [selected] : address ? ['all'] : ADAPTER_IDS;
+      const adapters = selected !== 'all' ? [selected] : address ? ['all'] : activeAdapterIds;
       const seriesLabel = adapter => adapter === 'all' ? t('allAdapters') : ADAPTERS[adapter];
       const seriesClass = adapter => adapter === 'all' ? 'all-adapters' : adapter;
       for (const adapter of adapters) legend.append(node('span', seriesLabel(adapter), `adapter ${seriesClass(adapter)}`));
@@ -607,7 +614,7 @@
         if (run.length) runs.push(run);
         for (const points of runs) {
           const coordinates = points.map(([row, index]) => `${x(index)},${y(row[metric])}`).join(' ');
-          const style = { class: seriesClass(adapter), points: coordinates, 'stroke-dasharray': adapter === 'opencode' ? '5 3' : 'none' };
+          const style = { class: seriesClass(adapter), points: coordinates, 'stroke-dasharray': adapter === 'opencode' ? '5 3' : adapter === 'pi' ? '2 3' : 'none' };
           if (points.length > 1) chart.append(svgNode('polyline', style));
           if (series.length > 31 && points.length > 1) continue;
           for (const [row, index] of points) {
@@ -811,6 +818,18 @@
     }
 
     function render(report) {
+      activeAdapterIds = report.adoption.map(row => row.adapter);
+      const filter = element('adapter-filter');
+      const selected = selectedAdapter();
+      const all = node('option', t('allAdapters'));
+      all.value = 'all';
+      all.dataset.copy = 'allAdapters';
+      filter.replaceChildren(all, ...activeAdapterIds.map(adapter => {
+        const option = node('option', ADAPTERS[adapter]);
+        option.value = adapter;
+        return option;
+      }));
+      filter.value = activeAdapterIds.includes(selected) ? selected : 'all';
       const adoption = visibleRows(report.adoption);
       const engagement = visibleRows(report.engagement);
       drawAdoption(report, adoption);

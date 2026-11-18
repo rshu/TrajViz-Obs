@@ -11,6 +11,24 @@ from pathlib import Path
 
 from .errors import BridgeError
 
+_HOST_INPUTS: tuple[Path, ...] = ()
+
+
+@contextlib.contextmanager
+def host_inputs(paths: Iterable[Path]) -> Iterator[None]:
+    """Protect host-owned sources for one CLI handler, including its worker threads.
+
+    The host passes these paths directly, independently of imported capture metadata.
+    A CLI process runs one command; an immutable process-wide tuple also reaches Gradio workers.
+    """
+    global _HOST_INPUTS
+    previous = _HOST_INPUTS
+    _HOST_INPUTS = (*previous, *(Path(path) for path in paths))
+    try:
+        yield
+    finally:
+        _HOST_INPUTS = previous
+
 
 @contextlib.contextmanager
 def staged_path(destination: Path) -> Iterator[Path]:
@@ -19,11 +37,13 @@ def staged_path(destination: Path) -> Iterator[Path]:
     Exclusive creation prevents both concurrent writers sharing a staging path and a preexisting symlink
     redirecting a temporary write. The caller creates the destination directory and protects its inputs.
     """
+    protect_inputs([destination], ())
     descriptor, name = tempfile.mkstemp(prefix=".trajviz-obs-", suffix=".tmp", dir=destination.parent)
     os.close(descriptor)
     temporary = Path(name)
     try:
         yield temporary
+        protect_inputs([destination], ())
         os.replace(temporary, destination)
     finally:
         with contextlib.suppress(OSError):
@@ -48,9 +68,12 @@ def session_files(transcript: Path, *, session_id: str | None = None) -> list[Pa
 
 def protect_inputs(destinations: Iterable[Path], sources: Iterable[Path]) -> None:
     """Refuse source aliases at output or staging paths before writing any part of an export."""
+    protected = (*_HOST_INPUTS, *sources)
+    if not protected:
+        return
     resolved: dict[Path, Path] = {}
     inodes: dict[tuple[int, int], Path] = {}
-    for source in sources:
+    for source in protected:
         resolved[source.resolve()] = source
         with contextlib.suppress(OSError):
             stat = source.stat()

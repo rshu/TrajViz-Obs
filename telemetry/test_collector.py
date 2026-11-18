@@ -219,17 +219,18 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(self.count("events"), 24)
         self.assertEqual(self.count("installations"), 9)
         stats = report(self.database, today=self.today, days=14)
-        self.assertEqual(len(stats["daily"]), 28)
+        self.assertEqual(len(stats["daily"]), 42)
         self.assertEqual([(row["observed_installations"], row["new_installations"], row["active_today"],
                            row["active_last_30_days"], row["engaged_in_period"], row["activation_only_in_period"],
                            row["returning_in_period"], row["returning_engaged_in_period"]) for row in stats["adoption"]],
-                         [(4, 2, 3, 3, 2, 1, 3, 2), (4, 2, 2, 4, 3, 1, 3, 2)])
+                         [(4, 2, 3, 3, 2, 1, 3, 2), (4, 2, 2, 4, 3, 1, 3, 2), (0,) * 8])
         self.assertEqual([(row["invocations"], row["engaged_on_multiple_days"],
                            row["average_invocations_per_engaged_installation"],
                            row["average_days_per_engaged_installation"]) for row in stats["engagement"]],
-                         [(6, 2, 3.0, 2.5), (5, 1, 1.67, 1.33)])
+                         [(6, 2, 3.0, 2.5), (5, 1, 1.67, 1.33), (0, 0, None, None)])
         self.assertEqual([(row["eligible_installations"], row["returned_installations"], row["rate"])
-                          for row in stats["retention"]], [(3, 2, 0.6667), (2, 1, 0.5), (3, 1, 0.3333), (2, 2, 1.0)])
+                          for row in stats["retention"]],
+                         [(3, 2, 0.6667), (2, 1, 0.5), (3, 1, 0.3333), (2, 2, 1.0), (0, 0, None), (0, 0, None)])
         features = {(row["adapter"], row["feature"]): row for row in stats["features"]}
         self.assertNotIn(("opencode", "timeline"), features)
         overview = features["claude-code", "overview"]
@@ -247,7 +248,7 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual((self.count("events"), self.count("installations")), (20, 8))
         shortened = report(self.database, today=self.today, days=14, retention_days=32)
         self.assertEqual([(row["eligible_installations"], row["rate"]) for row in shortened["retention"]],
-                         [(1, 1.0), (0, None), (2, 0.0), (1, 1.0)])
+                         [(1, 1.0), (0, None), (2, 0.0), (1, 1.0), (0, None), (0, None)])
 
     def test_pruning_removes_inactive_ids_and_keeps_first_seen_for_retained_activity(self):
         active, inactive = uuid4().hex, uuid4().hex
@@ -298,7 +299,8 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(self.request(batch(activated, event(self.today, "activation", surface="desktop",
                                                             version="0.5.4"), adapter="opencode"))[0], 204)
         result = report(self.database, today=self.today, days=30)
-        claude, opencode = result["adoption"]
+        claude, opencode, pi = result["adoption"]
+        self.assertEqual(pi["new_installations"], 0)
         self.assertEqual(claude["active_today"], 1)
         self.assertEqual(claude["active_last_30_days"], 2)
         self.assertEqual(claude["returning_engaged_in_period"], 2)
@@ -330,7 +332,7 @@ class CollectorTest(unittest.TestCase):
         report_day = self.today - timedelta(days=60)
         result = report(self.database, today=report_day, retained_on=self.today, retention_days=self.retention_days)
         self.assertEqual(result["as_of"], report_day.isoformat())
-        self.assertEqual(len(result["daily"]), 60)
+        self.assertEqual(len(result["daily"]), 90)
         with self.assertRaises(ValueError):
             report(self.database, today=report_day - timedelta(days=1), retained_on=self.today,
                    retention_days=self.retention_days)

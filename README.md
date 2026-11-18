@@ -2,16 +2,18 @@
 
 [![Checks](https://github.com/rshu/TrajViz-Obs/actions/workflows/checks.yml/badge.svg?branch=main&event=push)](https://github.com/rshu/TrajViz-Obs/actions/workflows/checks.yml)
 [![Claude Code supported](https://img.shields.io/badge/Claude_Code-supported-D97757)](#install)
+[![Pi supported](https://img.shields.io/badge/Pi-supported-8B5CF6)](pi/README.md#install)
 [![OpenCode 2 supported](https://img.shields.io/badge/OpenCode_2-supported-3B82F6)](opencode/README.md#install)
 [![Claude Code plugin version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frshu%2FTrajViz-Obs%2Fmain%2F.claude-plugin%2Fplugin.json&query=%24.version&label=Claude%20plugin&prefix=v&color=blue)](https://github.com/rshu/TrajViz-Obs/blob/main/.claude-plugin/plugin.json)
 [![OpenCode plugin version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frshu%2FTrajViz-Obs%2Fmain%2Fopencode%2Fpackage.json&query=%24.version&label=OpenCode%20plugin&prefix=v&color=blue)](https://github.com/rshu/TrajViz-Obs/blob/main/opencode/package.json)
+[![Pi plugin version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frshu%2FTrajViz-Obs%2Fmain%2Fpi%2Fpackage.json&query=%24.version&label=Pi%20plugin&prefix=v&color=blue)](https://github.com/rshu/TrajViz-Obs/blob/main/pi/package.json)
 [![License](https://img.shields.io/github/license/rshu/TrajViz-Obs)](LICENSE)
 
-Visualize and diagnose Claude Code and OpenCode 2 sessions with [TrajViz](https://github.com/rshu/TrajViz). Use `/obs` to check session health and `/obs dashboard` to inspect steps, tools, subagents, and context use.
+Visualize and diagnose Claude Code, OpenCode 2, and Pi sessions with [TrajViz](https://github.com/rshu/TrajViz). Use `/obs` to check session health and `/obs dashboard` to inspect steps, tools, subagents, and context use.
 
 ## Install
 
-For **OpenCode 2 terminal or Desktop**, follow the [OpenCode installation guide](opencode/README.md). The instructions below install the Claude Code plugin.
+For **OpenCode 2 terminal or Desktop**, follow the [OpenCode guide](opencode/README.md). For **Pi**, follow the [Pi guide](pi/README.md). The instructions below install the Claude Code plugin.
 
 Requires Claude Code with function hooks (mods) and process execution, plus [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Validated on Claude Code **2.1.311**.
 
@@ -55,7 +57,7 @@ In Claude Code, run `/obs pane` to open or focus the pane. With the pane focused
 
 Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path>` to a session command. Run bare `/obs` to return to the current session.
 
-Both plugins use TrajViz **0.5.1** and expose all **36 views**. `/obs view data_quality` explains missing or partial evidence. The dashboard distinguishes recorded zeros from missing or partial data.
+All three plugins use TrajViz **0.5.1** and expose all **36 views**. `/obs view data_quality` explains missing or partial evidence. The dashboard distinguishes recorded zeros from missing or partial data.
 
 Watch refreshes an open pane as the current session progresses. Use `/obs watch off` to turn it off. `/obs statusline on` shows a compact summary in the host UI, and `/obs statusline off` hides it.
 
@@ -110,7 +112,7 @@ Terminal images are rendered from recorded output. The dashboard Summary uses a 
 
 In Claude Code, use `/plugin configure trajviz-obs@trajviz-obs` or `/config` for plugin options. Model features default to `llm=session`, using Claude Code's client: `analysisModel=sonnet` for analysis and fixes, and `labelModel=haiku` for labeling. Set either model option to `session` to follow the main conversation's model.
 
-OpenCode uses [options in its configuration file](opencode/README.md#options) and defaults to its selected model.
+OpenCode uses [options in its configuration file](opencode/README.md#options). Pi uses [a small settings file](pi/README.md#configure). Both default to the host’s selected model.
 
 Run `/obs dashboard port` to see the default port or `/obs dashboard port 7863` to save a new one during a session. The change applies the next time you run `/obs dashboard`. Use `auto` for automatic selection or `default` to restore the `dashboardPort` plugin option (`0` means automatic). `/obs dashboard --port N` overrides the default for one launch.
 
@@ -152,19 +154,15 @@ Exports and cached analysis contain session data and stay on the host unless sha
 
 ### Usage telemetry
 
-Usage telemetry is off by default. In Claude Code or OpenCode, run `/obs enable_telemetry` to opt in, `/obs disable_telemetry` to stop recording and pause queued uploads, and `/obs telemetry` to check delivery. The choice persists locally and takes precedence over the launch-time opt-in. On a shared OpenCode server, the choice applies to that server.
+Usage telemetry is off by default in all three plugins. Run `/obs enable_telemetry` to opt in, `/obs disable_telemetry` to stop recording and pause uploads, and `/obs telemetry` to check delivery. Use `/obs telemetry_destination <URL>` to set a collector during a session.
 
-Run `/obs telemetry_destination` to see the collector. Change it during a session with `/obs telemetry_destination https://telemetry.example.com` or `/obs telemetry_destination https://127.0.0.1`. The command adds `/v1/events` to a base URL. Use `default` to restore `TRAJVIZ_OBS_TELEMETRY_URL` or the loopback default at port 8765. Changing the destination preserves consent. Each collector endpoint has its own queue and installation ID.
-
-For an authenticated collector, supply its token as `TRAJVIZ_OBS_TELEMETRY_TOKEN` in the host’s launch environment. In Claude Code, append `--use-launch-token` to associate the token with a new destination. In OpenCode, the server sends its launch token only to the exact endpoint configured in `TRAJVIZ_OBS_TELEMETRY_URL`. To change that endpoint, update the server’s launch environment, restart the server, and run `/obs telemetry_destination default` if a saved destination overrides it. Remote collectors require HTTPS. For local HTTP on a custom port, use a URL such as `http://127.0.0.1:8765`. Reopen dashboards that were started before telemetry was enabled to track browser actions.
-
-The sender reports the adapter, surface, plugin version, UTC day, allowlisted features, outcomes, coarse timing, and random installation and event IDs. Compatible collectors also receive the coding agent version when available. Prompts, transcripts, paths, and command arguments stay on the host. See the [telemetry service guide](telemetry/README.md) for collector setup and reports.
+Events contain allowlisted feature names, outcomes, coarse timing, plugin and coding agent versions, and random installation IDs. Prompts, transcripts, paths, and command arguments stay on the host. See [telemetry configuration and reports](telemetry/README.md).
 
 ## Troubleshooting and limits
 
 Run `/obs doctor` to check setup or `/obs setup` to install dependencies. If `/obs` is missing, check the Claude Code debug log for disabled function hooks or an API mismatch. In OpenCode, follow the adapter’s restart and verification steps. [OpenCode setup](opencode/README.md#3-restart-and-verify) If the dashboard is empty, export `/obs bundle` and load its ZIP manually. Over SSH, forward the displayed port; set `openBrowser=false` to disable browser opening.
 
-- Timing is estimated from transcripts; workflow-spawned work and subagent finish times may be incomplete.
+- Timing uses native host durations when available and recorded timestamps otherwise; workflow-spawned work and subagent finish times may be incomplete.
 - Operation-based OTLP captures support observed metrics and inspection; transcript alignment and reference-based capability diagnosis require supported native transcripts.
 - Imported sessions require manual refresh after their inputs change. Claude Code files above **32 MiB** also require manual refresh. OpenCode has [live-capture limits](opencode/README.md#options). The browser dashboard shows at most the first **2,000 steps**. The `trajectory.json` export retains the full parsed trajectory.
 - Real-session validation covers **macOS**. Linux and Windows still need platform-specific end-to-end testing.
@@ -184,6 +182,6 @@ uv sync --project bridge --locked --extra dev
 bridge/.venv/bin/python scripts/check.py
 ```
 
-These checks make no external model calls. For real-session testing, see `python3 scripts/e2e.py --help`; it uses your Claude Code account and incurs model usage. Keep test output outside the repository.
+For Pi adapter checks, see [Pi development](pi/README.md#development). These checks make no external model calls. For real-session testing, see `python3 scripts/e2e.py --help`; it uses your Claude Code account and incurs model usage. Keep test output outside the repository.
 
 MIT licensed. TrajViz is a separate MIT-licensed project; this plugin is not an Anthropic product.

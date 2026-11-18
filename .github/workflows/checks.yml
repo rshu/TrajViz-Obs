@@ -13,6 +13,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pi:
+    name: Pi adapter
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: pi
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22.19.0"
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: bridge/uv.lock
+      - name: Install pinned Bun
+        run: npm install --global bun@1.3.14
+      - name: Install locked adapter and bridge dependencies
+        run: |
+          bun install --frozen-lockfile
+          uv sync --project ../bridge --locked --extra dev
+      - name: Build, typecheck and test with the real bridge
+        env:
+          TRAJVIZ_OBS_TEST_PYTHON: ${{ github.workspace }}/bridge/.venv/bin/python
+        run: |
+          bun run build
+          bun run typecheck
+          bun test
+
   opencode:
     name: OpenCode 2 adapter
     runs-on: ubuntu-latest

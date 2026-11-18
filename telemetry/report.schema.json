@@ -11,9 +11,21 @@
       "else": {"required": ["activity"]}
     },
     {
-      "if": {"properties": {"schema_version": {"const": 3}}},
+      "if": {"properties": {"schema_version": {"enum": [3, 4]}}},
       "then": {"required": ["usage"]},
       "else": {"not": {"required": ["usage"]}}
+    },
+    {
+      "if": {"properties": {"schema_version": {"const": 4}}},
+      "then": {
+        "properties": {
+          "adoption": {"minItems": 3}, "engagement": {"minItems": 3},
+          "daily": {"minItems": 3}, "retention": {"minItems": 6},
+          "activity": {"properties": {"by_adapter": {"minItems": 3}}},
+          "usage": {"properties": {"rolling": {"properties": {"by_adapter": {"minItems": 3}}}}}
+        }
+      },
+      "else": {"$ref": "#/$defs/legacy_report_adapters"}
     }
   ],
   "required": [
@@ -22,27 +34,27 @@
   ],
   "properties": {
     "format": {"const": "trajviz-obs-usage-report"},
-    "schema_version": {"type": "integer", "enum": [1, 2, 3]},
+    "schema_version": {"type": "integer", "enum": [1, 2, 3, 4]},
     "as_of": {"$ref": "#/$defs/day", "description": "Last day in the reporting window."},
     "period_start": {"$ref": "#/$defs/day", "description": "First day in the reporting window."},
     "retained_from": {"$ref": "#/$defs/day", "description": "First day in the available retention window."},
     "retention_days": {"type": "integer", "minimum": 32, "maximum": 365},
-    "adoption": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/adoption"}},
+    "adoption": {"type": "array", "minItems": 2, "maxItems": 3, "items": {"$ref": "#/$defs/adoption"}},
     "daily": {
       "type": "array",
       "minItems": 2,
-      "maxItems": 730,
+      "maxItems": 1095,
       "items": {"$ref": "#/$defs/daily"},
       "description": "One row per adapter per reporting day, including days with zero activity."
     },
-    "engagement": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/engagement"}},
+    "engagement": {"type": "array", "minItems": 2, "maxItems": 3, "items": {"$ref": "#/$defs/engagement"}},
     "features": {"type": "array", "items": {"$ref": "#/$defs/feature"}},
     "surfaces": {"type": "array", "items": {"$ref": "#/$defs/surface"}},
     "versions": {"type": "array", "items": {"$ref": "#/$defs/version"}},
     "retention": {
       "type": "array",
       "minItems": 4,
-      "maxItems": 4,
+      "maxItems": 6,
       "items": {"$ref": "#/$defs/retention"},
       "description": "One cohort row per adapter and offset. The 7-day and 30-day rates use exact-day returns."
     },
@@ -65,7 +77,7 @@
       "required": ["by_adapter", "by_agent_version"],
       "properties": {
         "by_adapter": {
-          "type": "array", "minItems": 2, "maxItems": 2,
+          "type": "array", "minItems": 2, "maxItems": 3,
           "items": {"$ref": "#/$defs/activity_adapter"}
         },
         "by_agent_version": {
@@ -77,7 +89,27 @@
   },
   "$defs": {
     "day": {"type": "string", "format": "date", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
-    "adapter": {"enum": ["claude-code", "opencode"]},
+    "adapter": {"enum": ["claude-code", "opencode", "pi"]},
+    "legacy_adapter_row": {"properties": {"adapter": {"enum": ["claude-code", "opencode"]}}},
+    "legacy_report_adapters": {
+      "properties": {
+        "adoption": {"maxItems": 2, "items": {"$ref": "#/$defs/legacy_adapter_row"}},
+        "engagement": {"maxItems": 2, "items": {"$ref": "#/$defs/legacy_adapter_row"}},
+        "daily": {"maxItems": 730, "items": {"$ref": "#/$defs/legacy_adapter_row"}},
+        "retention": {"maxItems": 4, "items": {"$ref": "#/$defs/legacy_adapter_row"}},
+        "features": {"items": {"$ref": "#/$defs/legacy_adapter_row"}},
+        "surfaces": {"items": {"$ref": "#/$defs/legacy_adapter_row"}},
+        "versions": {"items": {"$ref": "#/$defs/legacy_adapter_row"}},
+        "activity": {"properties": {
+          "by_adapter": {"maxItems": 2, "items": {"$ref": "#/$defs/legacy_adapter_row"}},
+          "by_agent_version": {"items": {"$ref": "#/$defs/legacy_adapter_row"}}
+        }},
+        "usage": {"properties": {
+          "rolling": {"properties": {"by_adapter": {"maxItems": 2, "items": {"$ref": "#/$defs/legacy_adapter_row"}}}},
+          "features": {"items": {"$ref": "#/$defs/legacy_adapter_row"}}
+        }}
+      }
+    },
     "count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
     "nullable_count": {"anyOf": [{"$ref": "#/$defs/count"}, {"type": "null"}]},
     "usage_window": {
@@ -115,7 +147,7 @@
       "unevaluatedProperties": false,
       "required": ["by_adapter"],
       "properties": {
-        "by_adapter": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/usage_adapter"}}
+        "by_adapter": {"type": "array", "minItems": 2, "maxItems": 3, "items": {"$ref": "#/$defs/usage_adapter"}}
       }
     },
     "usage_feature": {
@@ -163,7 +195,7 @@
       "properties": {
         "distinct_addresses": {
           "$ref": "#/$defs/nullable_count",
-          "description": "Distinct observed network addresses, including addresses shared by both adapters. Null means no observed addresses."
+          "description": "Distinct observed network addresses, including addresses shared across adapters. Null means no observed addresses."
         },
         "distinct_installations": {
           "$ref": "#/$defs/count",

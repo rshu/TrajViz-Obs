@@ -68,7 +68,8 @@ def test_distinct_addresses_installations_pairs_and_versions(tmp_path):
         "distinct_address_installation_pairs": None, "events": 1,
         "events_with_address": 0, "events_with_agent_version": 1,
     }
-    claude, opencode = activity["by_adapter"]
+    claude, opencode, pi = activity["by_adapter"]
+    assert pi["period"]["distinct_installations"] == 0
     assert claude["period"]["distinct_addresses"] == 2
     assert claude["period"]["distinct_installations"] == 3
     assert opencode["period"]["distinct_addresses"] == 1

@@ -66,12 +66,13 @@ def test_rolling_activity_deduplicates_and_counts_returns_before_each_window(tmp
     assert rolling["last_30_days"] == {
         "start": (TODAY - timedelta(days=29)).isoformat(), "active_installations": 4, "returning_installations": 2,
     }
-    claude, opencode = rolling["by_adapter"]
+    claude, opencode, pi = rolling["by_adapter"]
+    assert pi["last_7_days"]["active_installations"] == 0
     assert claude["adapter"] == "claude-code" and opencode["adapter"] == "opencode"
     assert [claude[window]["active_installations"] for window in ("last_7_days", "last_30_days")] == [2, 2]
     assert [opencode[window]["active_installations"] for window in ("last_7_days", "last_30_days")] == [1, 2]
     assert [opencode[window]["returning_installations"] for window in ("last_7_days", "last_30_days")] == [1, 1]
-    assert [row["new_installations"] for row in data["daily"]] == [0, 0]
+    assert [row["new_installations"] for row in data["daily"]] == [0, 0, 0]
     assert shared not in str(data)
 
 

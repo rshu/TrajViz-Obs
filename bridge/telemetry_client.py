@@ -245,7 +245,7 @@ def usage_settings(env: Mapping[str, str], adapter: str, *, consent: str | None 
         if requires_token:
             # OpenCode's RPC does not identify an administrator who can authorize a new collector.
             bound = matches_launch or (
-                adapter == "claude-code" and token is not None and endpoint is not None
+                adapter in {"claude-code", "pi"} and token is not None and endpoint is not None
                 and destination.token_binding is not None and hmac.compare_digest(
                     destination.token_binding, _destination_token_binding(token, adapter, endpoint)
                 )

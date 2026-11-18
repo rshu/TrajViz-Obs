@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { mkdir, readFile, writeFile, rename, access, unlink } from 'node:fs/promises'
-import { constants } from 'node:fs'
+import { constants, accessSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -45,9 +45,11 @@ export class Runtime {
   private preparing?: Promise<Environment>
   private closed = false
   readonly bridge: string
-  constructor(readonly options: Options, readonly cwd: string) {
-    this.cache = path.resolve(cwd, options.cacheRoot ?? path.join(process.env.XDG_CACHE_HOME ?? path.join(homedir(), '.cache'), 'trajviz-obs', 'opencode2'))
-    this.bridge = fileURLToPath(new URL('../runtime/bridge/', import.meta.url))
+  private readonly protectedInputs?: () => readonly string[]
+  constructor(readonly options: Options, readonly cwd: string, host: { cacheNamespace?: string; bridge?: string; protectedInputs?: () => readonly string[] } = {}) {
+    this.cache = path.resolve(cwd, options.cacheRoot ?? path.join(process.env.XDG_CACHE_HOME ?? path.join(homedir(), '.cache'), 'trajviz-obs', host.cacheNamespace ?? 'opencode2'))
+    this.bridge = host.bridge ?? fileURLToPath(new URL('../runtime/bridge/', import.meta.url))
+    this.protectedInputs = host.protectedInputs
   }
   spawn(argv: readonly string[]): ChildProcessWithoutNullStreams {
     if (this.closed) throw new Error('The obs plugin is unloading.')
@@ -118,18 +120,29 @@ export class Runtime {
   }
   async argv(args: readonly string[], signal?: AbortSignal, extras: string[] = []): Promise<string[]> {
     const env = await this.ready(extras, signal)
-    return [env.python, '-I', path.join(this.bridge, 'trajviz_obs_cli.py'), ...(process.platform === 'win32' ? [] : ['--host-parent',String(process.pid)]), ...args]
+    return [env.python, '-I', path.join(this.bridge, 'trajviz_obs_cli.py'), ...(process.platform === 'win32' ? [] : ['--host-parent',String(process.pid)]),
+      ...(this.protectedInputs?.() ?? []).map(file => `--host-input=${file}`), ...args]
   }
   async run<T>(args: readonly string[], signal?: AbortSignal, timeout = 120_000): Promise<T> { return this.execute<T>(await this.argv(args, signal), signal, timeout) }
   /** Telemetry can reuse an initialized runtime, but never installs one. */
   telemetryPython(): string | undefined {
     if (this.environment) return this.environment.python
-    const configured = this.options.python && Bun.which(this.options.python, { cwd: this.cwd })
+    const configured = this.options.python && findExecutable(this.options.python, this.cwd)
     if (configured) return configured
     for (const name of ['python3.14', 'python3.13', 'python3.12', 'python3.11', 'python3', 'python']) {
-      const interpreter = Bun.which(name, { cwd: homedir() })
+      const interpreter = findExecutable(name, homedir())
       if (interpreter) return interpreter
     }
   }
   close(): void { this.closed = true; for (const child of this.children) stopChild(child) }
+}
+
+/** Resolve interpreters on Node and Bun without invoking a shell. */
+function findExecutable(name: string, cwd: string): string | undefined {
+  const suffixes = process.platform === 'win32' ? ['', ...(process.env.PATHEXT ?? '.EXE;.CMD').split(';')] : ['']
+  const candidates = name.includes('/') || name.includes('\\') ? [path.resolve(cwd, name)] : (process.env.PATH ?? '').split(path.delimiter).filter(Boolean).map(dir => path.resolve(cwd, dir, name))
+  for (const candidate of candidates) for (const suffix of suffixes) {
+    const file = candidate + suffix
+    try { accessSync(file, constants.X_OK); return file } catch { /* Try the next interpreter. */ }
+  }
 }

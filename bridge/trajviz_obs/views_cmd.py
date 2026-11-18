@@ -27,7 +27,7 @@ from . import paths
 from .cli import register
 from .compat import EmptySession, load_plugins, load_run, project_view, protect_run_outputs
 from .errors import BridgeError
-from .outputs import staged_path
+from .outputs import protect_inputs, staged_path
 from .sessions import MAX_LIMIT, _positive_int, capture_session_id, page_limit
 from .text import _clip, _num, render_series, render_table
 
@@ -301,9 +301,11 @@ def export(run: Trajectory, out_dir: Path, *, only: list[str] | None, with_traje
 def write_schemas(out_dir: Path) -> dict:
     """The JSON Schema of every view TrajViz knows (plugins' views included), as ``<id>.schema.json``."""
     load_plugins()
+    schemas = tv.view_schemas()
+    protect_inputs([out_dir / f"{view_id}.schema.json" for view_id in schemas], ())
     out_dir.mkdir(parents=True, exist_ok=True)
     files, total = [], 0
-    for view_id, schema in tv.view_schemas().items():
+    for view_id, schema in schemas.items():
         name = f"{view_id}.schema.json"
         total += _write_json(out_dir / name, schema)
         files.append(name)

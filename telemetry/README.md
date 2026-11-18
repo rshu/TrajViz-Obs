@@ -1,6 +1,6 @@
 # TrajViz-Obs telemetry service
 
-Telemetry is off by default. When enabled, Claude Code and OpenCode queue allowlisted usage events locally and send them in the background during plugin activity. The collector validates and deduplicates uploads in SQLite. The local service saves a JSON snapshot of the report. The separate publisher refreshes HTML and JSON on a schedule.
+Telemetry is off by default. When enabled, Claude Code, OpenCode, and Pi queue allowlisted usage events locally and send them in the background during plugin activity. The collector validates and deduplicates uploads in SQLite. The local service saves a JSON snapshot of the report. The separate publisher refreshes HTML and JSON on a schedule.
 
 Run the collector commands from the TrajViz-Obs repository root with Python 3.11 or newer.
 
@@ -14,7 +14,7 @@ Run the collector commands from the TrajViz-Obs repository root with Python 3.11
 
 2. Open [the local report](http://127.0.0.1:8765/) in a browser. It shows the most recent 30 UTC days. The server writes `usage.sqlite3.report.json` next to the database at startup and refreshes it when you reload the report.
 
-3. In Claude Code or OpenCode, run `/obs enable_telemetry`, then `/obs help` and `/obs telemetry` to check delivery. The enable command uses the local collector on port 8765 when no endpoint is configured. For a custom port, run `/obs telemetry_destination http://127.0.0.1:PORT`.
+3. In Claude Code, OpenCode, or Pi, run `/obs enable_telemetry`, then `/obs help` and `/obs telemetry` to check delivery. The enable command uses the local collector on port 8765 when no endpoint is configured. For a custom port, run `/obs telemetry_destination http://127.0.0.1:PORT`.
 
 ## Plugin configuration
 
@@ -25,11 +25,13 @@ Run the collector commands from the TrajViz-Obs repository root with Python 3.11
 | `TRAJVIZ_OBS_TELEMETRY_TOKEN` | Bearer token issued by the collector. Required for authenticated receivers. |
 | `TRAJVIZ_OBS_TELEMETRY_STATE_DIR` | Optional absolute path for local queue state. Defaults to `~/.local/state/trajviz-obs/telemetry` on macOS and Linux, honoring `XDG_STATE_HOME`, or `%LOCALAPPDATA%\trajviz-obs\telemetry` on Windows when set. |
 
-Set these in Claude Code’s launch environment or the OpenCode **server’s** launch environment for both terminal and Desktop clients. Claude Code ignores telemetry values in its settings files. On macOS, apps opened from Finder do not inherit terminal exports. Restart the host or server after changing the settings.
+Set these in Claude Code’s or Pi’s launch environment, or the OpenCode **server’s** launch environment for both terminal and Desktop clients. Claude Code ignores telemetry values in its settings files. On macOS, apps opened from Finder do not inherit terminal exports. Restart the host or server after changing the settings.
 
 `/obs enable_telemetry` and `/obs disable_telemetry` save the choice per adapter in the local state directory. Changes apply without a restart. Client upgrades preserve that choice. An explicit disable stops recording and pauses queued uploads until telemetry is enabled again. Reopen existing dashboards after enabling telemetry to track browser actions.
 
 `/obs telemetry` reads local status, including the queue, last upload, and retry deadline, without sending an event. The queue holds up to 512 events per adapter and endpoint and retries on later activity for up to seven days. Temporary failures back off and respect `Retry-After` within the retry limit. Authentication failures preserve the queue for a replacement token. Upload failures do not block plugin commands.
+
+Use `/obs telemetry_destination` to see the current collector or `/obs telemetry_destination https://telemetry.example.com` to change it during a session. Base URLs gain `/v1/events`; `default` restores the launch URL or loopback default. In Claude Code and Pi, append `--use-launch-token` to bind the launch token to a new destination. OpenCode sends its token only to the exact launch endpoint; update the server environment and restart it before changing an authenticated destination. Each endpoint has its own queue and installation ID, and changing it preserves consent.
 
 ## Collector configuration
 
@@ -78,6 +80,8 @@ python3 -m telemetry --database "$usage_db" publish \
 - `report` defaults to 30 UTC days ending today. Set `--days N` or `--as-of YYYY-MM-DD` to change the window. Both the requested window and the rolling 30-day window must fit within retention. Use `--html PATH` to write HTML and a JSON copy, or `--json PATH` for JSON alone. Omit both to print JSON to stdout.
 - Use **EN | 中** to switch between English and Simplified Chinese in the live report or a saved HTML report. [JSON schema](report.schema.json)
 
+Report schema 4 includes Claude Code, OpenCode, and Pi, with separate installation counts and coding agent version filters. The viewer also opens previously exported schemas 1–3 without adding empty Pi rows.
+
 | Question | How the report counts it |
 | --- | --- |
 | Are people trying the plugin? | First-seen opt-in installations in the selected UTC period. The earliest recorded event date determines first seen. |
@@ -96,7 +100,7 @@ Events include a UTC day, adapter, surface, allowlisted feature, outcome, latenc
 
 Run `python3 -m telemetry.downloads` for external counters. It reports GitHub release asset downloads and npm package downloads separately from opt-in usage. Defaults are `--repo rshu/TrajViz-Obs`, `--package trajviz-obs-opencode`, and `--period last-month`. The other npm windows are `last-day` and `last-week`.
 
-Add `--github-traffic` with an authenticated `gh` session to include 14 days of repository clone totals. To include a live Claude directory install count, pass `--claude-directory-installs START END COUNT` using the inclusive UTC date range and count from the published listing’s live Usage tab. Unavailable counters are marked as such. Downloads can include repeat fetches and CI, and opt-in installations cover only hosts that send events. [GitHub release assets](https://docs.github.com/en/rest/releases/assets) · [GitHub clone traffic](https://docs.github.com/en/rest/metrics/traffic#get-repository-clones) · [npm download counts](https://github.com/npm/registry/blob/main/docs/download-counts.md) · [Claude developer portal](https://claude.com/docs/connectors/building/after-publishing#track-published-plugin-usage)
+Add `--github-traffic` with an authenticated `gh` session to include 14 days of repository clone totals. To include a live Claude directory install count, pass `--claude-directory-installs START END COUNT` using the inclusive UTC date range and count from the published listing’s live Usage tab. Unavailable counters are marked as such. Repository clone totals cover all adapters; Pi Git installs have no separate public installation counter. Downloads can include repeat fetches and CI, and opt-in installations cover only hosts that send events. [GitHub release assets](https://docs.github.com/en/rest/releases/assets) · [GitHub clone traffic](https://docs.github.com/en/rest/metrics/traffic#get-repository-clones) · [npm download counts](https://github.com/npm/registry/blob/main/docs/download-counts.md) · [Claude developer portal](https://claude.com/docs/connectors/building/after-publishing#track-published-plugin-usage)
 
 ## Test the client and service together
 

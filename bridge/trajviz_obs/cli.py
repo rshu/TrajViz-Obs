@@ -14,11 +14,13 @@ import json
 import sys
 import traceback
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from agent_trajviz import LoadError, MissingExtraError
 
 from .errors import BridgeError
+from .outputs import host_inputs
 
 Handler = Callable[[argparse.Namespace], dict | None]
 
@@ -65,6 +67,8 @@ def load_modules() -> list[Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="trajviz_obs_cli.py", description="TrajViz bridge for /obs (JSON on stdout).")
+    parser.add_argument("--host-input", dest="host_inputs", type=_host_input, action="append", default=[],
+                        help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", metavar="SUBCOMMAND", required=True)
     for module in load_modules():
         module.add_parser(sub)
@@ -72,6 +76,13 @@ def build_parser() -> argparse.ArgumentParser:
         if name not in sub.choices:
             sub.add_parser(name)
     return parser
+
+
+def _host_input(value: str) -> Path:
+    path = Path(value)
+    if not path.is_absolute() or "\x00" in value:
+        raise argparse.ArgumentTypeError("--host-input requires an absolute filesystem path without NUL.")
+    return path
 
 
 def _write(text: str) -> None:
@@ -99,7 +110,8 @@ def main(argv: list[str] | None = None) -> int:
             _emit({"help": str(exc)})
             return 0
         # Serialised before anything is written, so a bad document never leaves partial output.
-        document = SUBCOMMANDS[args.command](args)
+        with host_inputs(args.host_inputs):
+            document = SUBCOMMANDS[args.command](args)
         if document is None:
             return 0
         text = json.dumps(document)
