@@ -1,9 +1,9 @@
 # TrajViz Obs
 
 [![Checks](https://github.com/rshu/TrajViz-Obs/actions/workflows/checks.yml/badge.svg?branch=main&event=push)](https://github.com/rshu/TrajViz-Obs/actions/workflows/checks.yml)
-[![Claude Code supported](https://img.shields.io/badge/Claude_Code-supported-D97757)](#install)
-[![Pi supported](https://img.shields.io/badge/Pi-supported-8B5CF6)](pi/README.md#install)
-[![OpenCode 2 supported](https://img.shields.io/badge/OpenCode_2-supported-3B82F6)](opencode/README.md#install)
+[![Claude Code supported](https://img.shields.io/badge/Claude_Code-supported-D97757)](#claude-code)
+[![Pi supported](https://img.shields.io/badge/Pi-supported-8B5CF6)](#pi)
+[![OpenCode 2 supported](https://img.shields.io/badge/OpenCode_2-supported-3B82F6)](#opencode-2-terminal-and-desktop)
 [![Claude Code plugin version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frshu%2FTrajViz-Obs%2Fmain%2F.claude-plugin%2Fplugin.json&query=%24.version&label=Claude%20plugin&prefix=v&color=blue)](https://github.com/rshu/TrajViz-Obs/blob/main/.claude-plugin/plugin.json)
 [![OpenCode plugin version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frshu%2FTrajViz-Obs%2Fmain%2Fopencode%2Fpackage.json&query=%24.version&label=OpenCode%20plugin&prefix=v&color=blue)](https://github.com/rshu/TrajViz-Obs/blob/main/opencode/package.json)
 [![Pi plugin version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frshu%2FTrajViz-Obs%2Fmain%2Fpi%2Fpackage.json&query=%24.version&label=Pi%20plugin&prefix=v&color=blue)](https://github.com/rshu/TrajViz-Obs/blob/main/pi/package.json)
@@ -13,9 +13,11 @@ Visualize and diagnose Claude Code, OpenCode 2, and Pi sessions with [TrajViz](h
 
 ## Install
 
-For **OpenCode 2 terminal or Desktop**, follow the [OpenCode guide](opencode/README.md). For **Pi**, follow the [Pi guide](pi/README.md). The instructions below install the Claude Code plugin.
+All three plugins require [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. The first diagnostic command prepares a private TrajViz runtime; `/obs dashboard` adds its dashboard dependencies automatically. First-time setup requires network access.
 
-Requires Claude Code with [mods](https://code.claude.com/docs/en/plugins/mods/overview) and process execution, plus [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. Validated on Claude Code **2.1.311**.
+### Claude Code
+
+Requires Claude Code with [mods](https://code.claude.com/docs/en/plugins/mods/overview) and process execution. Validated on **2.1.311**.
 
 In Claude Code:
 
@@ -25,9 +27,51 @@ In Claude Code:
 
 Confirm the marketplace and installation scope, then restart Claude Code or run `/reload-plugins`. Run `/obs help` to verify the plugin loaded.
 
-`/obs` prepares a private TrajViz runtime on first use; `/obs dashboard` adds its dashboard dependencies automatically. First-time setup requires network access. You can also run `/obs setup` before a task, then `/obs doctor` to check setup.
+### OpenCode 2 terminal and Desktop
 
-### Update or remove
+Requires [OpenCode 2](https://opencode.ai/docs/), Git, and [Bun](https://bun.sh) **1.3.0+**. Tested on terminal **2.2.5** and Desktop **2.2.7** on macOS.
+
+Build the adapter:
+
+```sh
+git clone https://github.com/rshu/TrajViz-Obs.git
+cd TrajViz-Obs/opencode
+bun install --frozen-lockfile
+bun run build
+pwd
+```
+
+Add the adapter to `~/.config/opencode/opencode.json` on macOS/Linux, replacing the example path below with the absolute path printed by `pwd`. Create the directory and file if needed; edit an existing `opencode.jsonc` instead if present. Preserve other settings and append to an existing `plugins` array:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["/absolute/path/TrajViz-Obs/opencode"]
+}
+```
+
+Keep the checkout in place. Restart the interface you use:
+
+- **Terminal:** close the TUI, run `opencode service restart`, then run `opencode` from your project.
+- **Desktop:** quit completely (**Cmd+Q** on macOS), reopen, then enable **trajviz-obs** in **Settings → Extensions → Plugins** on the built-in local server.
+
+Run `/obs help` to verify installation. See the [OpenCode guide](opencode/README.md) for custom config paths, project-only installs, standalone and remote servers, updates, and removal.
+
+### Pi
+
+Requires [Pi](https://pi.dev/), **Node.js 22.19+**, npm, and Git. Tested on **Pi 1.5.2**. Install the plugin for your user account, then start Pi in the project you want to observe:
+
+```sh
+pi install git:github.com/rshu/TrajViz-Obs
+cd /path/to/project
+pi
+```
+
+If Pi is already running, restart it or run `/reload`. Run `/obs help` to verify installation. For one project only, use `pi install --local git:github.com/rshu/TrajViz-Obs` from that project and approve Pi's project-settings trust prompt.
+
+See the [Pi guide](pi/README.md) for installing Pi itself, provider setup, configuration, updates, and removal.
+
+### Claude Code updates and removal
 
 To check or update from a running Claude Code session:
 
