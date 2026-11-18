@@ -40,6 +40,7 @@ Run `/obs` after the session’s first assistant response.
 
 - **Claude Code** shows the live pane and keeps the conversation clear. The prompt stays ready for input. The pane docks beside the conversation in wide fullscreen terminals and opens above the prompt in narrower or main-screen layouts. Run `/obs overview` to print a summary in the transcript. Bare `/obs` also prints the summary when the host cannot show a pane, including in headless mode.
 - **OpenCode 2** shows the summary in the terminal or Desktop. Run `/obs pane` for the live panel.
+- **Pi** shows a compact summary above the editor. Run `/obs pane` for the seven-tab overlay; press **Esc** to close it.
 
 In Claude Code, run `/obs pane` to open or focus the pane. With the pane focused, use **1–7** for tabs, **r** to refresh, **w** to toggle watch, and **d** for the browser dashboard.
 
@@ -99,6 +100,10 @@ Terminal images are rendered from recorded output. The dashboard Summary uses a 
 **OpenCode Desktop: metrics and charts**
 
 ![OpenCode Desktop pane in light mode with session metrics, health, token usage, and step timing](assets/demo-opencode-desktop-light.png)
+
+**Pi: native pane overview**
+
+![Pi native pane in light mode with seven tabs, session metrics, health, issues, and trend charts](assets/demo-pi-overview-light.jpg)
 
 **Browser dashboard: Summary**
 
