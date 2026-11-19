@@ -71,16 +71,20 @@ If Pi is already running, restart it or run `/reload`. Run `/obs help` to verify
 
 See the [Pi guide](pi/README.md) for installing Pi itself, provider setup, configuration, updates, and removal.
 
-### Claude Code updates and removal
+## Updates and removal
 
-To check or update from a running Claude Code session:
+In Claude Code, OpenCode TUI or Desktop, and Pi TUI:
 
 ```text
 /obs update --check
 /obs update
 ```
 
-The check is read-only and follows the configured marketplace ref; cached results are marked when the remote version is unavailable. `/obs update` uses Claude Code's native updater for the loaded installation and scope, preserving its ref. Local checkouts receive manual instructions; administrator-managed installations require your administrator. Run `/reload-plugins` or restart Claude Code after an update.
+The check is read-only. Wait for active tasks to finish before updating. Configuration and telemetry preferences are preserved.
+
+### Claude Code plugin
+
+Updates use Claude Code's native updater for the loaded installation and scope, preserving its marketplace ref. Run `/reload-plugins` or restart Claude Code afterward. Local checkouts require a manual update; administrator-managed installations require your administrator.
 
 If `/obs update` is unavailable, update from your shell:
 
@@ -92,6 +96,22 @@ claude plugin update trajviz-obs@trajviz-obs
 Run the shell update from the project where you use the plugin. It selects that project's most specific installation; add `--scope user`, `--scope project`, or `--scope local` to choose explicitly.
 
 To remove a user installation, run `claude plugin uninstall trajviz-obs@trajviz-obs --scope user`, then reload plugins. Use `--scope project` or `--scope local` if you installed it in that scope.
+
+### OpenCode TUI and Desktop
+
+Host-managed packages use OpenCode's native updater and reload affected plugin instances. For a clean local checkout on the official repository's `main` branch tracking `origin/main`, `/obs update` confirms the revision, fast-forwards the checkout, installs locked dependencies, and builds both interfaces automatically. Exact version and commit pins stay pinned; local changes or custom branches require manual attention.
+
+After a local update, restart the connected server with its matching-version CLI and original launch environment, then reopen the TUI or Desktop. Quitting Desktop alone can leave its server running. See the [OpenCode guide](opencode/README.md#update-or-remove) for restart commands, older-plugin upgrades, and remote servers.
+
+To remove the plugin, delete its entry from your `plugins` configuration, then restart the server and interface.
+
+### Pi TUI
+
+Pi-managed Git installations use Pi's package manager. Clean local source checkouts on the official repository's `main` branch tracking `origin/main` update after confirmation, without a Bun build. Pi reloads when the update finishes if it is still idle; otherwise run `/reload` after current work finishes. Other sessions sharing the checkout also need `/reload`. Explicit refs stay pinned, and local changes or custom branches require manual attention.
+
+For an older Git-installed plugin without `/obs update`, run `pi update git:github.com/rshu/TrajViz-Obs`, then restart Pi or run `/reload`. For a local checkout, see the manual update steps in the [Pi guide](pi/README.md#update-or-remove).
+
+To remove the Git installation, run `pi remove git:github.com/rshu/TrajViz-Obs`; for a local checkout, pass its path instead. Add `--local` for a project installation and run it from that trusted project. Restart Pi or run `/reload` afterward. See the [Pi guide](pi/README.md#update-or-remove) for details.
 
 ## Use
 
@@ -115,8 +135,6 @@ In Claude Code, run `/obs pane` to open or focus the pane. With the pane focused
 | Ask for analysis or fixes | `/obs analyze [question]`, `/obs fixes` |
 | Label steps by phase and action | `/obs label --max-steps 20` |
 | List all commands and options | `/obs help` |
-
-In OpenCode and Pi, `/obs update` can also update a clean local source checkout on the official repository's `main` branch after confirmation. OpenCode installs dependencies and rebuilds the adapter; Pi source installs need no build. Follow the update result's reload or restart guidance. See the [OpenCode](opencode/README.md#update-or-remove) and [Pi](pi/README.md#update-or-remove) guides for requirements and recovery.
 
 Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path>` to a session command. Run bare `/obs` to return to the current session.
 
