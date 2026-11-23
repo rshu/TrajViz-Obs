@@ -178,7 +178,9 @@ describe('Pi plugin update inspection and native management', () => {
     const h = await fixture()
     env('PI_OFFLINE', '1'); expect((await prepareUpdate(h.context, true, signal(), h.options)).text).toContain('unknown (Pi offline mode)')
     env('PI_OFFLINE', undefined); h.next(h.current)
-    expect((await prepareUpdate(h.context, false, signal(), h.options)).text).toContain('up to date')
+    const current = await prepareUpdate(h.context, false, signal(), h.options)
+    expect(current.text).toContain('up to date'); expect(current.text).toContain('Available version: 0.1.0.')
+    expect(current.text).not.toContain('unknown until installed')
     expect(h.state().updates).toBe(0)
   })
 

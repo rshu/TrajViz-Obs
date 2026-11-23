@@ -52,6 +52,7 @@ export class Controller {
   private refreshAbort?: AbortController
   private refreshTimer?: ReturnType<typeof setTimeout>
   private selection?: { selector: string; captureSessionID?: string }
+  private readonly dashboardUrls = new Map<string, { url: string; sessionID: string }>()
   private paneRender?: () => void
   private progressRender?: () => void
   private paneToken?: symbol
@@ -81,8 +82,9 @@ export class Controller {
       }))
     }
     const snap = this.state.snapshot
+    const issueCount = snap && !snap.empty ? snap.counts.issues ?? snap.issues.length : 0
     this.ctx.ui.setStatus('trajviz-obs', this.status && snap && !snap.empty
-      ? `Obs · ${snap.counts.assistant_steps} steps · ${snap.tokens.total === null ? 'tokens —' : `${(snap.tokens.total / 1000).toFixed(1)}k tok`} · ${snap.counts.issues ?? snap.issues.length} issues${this.state.busy ? ' · working' : ''}` : undefined)
+      ? `Obs · ${snap.counts.assistant_steps} steps · ${snap.tokens.total === null ? 'tokens —' : `${(snap.tokens.total / 1000).toFixed(1)}k tok`} · ${issueCount} issue${issueCount === 1 ? '' : 's'}${this.state.busy ? ' · working' : ''}` : undefined)
     this.paneRender?.(); this.progressRender?.()
   }
   /** Only refresh after the user activates Obs, or while a dashboard is open. */
@@ -148,27 +150,29 @@ export class Controller {
         watch: value => this.setWatch(value),
         statusline: value => { if (value !== undefined) this.status = value; this.draw(); return this.status },
         closePane: () => this.dismissPane(), progress,
+        confirm: (title, message, signal) => this.confirm(ctx, { title, message }, signal, true),
         update: (check, signal) => check || direct ? prepareUpdate(ctx, check, signal, {
           ...this.updateOptions(),
           localLoadedAt: this.localLoadedAt,
-          confirm: direct && ctx.hasUI ? (question, signal) => {
-            // A native dialog must own input and the full viewport. Leaving the
-            // progress overlay open can hide both its review text and choices.
-            this.closeProgress?.(); this.closeProgress = undefined
-            this.progressToken = undefined; this.progressRender = undefined
-            return ctx.ui.confirm(question.title, question.message, { signal })
-          } : undefined,
+          confirm: direct && ctx.hasUI ? (question, signal) => this.confirm(ctx, question, signal) : undefined,
         }) : Promise.resolve(rejected('Plugin updates require the direct /obs update command.')),
       }, this.usage))
       active.signal.throwIfAborted()
+      const selected = typeof parsed.flags.session === 'string' && parsed.flags.session !== ctx.sessionManager.getSessionId()
+        ? { selector: parsed.flags.session, ...(typeof parsed.flags['session-id'] === 'string' ? { captureSessionID: parsed.flags['session-id'] } : {}) }
+        : undefined
+      if (result.dashboardSessionID !== undefined && (result.outcome === undefined || result.outcome === 'success')) {
+        const key = JSON.stringify(selected ?? null)
+        for (const [alias, entry] of this.dashboardUrls) if (entry.sessionID === result.dashboardSessionID) {
+          if (result.url) entry.url = result.url
+          else if (parsed.positional[0] === 'stop') this.dashboardUrls.delete(alias)
+        }
+        if (result.url) this.dashboardUrls.set(key, { url: result.url, sessionID: result.dashboardSessionID })
+      }
       if (result.snapshot) {
-        const selected = typeof parsed.flags.session === 'string' && parsed.flags.session !== ctx.sessionManager.getSessionId()
-          ? { selector: parsed.flags.session, ...(typeof parsed.flags['session-id'] === 'string' ? { captureSessionID: parsed.flags['session-id'] } : {}) }
-          : undefined
-        if (JSON.stringify(selected) !== JSON.stringify(this.selection)) this.state.dashboardUrl = undefined
         this.selection = selected; this.state.watchPaused = Boolean(selected); this.state.snapshot = result.snapshot; this.widget = true
       }
-      if (result.url) this.state.dashboardUrl = result.url
+      this.state.dashboardUrl = this.dashboardUrls.get(JSON.stringify(this.selection ?? null))?.url
       if (parsed.sub === 'enable_telemetry' && this.usage.enabled()) this.track('activation')
       if (feature) this.track(feature, result.outcome ?? (result.snapshot?.empty ? 'empty' : 'success'), performance.now() - started)
       return result
@@ -183,6 +187,15 @@ export class Controller {
       this.state.busy = false; this.closeProgress?.(); this.closeProgress = undefined
       this.progressToken = undefined; this.progressRender = undefined; this.draw()
     }
+  }
+  private async confirm(ctx: ExtensionContext, question: { title: string; message: string }, signal: AbortSignal, resumeProgress = false): Promise<boolean> {
+    // Native dialogs own the viewport. Close the progress overlay before giving
+    // them input, then restore cancellable progress for accepted model work.
+    this.closeProgress?.(); this.closeProgress = undefined
+    this.progressToken = undefined; this.progressRender = undefined
+    const accepted = await ctx.ui.confirm(question.title, question.message, { signal })
+    if (accepted && resumeProgress && !this.closed && this.active && !signal.aborted) this.openProgress(ctx)
+    return accepted
   }
   private openProgress(ctx: ExtensionContext): void {
     if (ctx.mode !== 'tui') return

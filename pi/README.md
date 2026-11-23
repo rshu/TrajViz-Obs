@@ -1,6 +1,6 @@
 # TrajViz Obs for Pi
 
-Inspect a running Pi session with local diagnostics, colored terminal charts, and the [TrajViz](https://github.com/rshu/TrajViz) browser dashboard. Tested with **Pi 1.5.2** and TrajViz **0.5.1**.
+Inspect a running Pi session with local diagnostics, colored terminal charts, and the [TrajViz](https://github.com/rshu/TrajViz) browser dashboard. Tested with **Pi 1.5.2 and 1.6.0** and TrajViz **0.5.1**.
 
 ## Install
 
@@ -9,7 +9,7 @@ Requires **Node.js 22.19+** with npm, Git, and either [uv](https://docs.astral.s
 Install or update [Pi](https://pi.dev/):
 
 ```sh
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.5.2
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.6.0
 ```
 
 Install the extension for your user account:

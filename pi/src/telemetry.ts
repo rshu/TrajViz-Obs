@@ -7,7 +7,7 @@ import { deliveryStatusText, destinationStatusText } from '../../hooks/lib/deliv
 import { telemetryAgentVersion, TELEMETRY_WORKER_TIMEOUT_MS } from '../../hooks/lib/telemetry-version.js'
 import type { Runtime } from '../../opencode/src/runtime.js'
 
-export const PLUGIN_VERSION = '0.1.2'
+export const PLUGIN_VERSION = '0.1.3'
 export type Outcome = 'success' | 'error' | 'cancelled' | 'empty' | 'rejected' | 'confirmation'
 type Event = { feature: string; surface: 'terminal' | 'headless'; outcome: Outcome; durationMs: number }
 const ADMIN = new Set(['update', 'telemetry', 'telemetry_destination', 'enable_telemetry', 'disable_telemetry'])

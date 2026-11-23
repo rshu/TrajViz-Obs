@@ -82,6 +82,11 @@ def timeline_builder():
         fig = native(steps, dark=dark, axis_mode=axis_mode)
         if fig is None:
             return None
+        # A horizontal legend can wrap. Anchor its bottom above the axes so
+        # extra rows grow into the header, not over the top user-wait lane.
+        top = fig.layout.margin.t or 0
+        fig.update_layout(legend={"y": 1.02, "yanchor": "bottom"},
+                          margin={"t": max(120, top)}, height=fig.layout.height + max(0, 120 - top))
         if fig.layout.xaxis.tickvals is not None:
             fig.update_layout(title_text=_COMPRESSED_TITLE, xaxis_title=_COMPRESSED_AXIS)
         bands = [trace for trace in fig.data if trace.name == gantt._WAIT_LEGEND]

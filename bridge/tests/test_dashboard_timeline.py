@@ -73,3 +73,29 @@ def test_prompt_pause_caps_at_fifteen_seconds_even_in_a_busy_session():
     assert _trace(compressed, "User wait (idle)").x == (15.0,)
     assert _trace(wall, "User wait (idle)").x[0] == pytest.approx(46.697)
     assert _trace(wall, "User message").hovertext == _trace(compressed, "User message").hovertext
+
+
+@pytest.mark.parametrize("dark", [False, True])
+@pytest.mark.parametrize("axis_mode", ["wallclock", "skip_idle"])
+def test_wrapped_timeline_legend_stays_above_wait_lane_without_shrinking_the_plot(dark, axis_mode):
+    from agent_trajviz.insight.charts import gantt
+
+    steps = [
+        {"role": "user", "time_created_ms": 10_000},
+        {"role": "assistant", "time_created_ms": 11_000, "time_completed_ms": 15_000,
+         "tool_calls": [{"tool_name": "Read", "time_start": 12_000, "time_end": 13_000}]},
+        {"role": "user", "time_created_ms": 130_000},
+        {"role": "assistant", "time_created_ms": 131_000, "time_completed_ms": 135_000},
+    ]
+    native = gantt.build_execution_gantt_chart(steps, dark=dark, axis_mode=axis_mode)
+    figure = timeline_builder()(steps, dark=dark, axis_mode=axis_mode)
+    assert {trace.name for trace in figure.data} == {
+        "Step (thinking)", "Tool execution", "User message", "User wait (idle)"}
+    # A bottom-anchored legend above paper y=1 expands upward when it wraps.
+    # Reserve header room while keeping the original plot/lane area intact.
+    layout = json.loads(figure.to_json())["layout"]
+    assert layout["legend"]["yanchor"] == "bottom" and layout["legend"]["y"] > 1
+    assert layout["margin"]["t"] >= 120
+    assert figure.layout.height - figure.layout.margin.t == native.layout.height - native.layout.margin.t
+    assert _trace(figure, "User wait (idle)").y == ("user wait",)
+    assert _trace(figure, "Step (thinking)").y == _trace(native, "Step (thinking)").y

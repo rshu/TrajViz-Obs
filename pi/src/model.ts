@@ -13,7 +13,9 @@ import { protectNativeOutput } from './outputs.js'
 type Prompt = { index: number; system: string; prompt: string; max_tokens: number; timeout_s: number; delay_s?: number }
 type Plan = { hash: string; plan: { calls: number; approx_input_tokens: number }; prompts?: Prompt[]; path: string }
 export type Result = { text: string; outcome?: Outcome; path?: string; data?: unknown }
-export async function runModel(backend: Backend, ctx: ExtensionContext, input: string, signal: AbortSignal, progress: (text: string) => void): Promise<Result> {
+export type ModelConfirmation = (title: string, message: string, signal: AbortSignal) => Promise<boolean>
+export async function runModel(backend: Backend, ctx: ExtensionContext, input: string, signal: AbortSignal, progress: (text: string) => void,
+  confirm: ModelConfirmation = (title, message, signal) => ctx.ui.confirm(title, message, { signal })): Promise<Result> {
   const { sub: feature, flags } = parseArgs(input)
   if (feature === 'label') await protectNativeOutput(ctx, [flags.out, flags.o])
   const selection = feature === 'analyze' ? analyzeSelection(input) : undefined
@@ -56,11 +58,13 @@ export async function runModel(backend: Backend, ctx: ExtensionContext, input: s
   }
   if (backend.options.llm !== 'env' && !model) throw new Error('Select a Pi model before using AI analysis or labeling.')
   const modelName = backend.options.llm === 'env' ? configured : `${model!.provider}/${model!.id}`
-  const line = `${feature}: ${prepared.plan.calls} model calls · approximately ${prepared.plan.approx_input_tokens.toLocaleString()} input tokens · ${modelName ?? 'environment provider'}`
+  const line = `${feature}: ${prepared.plan.calls} model call${prepared.plan.calls === 1 ? '' : 's'} · approximately ${prepared.plan.approx_input_tokens.toLocaleString()} input tokens · ${modelName ?? 'environment provider'}`
   progress(line)
   if (prepared.plan.calls > 4) {
     if (!ctx.hasUI) return { text: `${line}\nMore than four calls require an interactive confirmation. Reduce --max-steps or --limit.`, outcome: 'confirmation' }
-    if (!await ctx.ui.confirm('Run model analysis?', `${line}\nThis uses your model provider and may incur usage charges.`)) return { text: 'Model analysis cancelled.', outcome: 'cancelled' }
+    const accepted = await confirm('Run model analysis?', `${line}\nThis uses your model provider and may incur usage charges.`, signal)
+    signal.throwIfAborted()
+    if (!accepted) return { text: 'Model analysis cancelled.', outcome: 'cancelled' }
   }
   signal.throwIfAborted()
   let doc: Record<string, unknown>

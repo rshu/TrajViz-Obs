@@ -90,8 +90,12 @@ describe('server-owned local checkout updates', () => {
   })
 
   test('current checkout has no mutation plan', async () => {
-    const h = await fixture({ advance: false }), result = await h.updater.check()
+    const h = await fixture({ advance: false })
+    let metadataCalls = 0
+    const updater = new LocalCheckoutUpdater({ entryURL: h.entryURL, run: h.run, remoteVersion: async () => { metadataCalls++; throw new Error('Version metadata unavailable') } })
+    const result = await updater.check()
     expect(result.state).toBe('current'); expect(result.plan).toBeUndefined(); expect(result.text).toContain('Version: 0.5.5 → 0.5.5')
+    expect(metadataCalls).toBe(0)
   })
 
   for (const name of ['tracked', 'untracked', 'ignored-secret']) test(`local ${name} work is protected`, async () => {

@@ -71,6 +71,10 @@ describe('Pi controller state and cancellation', () => {
     expect(help.text).toContain('TrajViz for Pi')
     expect(JSON.stringify(h.manager.getEntries())).toBe(before)
     expect(h.tracked.map(({ feature, outcome }) => ({ feature, outcome }))).toEqual([{ feature: 'overview', outcome: 'success' }, { feature: 'help', outcome: 'success' }])
+    h.backend.snapshot = async () => ({ ...structuredClone(SNAPSHOT), counts: { ...SNAPSHOT.counts, issues: 1 } })
+    await h.controller.refresh()
+    expect(h.statuses.at(-1)).toContain('1 issue')
+    expect(h.statuses.at(-1)).not.toContain('1 issues')
   })
 
   test('overlapping commands reject, cancellation propagates, and a later command recovers', async () => {
@@ -252,6 +256,43 @@ describe('Pi controller state and cancellation', () => {
 })
 
 describe('Pi output surfaces and overlays', () => {
+  test('model confirmation owns the viewport and accepted calls restore a cancellable progress panel', async () => {
+    const h = await fixture(), confirming = deferred<void>(), confirmed = deferred<boolean>(), generating = deferred<void>()
+    const calls: string[] = []
+    Object.assign(h.context, { model: { provider: 'controlled', id: 'model' }, modelRegistry: {
+      streamSimple: (_model: unknown, _context: unknown, options: { signal: AbortSignal }) => ({ result: () => {
+        generating.resolve()
+        return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }))
+      } }),
+    } })
+    h.context.ui.confirm = async (_title, _message, options) => {
+      expect(h.overlays[0]!.closed).toBe(true)
+      expect(options?.signal).toBeInstanceOf(AbortSignal)
+      confirming.resolve()
+      return confirmed.promise
+    }
+    h.backend.source = async () => ({ sessionID: 'model-confirmation', transcript: path.join(h.directory, 'capture.json'), artifacts: h.directory, argv: [] })
+    h.backend.runtime.run = async <T>(argv: readonly string[]) => {
+      calls.push(argv[0]!)
+      return { hash: 'confirmation-plan', plan: { calls: 5, approx_input_tokens: 500 }, prompts: Array.from({ length: 5 }, (_, index) => ({
+        index, system: 'Controlled system', prompt: 'Controlled prompt', max_tokens: 32, timeout_s: 5,
+      })), path: path.join(h.directory, 'plan.json') } as T
+    }
+    const running = h.controller.command('fixes --limit 5', h.context)
+    await confirming.promise
+    expect(h.overlays).toHaveLength(1)
+    confirmed.resolve(true)
+    await generating.promise
+    expect(h.overlays).toHaveLength(2)
+    expect(h.overlays[1]!.closed).toBe(false)
+    expect(frame(h.overlays[1]!.component!)).toContain('Running call 1 of 5')
+    h.overlays[1]!.component!.handleInput!('\x1b')
+    await running
+    expect(calls).toEqual(['llm-prompt'])
+    expect(h.notifications.at(-1)).toContain('cancelled')
+    expect(h.controller.state.busy).toBe(false)
+  })
+
   test('RPC notifications carry read-only results; print/JSON preserve protocol stdout', async () => {
     const rpc = await fixture('rpc')
     await rpc.controller.command('help', rpc.context)
@@ -317,6 +358,31 @@ describe('Pi output surfaces and overlays', () => {
     expect(served[0]).toContain('selected-run')
     expect(frame(pane)).toContain('Dashboard: http://127.0.0.1:7891/')
     expect(h.controller.state.dashboardUrl).toBe('http://127.0.0.1:7891/')
+  })
+
+  test('pane dashboard links follow their selected session and disappear when that dashboard stops', async () => {
+    const h = await fixture()
+    h.backend.source = async (_ctx, selector) => ({ sessionID: selector === 'saved-prefix' ? 'saved' : selector ?? 'current', transcript: path.join(h.directory, `${selector ?? 'current'}.json`), artifacts: h.directory, argv: [] })
+    let savedStarts = 0
+    h.backend.serve = async key => ({ url: key === 'dashboard:current' ? 'http://127.0.0.1:7891/' : key === 'dashboard:saved' ? `http://127.0.0.1:${7892 + savedStarts++}/` : 'http://127.0.0.1:7899/' })
+    h.backend.stop = async () => true
+    await h.controller.execute('pane')
+    await h.controller.execute('dashboard')
+    expect(h.controller.state.dashboardUrl).toBe('http://127.0.0.1:7891/')
+    await h.controller.execute('dashboard --session saved')
+    expect(h.controller.state.dashboardUrl).toBe('http://127.0.0.1:7891/')
+    await h.controller.execute('converge')
+    expect(h.controller.state.dashboardUrl).toBe('http://127.0.0.1:7891/')
+    await h.controller.execute('pane --session saved')
+    expect(h.controller.state.dashboardUrl).toBe('http://127.0.0.1:7892/')
+    await h.controller.execute('dashboard --session saved-prefix')
+    expect(h.controller.state.dashboardUrl).toBe('http://127.0.0.1:7893/')
+    await h.controller.execute('dashboard stop --session saved-prefix')
+    expect(h.controller.state.dashboardUrl).toBeUndefined()
+    await h.controller.execute('pane')
+    expect(h.controller.state.dashboardUrl).toBe('http://127.0.0.1:7891/')
+    await h.controller.execute('dashboard stop')
+    expect(h.controller.state.dashboardUrl).toBeUndefined()
   })
 
   test('late pane/progress factories cannot reopen a closed or replaced overlay', async () => {

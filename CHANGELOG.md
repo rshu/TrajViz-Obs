@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Validate Pi 1.6.0 alongside 1.5.2, keep model confirmations visible and cancellable, and keep pane dashboard links tied to the selected session.
+- Match Pi tool results to their owning calls when providers reuse tool-call IDs, preserving pending states and nested usage.
+- Keep wrapped timeline legends above the plot so idle-gap labels remain readable.
+- Show useful, redacted runtime setup failures in Pi and OpenCode, and retain known versions when the remote Git revision is already installed.
 - Add `/obs update --check` and `/obs update` for host-managed plugin installations and confirmed local source updates in OpenCode terminal/Desktop and Pi.
 - Check local versions and exact Git revisions, preserve local work, run OpenCode's locked install/build, and retain update progress across interface reconnects. Pi source updates reload natively when idle.
 - Preserve configured pins, installation scope, project trust, and telemetry consent during plugin updates.
