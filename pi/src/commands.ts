@@ -7,14 +7,14 @@ import { validateArguments, isDashboardPortCommand, pageArguments, parseExtras }
 import { atomicFile, Runtime } from '../../opencode/src/runtime.js'
 import { Backend } from './backend.js'
 import { dashboardPort } from './config.js'
-import { runModel, type Result } from './model.js'
+import { runModel, type ModelConfirmation, type Result } from './model.js'
 import type { Usage } from './telemetry.js'
 import type { Snapshot, EmptySnapshot } from './types.js'
 import { protectNativeOutput } from './outputs.js'
 import type { UpdateResult } from './update.js'
 
-export type CommandResult = Result & Pick<UpdateResult, 'reload' | 'applyUpdate'> & { snapshot?: Snapshot | EmptySnapshot; pane?: boolean; url?: string }
-export type Actions = { watch(value?: boolean): boolean; statusline(value?: boolean): boolean; closePane(): void; progress(text: string): void; update?(check: boolean, signal: AbortSignal): Promise<CommandResult> }
+export type CommandResult = Result & Pick<UpdateResult, 'reload' | 'applyUpdate'> & { snapshot?: Snapshot | EmptySnapshot; pane?: boolean; url?: string; dashboardSessionID?: string }
+export type Actions = { watch(value?: boolean): boolean; statusline(value?: boolean): boolean; closePane(): void; progress(text: string): void; confirm?: ModelConfirmation; update?(check: boolean, signal: AbortSignal): Promise<CommandResult> }
 export const HELP = `/obs [command] [options] · TrajViz for Pi
 Diagnostics run locally. Session commands accept --session <id|prefix|path>.
 
@@ -87,7 +87,7 @@ export async function runCommand(backend: Backend, ctx: ExtensionContext, input:
     return { text: snapshot.empty ? snapshot.reason : snapshot.text, snapshot,
       ...(sub === 'pane' ? { pane: true } : {}), ...(snapshot.empty ? { outcome: 'empty' as const } : {}) }
   }
-  if (sub === 'analyze' || sub === 'fixes' || sub === 'label') return runModel(backend, ctx, input, signal, actions.progress)
+  if (sub === 'analyze' || sub === 'fixes' || sub === 'label') return runModel(backend, ctx, input, signal, actions.progress, actions.confirm)
   if (sub === 'sessions') {
     const count = positional[0] === undefined ? 20 : Number(positional[0])
     if (positional.length > 1 || !Number.isSafeInteger(count) || count < 1 || count > 500) return rejected('Usage: /obs sessions [1–500]')
@@ -127,8 +127,9 @@ export async function runCommand(backend: Backend, ctx: ExtensionContext, input:
   if (sub === 'schemas') return written(await run(['schemas', ...((output ?? positional[0]) ? valueArgv('out', (output ?? positional[0])!) : [])]))
   if (sub === 'dashboard' || sub === 'converge') {
     let key = sub, argv: string[]
-    if (sub === 'dashboard') key += `:${(await source()).sessionID}`
-    if (positional[0] === 'stop') return { text: await backend.stop(key) ? 'Dashboard stopped.' : 'No matching dashboard is running.' }
+    const dashboardSessionID = sub === 'dashboard' ? (await source()).sessionID : undefined
+    if (dashboardSessionID !== undefined) key += `:${dashboardSessionID}`
+    if (positional[0] === 'stop') return { text: await backend.stop(key) ? 'Dashboard stopped.' : 'No matching dashboard is running.', ...(dashboardSessionID === undefined ? {} : { dashboardSessionID }) }
     if (positional.length) return rejected(`Usage: /obs ${sub} [options] | ${sub} stop`)
     if (flags.port !== undefined && dashboardPortValue(flags.port) === undefined) return rejected('--port must be from 1 to 65535.')
     if (sub === 'dashboard') {
@@ -154,7 +155,8 @@ export async function runCommand(backend: Backend, ctx: ExtensionContext, input:
       try { await backend.runtime.execute(opener, signal, 10_000, 16_384, true) }
       catch { signal.throwIfAborted(); note = '\nThe browser could not be opened automatically. Open the URL above.' }
     }
-    return { text: `${sub === 'dashboard' ? 'Session' : 'Comparison'} dashboard: ${server.url}\n/obs ${sub} stop closes it.${note}`, url: server.url }
+    return { text: `${sub === 'dashboard' ? 'Session' : 'Comparison'} dashboard: ${server.url}\n/obs ${sub} stop closes it.${note}`, url: server.url,
+      ...(dashboardSessionID === undefined ? {} : { dashboardSessionID }) }
   }
   if (sub === 'compare' || sub === 'scorecard') {
     if (!positional.length || (sub === 'compare' && positional.length !== 1)) return rejected(`Usage: /obs ${sub} <session|path>${sub === 'scorecard' ? ' [others...]' : ''}`)

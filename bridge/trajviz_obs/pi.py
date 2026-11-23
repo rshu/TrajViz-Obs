@@ -191,18 +191,29 @@ def _observations(selected: list, normalized: list, result: dict) -> None:
     """Restore native fields absent from the engine's portable Pi converter."""
     by_id = {converted.get("id"): (index, entry) for index, (entry, converted) in enumerate(zip(selected, normalized))
              if isinstance(entry, dict) and isinstance(converted, dict) and converted.get("id")}
-    results = {}
+    results, pending, orphaned = {}, {}, []
     usages, auxiliary = [], []
-    for entry in selected:
+    for entry, converted in zip(selected, normalized):
         if not isinstance(entry, dict):
             continue
         message = entry.get("message")
         message = message if isinstance(message, dict) else {}
         role, kind = message.get("role"), entry.get("type")
+        if kind == "message" and role == "assistant":
+            content = message.get("content")
+            calls = [part for part in content if isinstance(part, dict) and part.get("type") == "toolCall"] \
+                if isinstance(content, list) else []
+            for index, call in enumerate(calls):
+                identity = call.get("id")
+                if isinstance(identity, str) and identity:
+                    pending[identity] = (converted.get("id"), index)
         if kind == "message" and role == "toolResult":
             identity = message.get("toolCallId")
-            if isinstance(identity, str) and identity:
-                results[identity] = message
+            owner = pending.pop(identity, None) if isinstance(identity, str) and identity else None
+            if owner is not None:
+                results[owner] = message
+            else:
+                orphaned.append(message)
         usage = message.get("usage") if kind == "message" else entry.get("usage")
         if role == "assistant" or kind in {"usage", "compaction", "branch_summary"} or (
                 role == "toolResult" and isinstance(usage, dict)):
@@ -218,9 +229,11 @@ def _observations(selected: list, normalized: list, result: dict) -> None:
             usage["cost"].get("totalFromProvider") is True for usage in usages) else "estimate"
     if auxiliary:
         result["_pi_auxiliary_usage"] = auxiliary
+    orphaned = iter(orphaned)
     for converted in result.get("messages", []):
         info = converted.get("info") or {}
-        source_index, source = by_id.get(info.get("id"), (-1, {}))
+        conversion_id = info.get("id")
+        source_index, source = by_id.get(conversion_id, (-1, {}))
         if source and (not isinstance(source.get("id"), str) or not source["id"]):
             info["id"] = ""
             info["rawIndex"] = source_index
@@ -244,10 +257,15 @@ def _observations(selected: list, normalized: list, result: dict) -> None:
                 info.get("time", {}).pop("completed", None)
             elif _number(duration) and _number(start):
                 info["time"]["completed"] = start + duration
+        tool_index = 0
         for part in converted.get("parts", []):
             if part.get("type") not in {"tool", "tool_call"}:
                 continue
-            tool = results.get(part.get("tool_id"))
+            # Providers can reuse a call id in later turns. Match the result to
+            # its owning assistant/part, not to the last result with that id.
+            tool = next(orphaned, None) if not source and part.get("type") == "tool" \
+                else results.get((conversion_id, tool_index))
+            tool_index += 1
             if tool is None:
                 # A command can inspect between tool call and result. No result
                 # proves neither a failure nor a cancellation, including saved files.

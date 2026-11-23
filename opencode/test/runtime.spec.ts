@@ -71,6 +71,47 @@ test('runtime preserves bridge errors and rejects invalid or excessive output', 
   expect(instance.children.size).toBe(0)
 })
 
+test('bootstrap failure exposes bounded installer diagnostics without terminal controls or URL credentials', async () => {
+  const instance = await runtime()
+  const stderr = [
+    'Installing TrajViz...',
+    'Old installer noise\n'.repeat(1000),
+    'ERROR: ' + 'Controlled repeated installer output '.repeat(1000),
+    '\u001b]8;;https://hidden.invalid/?token=osc-secret\u0007hidden link\u001b]8;;\u0007',
+    '\u001b[31mERROR: Could not fetch https://installer-user:password-secret@packages.invalid/simple?token=query-secret#fragment-secret\u001b[0m',
+    'ERROR: No matching distribution found for controlled-missing-package',
+  ].join('\n')
+  const script = `process.stderr.write(${JSON.stringify(stderr)});console.log(JSON.stringify({error:{code:'setup_failed',message:'python exited with 1; see the setup progress above.'}}));process.exit(1)`
+  const error = await instance.execute([process.execPath, '-e', script, '--', path.join(instance.cwd, 'bootstrap.py')]).then(() => undefined, error => error as Error)
+  expect(error).toBeInstanceOf(Error)
+  expect(error!.message).toContain('No matching distribution found for controlled-missing-package')
+  expect(error!.message).toContain('https://[redacted]@packages.invalid/simple?[redacted]')
+  expect(error!.message).toContain('Setup output:')
+  expect(error!.message).not.toContain('setup progress above')
+  expect(error!.message.length).toBeLessThan(2048)
+  for (const value of ['installer-user', 'password-secret', 'query-secret', 'fragment-secret', 'osc-secret', '\u001b', 'Old installer noise']) {
+    expect(error!.message).not.toContain(value)
+  }
+  expect(instance.children.size).toBe(0)
+})
+
+test('normal structured bridge errors and setup errors without captured progress retain their original message', async () => {
+  const instance = await runtime()
+  for (const [code, message, stderr] of [
+    ['bad_view', 'Controlled view failure', 'ERROR: Unrelated stderr'],
+    ['setup_failed', 'Install a supported Python interpreter.', 'ERROR: Unrelated stderr'],
+    ['setup_failed', 'python exited with 1; see the setup progress above.', ''],
+  ] as const) {
+    const script = `process.stderr.write(${JSON.stringify(stderr)});console.log(JSON.stringify({error:{code:${JSON.stringify(code)},message:${JSON.stringify(message)}}}));process.exit(1)`
+    const error = await instance.execute([process.execPath, '-e', script, '--', path.join(instance.cwd, 'bootstrap.py')]).then(() => undefined, error => error as Error)
+    expect(error!.message).toBe(message)
+  }
+  const message = 'python exited with 1; see the setup progress above.'
+  const script = `process.stderr.write('ERROR: Unrelated stderr');console.log(JSON.stringify({error:{code:'setup_failed',message:${JSON.stringify(message)}}}));process.exit(1)`
+  const error = await instance.execute([process.execPath, '-e', script]).then(() => undefined, error => error as Error)
+  expect(error!.message).toBe(message)
+})
+
 test('runtime cancellation and timeout terminate owned processes', async () => {
   const instance = await runtime()
   const controller = new AbortController()

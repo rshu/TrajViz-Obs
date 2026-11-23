@@ -237,8 +237,10 @@ export class LocalCheckoutUpdater {
       await this.validateSource?.(provenance.adapter)
       const state = await this.inspect(provenance, signal), available = await this.available(provenance, signal)
       abort(signal)
-      let availableVersion = 'unknown'
-      try { availableVersion = await this.remoteVersion(available, this.adapter) } catch { /* Revision checks remain useful when version metadata is unavailable. */ }
+      let availableVersion = available === state.current ? state.version : 'unknown'
+      if (available !== state.current) {
+        try { availableVersion = await this.remoteVersion(available, this.adapter) } catch { /* Revision checks remain useful when version metadata is unavailable. */ }
+      }
       abort(signal)
       const header = `Local TrajViz Obs ${safe(state.version)} · ${safe(provenance.root)}\nmain → origin/main\nConfigured origin: ${safe(state.remote)}\nEffective origin: ${state.effectiveRemote}\nVersion: ${safe(state.version)} → ${safe(availableVersion)}\nInstalled: ${state.current}\nAvailable: ${available}`
       if (available === state.current) {

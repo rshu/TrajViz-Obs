@@ -12,6 +12,19 @@ export type Options = {
   openBrowser?: boolean; watch?: boolean; statusline?: boolean; dashboardPort?: number
 }
 type Environment = { python: string; source: string; revision: number; extras: string[]; pythonOption?: string; sourceCwd?: string }
+/** Installer progress is captured, so a failed setup must carry its useful cause. */
+function setupFailure(message: string, stderr: string): string {
+  const clean = stderr
+    .replace(/(?:\u001b\]|\u009d)[\s\S]*?(?:\u0007|\u001b\\|\u009c|$)/g, '')
+    .replace(/(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '')
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s]*@/gi, '$1[redacted]@')
+    .replace(/([a-z][a-z0-9+.-]*:\/\/[^?#\s]+)[?#][^\s]*/gi, '$1?[redacted]')
+  const lines = clean.split('\n').map(line => line.trim()).filter(Boolean)
+  const relevant = lines.filter(line => /\b(error|failed|failure|could not|cannot|no matching|not found|timed out|refused|denied|ssl|certificate)\b/i.test(line))
+  const tail = (relevant.length ? relevant : lines).slice(-6).join('\n').slice(-1600)
+  return tail ? `${message.replace(/; see the setup progress above\.?/i, '.')}\nSetup output:\n${tail}` : message
+}
 export const exists = async (p: string) => access(p, constants.F_OK).then(() => true, () => false)
 export async function atomicJSON(file: string, value: unknown): Promise<void> {
   return atomicFile(file, JSON.stringify(value))
@@ -79,7 +92,12 @@ export class Runtime {
         try {
           if (raw) { if (code !== 0) throw new Error(stderr || 'Command failed'); resolve(stdout as T); return }
           const doc = JSON.parse(stdout)
-          if (doc?.error) throw new Error(doc.error.message ?? 'Bridge operation failed.')
+          if (doc?.error) {
+            const message = doc.error.message ?? 'Bridge operation failed.'
+            const setup = doc.error.code === 'setup_failed' && typeof message === 'string'
+              && /see the setup progress above/i.test(message) && argv.some(value => path.basename(value) === 'bootstrap.py')
+            throw new Error(setup ? setupFailure(message, stderr) : message)
+          }
           if (code !== 0) throw new Error(`Bridge exited ${code}: ${stderr.trim().split('\n').slice(-1).join('')}`)
           resolve(doc as T)
         } catch (error) { reject(error instanceof SyntaxError ? new Error(`Bridge returned no valid result: ${stderr.trim().split('\n').slice(-1).join('')}`) : error) }

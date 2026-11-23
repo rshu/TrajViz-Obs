@@ -202,6 +202,66 @@ def test_pending_tools_are_unknown_and_real_failure_results_remain_failures(tmp_
     assert failed["tools"]["failed"] == 1 and failed["tools"]["unknown"] == 0
 
 
+@pytest.mark.parametrize("second_result", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_reused_native_tool_ids_keep_each_turns_result_and_pending_state(tmp_path, second_result, legacy):
+    rows = native_tool_rows()
+    later = copy.deepcopy(rows[2])
+    later.update(id="later", parentId="result", timestamp="2026-10-30T02:00:08.000Z")
+    later["message"]["timestamp"] = 1793325608000
+    rows.append(later)
+    if second_result:
+        result = copy.deepcopy(rows[3])
+        result.update(id="later-result", parentId="later", timestamp="2026-10-30T02:00:09.000Z")
+        result["message"].update(timestamp=1793325609000, durationMs=250)
+        result["message"]["usage"]["input"] = 7
+        result["message"]["nestedCalls"]["calls"][0]["id"] = "later-nested"
+        rows.append(result)
+    if legacy:
+        rows[0]["version"] = 1
+        for row in rows[1:]:
+            row.pop("id")
+            row.pop("parentId")
+    path = write(tmp_path, rows)
+    before = path.read_bytes()
+    run = load_run(str(path))
+    first, second = [tool for step in run.steps for tool in step["tool_calls"]]
+    assert first["status"] == "success" and first["duration_ms"] == 500
+    assert first["metadata"]["pi_usage"]["input"] == 3
+    assert first["metadata"]["pi_nested_calls"]["calls"][0]["id"] == "nested"
+    if second_result:
+        assert second["status"] == "success" and second["duration_ms"] == 250
+        assert second["metadata"]["pi_usage"]["input"] == 7
+        assert second["metadata"]["pi_nested_calls"]["calls"][0]["id"] == "later-nested"
+    else:
+        assert second["status"] == "pending" and second["duration_ms"] is None
+        assert "pi_usage" not in second.get("metadata", {})
+        assert "pi_nested_calls" not in second.get("metadata", {})
+        assert snapshot(path)["tools"]["unknown"] == 1 and snapshot(path)["tools"]["failed"] == 0
+    portable = tmp_path / "portable.json"
+    portable.write_text(json.dumps(run.to_dict(include_raw=True)))
+    assert load_run(str(portable)).steps == run.steps
+    assert path.read_bytes() == before
+
+
+def test_orphan_results_with_reused_ids_preserve_their_own_runtime_details(tmp_path):
+    rows = native_tool_rows()
+    rows[2]["message"]["content"] = [{"type": "text", "text": "Controlled result-only import"}]
+    later = copy.deepcopy(rows[3])
+    later.update(id="later-result", parentId="result", timestamp="2026-10-30T02:00:08.000Z")
+    later["message"].update(timestamp=1793325608000, isError=True)
+    later["message"]["usage"]["input"] = 7
+    later["message"]["nestedCalls"]["calls"][0]["id"] = "later-nested"
+    rows.append(later)
+    run = load_run(str(write(tmp_path, rows)))
+    first, second = [tool for step in run.steps for tool in step["tool_calls"]]
+    assert first["status"] == "success" and second["status"] == "error"
+    assert first["metadata"]["pi_usage"]["input"] == 3
+    assert second["metadata"]["pi_usage"]["input"] == 7
+    assert first["metadata"]["pi_nested_calls"]["calls"][0]["id"] == "nested"
+    assert second["metadata"]["pi_nested_calls"]["calls"][0]["id"] == "later-nested"
+
+
 @pytest.mark.parametrize("value", [None, True, -.1, "0.04", float("nan"), float("inf"), 10 ** 1000])
 def test_incomplete_or_invalid_native_cost_is_unknown(tmp_path, value):
     rows = native_tool_rows()

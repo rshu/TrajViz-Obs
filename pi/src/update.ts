@@ -199,7 +199,7 @@ export async function prepareUpdate(ctx: Pick<ExtensionContext, 'cwd' | 'isProje
     if (!/^[a-f0-9]{40,64}$/.test(available)) throw new Error('Unknown remote revision')
   } catch { signal.throwIfAborted(); return { text: `${header}\nAvailable revision: unknown (remote check failed). No update performed.`, outcome: 'error' } }
   const changed = available !== current
-  const text = `${header}\nAvailable revision: ${available.slice(0, 12)}${changed ? ' · update available' : ' · up to date'}. Available version: unknown until installed.`
+  const text = `${header}\nAvailable revision: ${available.slice(0, 12)}${changed ? ' · update available' : ' · up to date'}. Available version: ${changed ? 'unknown until installed' : version}.`
   if (check || !changed) return { text }
   await clean(root, run, signal)
   signal.throwIfAborted()

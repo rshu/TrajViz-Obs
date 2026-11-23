@@ -59,7 +59,7 @@ Run `/obs help` to verify installation. See the [OpenCode guide](opencode/README
 
 ### Pi
 
-Requires [Pi](https://pi.dev/), **Node.js 22.19+**, npm, and Git. Tested on **Pi 1.5.2**. Install the plugin for your user account, then start Pi in the project you want to observe:
+Requires [Pi](https://pi.dev/), **Node.js 22.19+**, npm, and Git. Tested on **Pi 1.5.2 and 1.6.0**. Install the plugin for your user account, then start Pi in the project you want to observe:
 
 ```sh
 pi install git:github.com/rshu/TrajViz-Obs

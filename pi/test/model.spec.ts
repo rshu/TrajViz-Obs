@@ -125,6 +125,25 @@ test('large plans require interactive approval and rejected confirmation makes n
   }
 })
 
+test('cancelling a large-plan confirmation closes the native dialog without starting model calls', async () => {
+  const f = await fixture(5), controller = new AbortController()
+  let opened!: () => void
+  const began = new Promise<void>(resolve => { opened = resolve })
+  let received: AbortSignal | undefined
+  f.ctx.ui.confirm = async (_title, _message, options) => {
+    received = options?.signal; opened()
+    if (!received) return false
+    return new Promise(resolve => received!.addEventListener('abort', () => resolve(false), { once: true }))
+  }
+  const pending = runModel(f.backend, f.ctx, 'analyze', controller.signal, () => {})
+  await began
+  controller.abort(new Error('Cancelled confirmation'))
+  await expect(pending).rejects.toThrow('Cancelled confirmation')
+  expect(received).toBe(controller.signal)
+  expect(f.generations).toEqual([])
+  expect(f.calls.map(args => args[0])).toEqual(['llm-prompt'])
+})
+
 test('host cancellation interrupts a model call and never applies partial replies', async () => {
   const f = await fixture(3), controller = new AbortController()
   let started!: () => void
