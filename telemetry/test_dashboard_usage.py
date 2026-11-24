@@ -27,7 +27,7 @@ from .report import report
     ("converge", ("render", "tab", "compare")),
 ])
 @pytest.mark.parametrize("adapter", ["claude-code", "opencode", "pi"])
-@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("enabled", [True, False, pytest.param(None, id="default-enabled")])
 def test_dashboard_usage_callbacks(tmp_path, client_bridge, kind, actions, adapter, enabled):
     source = native_run(tmp_path / "private-test-path.jsonl", "aaaaaaaa-0000-4000-8000-000000000001")
     database = tmp_path / "usage.sqlite3"
@@ -44,6 +44,8 @@ def test_dashboard_usage_callbacks(tmp_path, client_bridge, kind, actions, adapt
                    "TRAJVIZ_OBS_TELEMETRY_URL": f"http://127.0.0.1:{collector.server_port}/v1/events",
                    "TRAJVIZ_OBS_TELEMETRY_TOKEN": token,
                    "TRAJVIZ_OBS_TELEMETRY_STATE_DIR": str(queue_path), "GRADIO_TEMP_DIR": str(tmp_path / "gradio")}
+            if enabled is None:
+                env.pop("TRAJVIZ_OBS_TELEMETRY")
             args = ["--transcript", str(source)] if kind == "dashboard" else ["--data-root", str(tmp_path)]
             command = [sys.executable, "-I", str(client_bridge / "trajviz_obs_cli.py"), kind, *args,
                        "--exit-on-stdin", "--usage-adapter", adapter, "--usage-version", "0.5.4"]
@@ -64,7 +66,7 @@ def test_dashboard_usage_callbacks(tmp_path, client_bridge, kind, actions, adapt
                     callbacks = {item["api_name"]: item for item in config["dependencies"]
                                  if str(item["api_name"]).startswith("obs_usage_")}
                     assert not report(database, today=utc_day(), days=1)["features"]
-                    if enabled:
+                    if enabled is not False:
                         assert callbacks.keys() == {f"obs_usage_{action}" for action in actions}
                         for action in actions:
                             name = f"obs_usage_{action}"
@@ -90,6 +92,7 @@ def test_dashboard_usage_callbacks(tmp_path, client_bridge, kind, actions, adapt
                             assert entry["executed"] == 0 and entry["p95_duration_bucket"] is None
                         assert stats["surfaces"] == [{"adapter": adapter, "surface": "browser",
                                                      "invocations": len(actions), "installations": 1}]
+                        assert not (queue_path / f"{adapter}-consent").exists()
                     else:
                         assert not callbacks
                         assert not queue_path.exists()

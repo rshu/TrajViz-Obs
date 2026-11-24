@@ -15,6 +15,8 @@ from pathlib import Path
 from threading import Thread
 from wsgiref.simple_server import make_server
 
+import pytest
+
 from .__main__ import _QuietHandler
 from .collector import (
     EVENTS_PATH,
@@ -36,7 +38,8 @@ def send_event(sender, cwd, env, adapter, surface, feature, outcome="success", d
                    env=env, cwd=cwd, timeout=10, check=True, capture_output=True)
 
 
-def test_pi_negotiated_versions_consent_and_shared_network_counts(tmp_path, client_bridge):
+@pytest.mark.parametrize("launch", ["1", pytest.param(None, id="default-enabled")])
+def test_pi_negotiated_versions_consent_and_shared_network_counts(tmp_path, client_bridge, launch):
     """Each adapter keeps its own consent and identity while IPs deduplicate across them."""
     sender = client_bridge / "telemetry_client.py"
     database = tmp_path / "usage.sqlite3"
@@ -47,6 +50,8 @@ def test_pi_negotiated_versions_consent_and_shared_network_counts(tmp_path, clie
         env = {**os.environ, "TRAJVIZ_OBS_TELEMETRY": "1", "TRAJVIZ_OBS_TELEMETRY_TOKEN": "",
                "TRAJVIZ_OBS_TELEMETRY_URL": f"http://127.0.0.1:{collector.server_port}{EVENTS_PATH}",
                "TRAJVIZ_OBS_TELEMETRY_STATE_DIR": str(queue)}
+        if launch is None:
+            env.pop("TRAJVIZ_OBS_TELEMETRY")
         try:
             for adapter, host in (("claude-code", "2.1.311"), ("opencode", "2.2.7"), ("pi", "1.4.0")):
                 send_event(sender, tmp_path, env, adapter, "terminal", "activation", agent_version=host)

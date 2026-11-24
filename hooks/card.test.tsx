@@ -37,7 +37,7 @@ function host(on: On, snapshots: unknown[], bridge: Record<string, unknown> = {}
   on('session.id', () => ({ value: 'abc' }))
   on('session.cwd', () => ({ value: CWD }))
   on('session.usage', () => ({ value: USAGE }))
-  mock.env(on, { HOME })
+  mock.env(on, { HOME, TRAJVIZ_OBS_TELEMETRY: '0' })
   mock.clock(on, { now: NOW })
   on('fs.read', (_, e) => (e.path === STATE_PATH ? { value: STATE_JSON } : { deny: `ENOENT: ${e.path}` }))
   on('fs.exists', (_, e) => ({ value: e.path === VENV_PY || e.path === DERIVED }))

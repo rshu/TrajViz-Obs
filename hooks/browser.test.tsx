@@ -41,6 +41,7 @@ type World = {
   /** The extras `state.json` lists. */
   extras?: string[]
   env?: Record<string, string>
+  telemetryDefault?: boolean
   settingsEnv?: Record<string, string>
   manifestVersion?: string
   agentVersion?: string
@@ -84,7 +85,7 @@ function host(on: On, world: World = {}): Host {
   if (world.agentVersion) on('session.version', () => ({ value: { version: world.agentVersion! } }))
   on('session.cwd', () => ({ value: CWD }))
   on('session.usage', () => ({ value: USAGE }))
-  mock.env(on, { HOME, ...(world.env ?? {}) })
+  mock.env(on, { HOME, ...(world.telemetryDefault ? {} : { TRAJVIZ_OBS_TELEMETRY: '0' }), ...(world.env ?? {}) })
   mock.clock(on, { now: NOW })
   mock.store(on)
   on('settings.read', () => ({ value: world.settingsEnv ? { env: world.settingsEnv } : {} }))
@@ -343,10 +344,10 @@ test('dashboard HTML export uses the selected source and writes a file without s
   await $.session.end(END)
 })
 
-test('launch consent enables telemetry only for live dashboard and Converge children', { options: { openBrowser: false } }, async ($, on) => {
+test('default telemetry enables usage labels only for live dashboard and Converge children', { options: { openBrowser: false } }, async ($, on) => {
   const target = '/tmp/a dashboard.html'
   const { ran, spawned } = host(on, {
-    env: { TRAJVIZ_OBS_TELEMETRY: '1', TRAJVIZ_OBS_TELEMETRY_URL: 'https://collector.example/v1/events', TRAJVIZ_OBS_TELEMETRY_TOKEN: 'A'.repeat(43) },
+    telemetryDefault: true,
     manifestVersion: '1.2.3',
     agentVersion: '2.1.280',
     bridge: { dashboard: { exitCode: 0, stdout: JSON.stringify({ path: target }) } },

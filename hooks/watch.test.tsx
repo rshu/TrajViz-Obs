@@ -91,7 +91,7 @@ function host(on: On, snapshots: unknown[], selectedPath?: string): Host {
     if (block) { block.started(); await block.wait }
     return { value: block?.usage ?? USAGE }
   })
-  mock.env(on, { HOME })
+  mock.env(on, { HOME, TRAJVIZ_OBS_TELEMETRY: '0' })
   on('fs.read', (_, e) => (e.path === STATE_PATH ? { value: STATE_JSON } : { deny: `ENOENT: ${e.path}` }))
   on('fs.exists', (_, e) => ({ value: e.path === VENV_PY || e.path === DERIVED || e.path === selectedPath }))
   on('fs.stat', async (_, e) => {

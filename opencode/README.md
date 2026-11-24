@@ -137,7 +137,7 @@ Desktop and the TUI read full history from their connected server. Headless tool
 
 Live captures are limited to 32 MiB and 64 sessions in one family. For larger inputs, export the session and use `--session /path/to/export.json`.
 
-Run `/obs enable_telemetry` to opt in or `/obs disable_telemetry` to turn it off in Desktop or the terminal. Both save the preference on the connected OpenCode server, where it takes effect immediately and persists across restarts. Disabling pauses queued uploads. After enabling, reopen any existing dashboards to include browser interactions.
+Usage telemetry is on by default; saved opt-outs are preserved. Run `/obs disable_telemetry` to stop recording and pause uploads, or `/obs enable_telemetry` to turn it back on, in Desktop or the terminal. Both save the preference on the connected OpenCode server, where it takes effect immediately and persists across restarts. The collector defaults to `127.0.0.1:8765`. After enabling, reopen any existing dashboards to include browser interactions.
 
 Run `/obs telemetry` to check delivery or `/obs telemetry_destination` to see the collector. `/obs telemetry_destination https://telemetry.example.com` changes it immediately on the connected server and adds `/v1/events` automatically. `default` restores the server’s launch setting or the loopback collector. For authenticated delivery, set `TRAJVIZ_OBS_TELEMETRY_TOKEN` and the full `/v1/events` URL in `TRAJVIZ_OBS_TELEMETRY_URL` in the server’s launch environment. The server uses that token only for this exact endpoint, including when a client specifies `--use-launch-token`. [Telemetry setup](https://github.com/rshu/TrajViz-Obs/blob/main/telemetry/README.md#plugin-configuration)
 

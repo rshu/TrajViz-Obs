@@ -82,7 +82,7 @@ class DashboardUsage:
         # Only the host supplies these hidden arguments after checking consent.
         if adapter is None or version is None:
             return None
-        # An opted-in dashboard can wait for a destination or credential correction while open.
+        # An enabled dashboard can wait for a destination or credential correction while open.
         if usage_settings(os.environ, adapter).configuration == "disabled":
             return None
         return cls(adapter, version, agent_version)

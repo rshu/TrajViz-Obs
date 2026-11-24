@@ -1,4 +1,4 @@
-"""SQLite-backed WSGI receiver for opt-in usage telemetry."""
+"""SQLite-backed WSGI receiver for plugin usage telemetry."""
 
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "TrajViz Obs usage report",
-  "description": "An aggregate snapshot of opt-in plugin activity. All dates are UTC and windows include both endpoints.",
+  "description": "An aggregate snapshot of reported plugin activity. All dates are UTC and windows include both endpoints.",
   "type": "object",
   "additionalProperties": false,
   "allOf": [
@@ -294,7 +294,7 @@
         "adapter": {"$ref": "#/$defs/adapter"},
         "observed_installations": {
           "$ref": "#/$defs/count",
-          "description": "Distinct opt-in installations with an event from retained_from through as_of."
+          "description": "Distinct reporting installations with an event from retained_from through as_of."
         },
         "new_installations": {
           "$ref": "#/$defs/count",

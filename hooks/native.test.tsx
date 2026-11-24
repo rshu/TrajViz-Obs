@@ -6,7 +6,7 @@ import { patternRows } from './render/pane'
 const PYTHON = '/cache/trajviz-obs/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python'
 function host(on: On) {
   const live = { percent: 16, usd: 0.42 }
-  mock.env(on, { XDG_CACHE_HOME: '/cache', HOME: '/home/test' })
+  mock.env(on, { XDG_CACHE_HOME: '/cache', HOME: '/home/test', TRAJVIZ_OBS_TELEMETRY: '0' })
   mock.clock(on, { now: 1_000_000 })
   on('command.register', () => ({ value: { command: 'obs' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__trajviz-obs__obs' } }))

@@ -7,7 +7,7 @@ import { deliveryStatusText, destinationStatusText } from '../../hooks/lib/deliv
 import { telemetryAgentVersion, TELEMETRY_WORKER_TIMEOUT_MS } from '../../hooks/lib/telemetry-version.js'
 import type { Runtime } from '../../opencode/src/runtime.js'
 
-export const PLUGIN_VERSION = '0.1.3'
+export const PLUGIN_VERSION = '0.1.4'
 export type Outcome = 'success' | 'error' | 'cancelled' | 'empty' | 'rejected' | 'confirmation'
 type Event = { feature: string; surface: 'terminal' | 'headless'; outcome: Outcome; durationMs: number }
 const ADMIN = new Set(['update', 'telemetry', 'telemetry_destination', 'enable_telemetry', 'disable_telemetry'])
@@ -45,10 +45,7 @@ export class Usage {
       const metadata = lstatSync(file, { throwIfNoEntry: false })
       if (metadata) return metadata.isFile() && metadata.size <= 3 && ['on', 'on\n'].includes(readFileSync(file, 'utf8'))
     } catch { return false }
-    const destination = marker('pi-destination.json')
-    try {
-      return process.env.TRAJVIZ_OBS_TELEMETRY === '1' && (Boolean(process.env.TRAJVIZ_OBS_TELEMETRY_URL) || Boolean(destination && lstatSync(destination, { throwIfNoEntry: false })?.isFile()))
-    } catch { return false }
+    return (process.env.TRAJVIZ_OBS_TELEMETRY ?? '1') === '1'
   }
   dashboardArgs(): string[] {
     return this.enabled() ? ['--usage-adapter', 'pi', '--usage-version', PLUGIN_VERSION, ...(this.agentVersion ? ['--usage-agent-version', this.agentVersion] : [])] : []

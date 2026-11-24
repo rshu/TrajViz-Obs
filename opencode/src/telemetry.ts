@@ -46,16 +46,10 @@ function savedConsent(): 'on' | 'off' | undefined {
   } catch { return 'off' }
 }
 
-function hasSavedDestination(): boolean {
-  const marker = telemetryFile('opencode-destination.json')
-  try { return Boolean(marker && lstatSync(marker, { throwIfNoEntry: false })?.isFile()) }
-  catch { return false }
-}
-
 function usageEnabled(): boolean {
   const consent = savedConsent()
   if (consent) return consent === 'on'
-  return process.env.TRAJVIZ_OBS_TELEMETRY === '1' && (Boolean(process.env.TRAJVIZ_OBS_TELEMETRY_URL) || hasSavedDestination())
+  return (process.env.TRAJVIZ_OBS_TELEMETRY ?? '1') === '1'
 }
 
 function usageEnvironment(): NodeJS.ProcessEnv {
@@ -88,9 +82,6 @@ async function usageControl(runtime: Pick<Runtime, 'bridge' | 'telemetryPython'>
 
 /** Read only local delivery metadata. The helper neither installs Python nor sends events. */
 export async function usageDeliveryStatus(runtime: Pick<Runtime, 'bridge' | 'telemetryPython'>, signal: AbortSignal): Promise<string> {
-  if (!process.env.TRAJVIZ_OBS_TELEMETRY_URL && !savedConsent() && !hasSavedDestination()) {
-    return `Usage telemetry · ${process.env.TRAJVIZ_OBS_TELEMETRY === '1' ? 'Endpoint missing' : 'Off'}`
-  }
   return usageControl(runtime, signal, ['--status'], DELIVERY_STATUS_UNAVAILABLE, deliveryStatusText)
 }
 

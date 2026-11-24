@@ -81,7 +81,7 @@ function host(on: On, world: World = {}): Host {
   on('session.cwd', () => ({ value: CWD }))
   on('session.usage', () => ({ value: USAGE }))
   on('session.model', () => ({ value: world.model ?? 'claude-opus-4-1-20250805' }))
-  mock.env(on, world.onTelemetry ? { HOME, TRAJVIZ_OBS_TELEMETRY: '1', TRAJVIZ_OBS_TELEMETRY_URL: 'http://127.0.0.1:8765/v1/events' } : { HOME })
+  mock.env(on, world.onTelemetry ? { HOME, TRAJVIZ_OBS_TELEMETRY: '1', TRAJVIZ_OBS_TELEMETRY_URL: 'http://127.0.0.1:8765/v1/events' } : { HOME, TRAJVIZ_OBS_TELEMETRY: '0' })
   if (world.onTelemetry) on('settings.read', () => ({ value: {} }))
   const clock = mock.clock(on, { now: NOW })
   on('fs.read', (_, e) => {

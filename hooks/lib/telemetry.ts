@@ -19,7 +19,6 @@ type Consent = 'on' | 'off'
 type LaunchSettings = { enabled: boolean; endpoint: string }
 type HelperResult = { ok: true; value: unknown } | { ok: false; reason: 'python' | 'failed' }
 const CONSENT_FILE = 'claude-code-consent'
-const DESTINATION_FILE = 'claude-code-destination.json'
 
 export function setTelemetrySurface(value: string | null, interactive: boolean): void {
   surface = !interactive ? 'headless' : value === 'terminal' || value === 'desktop' ? value : 'unknown'
@@ -75,18 +74,18 @@ async function readConsent($: EngineInterface, directory: string | undefined): P
   return value === 'on' || value === 'on\n' ? 'on' : 'off'
 }
 
-async function savedDestinationExists($: EngineInterface, directory: string | undefined): Promise<boolean> {
-  return directory !== undefined && await $.fs.exists(`${directory}/${DESTINATION_FILE}`)
+async function launchEnabled($: EngineInterface): Promise<boolean> {
+  const value = await $.env.get('TRAJVIZ_OBS_TELEMETRY')
+  return value == null || value === '1'
 }
 
 async function launchSettings($: EngineInterface): Promise<LaunchSettings | undefined> {
   const directory = await consentDirectory($)
   const preference = await readConsent($, directory)
   if (preference === 'off') return
-  const enabled = await $.env.get('TRAJVIZ_OBS_TELEMETRY') === '1'
+  const enabled = await launchEnabled($)
   if (preference !== 'on' && !enabled) return
   const endpoint = (await $.env.get('TRAJVIZ_OBS_TELEMETRY_URL')) ?? ''
-  if (preference !== 'on' && !endpoint.trim() && !(await savedDestinationExists($, directory))) return
   if (!(await hasTrustedTelemetrySettings($))) return
   return { enabled, endpoint }
 }
@@ -144,11 +143,8 @@ function helperFailure(reason: 'python' | 'failed', fallback: string): string {
 export async function telemetryStatus($: EngineInterface, options: PluginOptions): Promise<{ text: string }> {
   try {
     if (!(await hasTrustedTelemetrySettings($))) return { text: 'Usage telemetry · Off. Use the Claude Code launch environment for telemetry settings.' }
-    const directory = await consentDirectory($)
-    const preference = await readConsent($, directory)
-    const enabled = await $.env.get('TRAJVIZ_OBS_TELEMETRY') === '1'
+    const enabled = await launchEnabled($)
     const endpoint = (await $.env.get('TRAJVIZ_OBS_TELEMETRY_URL')) ?? ''
-    if (!endpoint && !preference && !(await savedDestinationExists($, directory))) return { text: `Usage telemetry · ${enabled ? 'Endpoint missing' : 'Off'}` }
     const result = await runTelemetryHelper($, options, { enabled, endpoint }, ['--status'])
     return { text: result.ok ? deliveryStatusText(result.value) : helperFailure(result.reason, DELIVERY_STATUS_UNAVAILABLE) }
   } catch {
@@ -163,7 +159,7 @@ export async function setTelemetryConsent($: EngineInterface, options: PluginOpt
     if (!(await hasTrustedTelemetrySettings($))) {
       return { text: 'Usage telemetry preference could not be changed. Remove telemetry or state-directory variables from Claude Code settings and use the launch environment.' }
     }
-    const enabled = await $.env.get('TRAJVIZ_OBS_TELEMETRY') === '1'
+    const enabled = await launchEnabled($)
     const endpoint = (await $.env.get('TRAJVIZ_OBS_TELEMETRY_URL')) ?? ''
     const result = await runTelemetryHelper($, options, { enabled, endpoint }, ['--set-consent', preference])
     if (!result.ok) return { text: helperFailure(result.reason, result.reason === 'python' ? DELIVERY_STATUS_UNAVAILABLE : unavailable) }
@@ -186,7 +182,7 @@ export async function telemetryDestination($: EngineInterface, options: PluginOp
     if (!(await hasTrustedTelemetrySettings($))) {
       return { text: 'Telemetry destination · Unavailable. Remove telemetry or state-directory variables from Claude Code settings and use the launch environment.' }
     }
-    const enabled = await $.env.get('TRAJVIZ_OBS_TELEMETRY') === '1'
+    const enabled = await launchEnabled($)
     const endpoint = (await $.env.get('TRAJVIZ_OBS_TELEMETRY_URL')) ?? ''
     const mode = destination === undefined ? ['--destination'] : valueArgv('set-destination', destination)
     if (bindLaunchToken) mode.push('--use-launch-token')

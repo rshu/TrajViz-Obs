@@ -67,7 +67,7 @@ function host(on: On, world: World = {}): Host {
   on('session.id', () => ({ value: 'abc' }))
   on('session.cwd', () => ({ value: CWD }))
   on('session.usage', () => ({ value: USAGE }))
-  mock.env(on, { HOME })
+  mock.env(on, { HOME, TRAJVIZ_OBS_TELEMETRY: '0' })
   const clock = mock.clock(on, { now: NOW })
   on('fs.read', (_, e) => (e.path in files ? { value: files[e.path] as string } : { deny: `ENOENT: ${e.path}` }))
   on('fs.write', (_, e) => {

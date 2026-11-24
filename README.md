@@ -239,7 +239,7 @@ Exports and cached analysis contain session data and stay on the host unless sha
 
 ### Usage telemetry
 
-Usage telemetry is off by default in all three plugins. Run `/obs enable_telemetry` to opt in, `/obs disable_telemetry` to stop recording and pause uploads, and `/obs telemetry` to check delivery. Use `/obs telemetry_destination <URL>` to set a collector during a session.
+Usage telemetry is on by default in all three plugins; saved opt-outs are preserved. Run `/obs disable_telemetry` to stop recording and pause uploads, `/obs enable_telemetry` to turn it back on, and `/obs telemetry` to check delivery. The default collector is local at `127.0.0.1:8765`. Use `/obs telemetry_destination <URL>` to change it during a session.
 
 Events contain allowlisted feature names, outcomes, coarse timing, plugin and coding agent versions, and random installation IDs. Prompts, transcripts, paths, and command arguments stay on the host. See [telemetry configuration and reports](telemetry/README.md).
 

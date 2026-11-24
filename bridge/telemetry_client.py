@@ -1,4 +1,4 @@
-"""Record and deliver opt-in plugin usage without loading the TrajViz runtime."""
+"""Record and deliver plugin usage without loading the TrajViz runtime."""
 
 from __future__ import annotations
 
@@ -220,17 +220,16 @@ class UsageSettings:
 
 
 def usage_settings(env: Mapping[str, str], adapter: str, *, consent: str | None = None) -> UsageSettings:
-    """Resolve the active destination and private opt-in choice without writing state."""
+    """Resolve the active destination and saved telemetry choice without writing state."""
     try:
         directory = state_directory(env)
     except (OSError, ValueError, RuntimeError):
         directory = None
     if consent is None and directory is not None:
         consent = _saved_consent(directory, adapter)
-    enabled = consent == "on" or (consent is None and env.get("TRAJVIZ_OBS_TELEMETRY") == "1")
+    enabled = consent == "on" or (consent is None and env.get("TRAJVIZ_OBS_TELEMETRY", "1") == "1")
     destination = _destination(env, directory, adapter)
-    # A legacy launch opt-in without a destination still needs an explicit URL.
-    endpoint = None if destination.source == "default" and consent is None else destination.endpoint
+    endpoint = destination.endpoint
     configuration = "disabled"
     if enabled:
         configuration = "ready" if endpoint else "invalid_endpoint" if destination.source == "invalid" else "missing_endpoint"

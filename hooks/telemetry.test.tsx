@@ -17,7 +17,7 @@ const DONE = { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: 
 
 type Settings = {
   consent?: string; endpoint?: string; token?: string; settingsEnv?: Record<string, string>;
-  status?: unknown; withoutRuntime?: boolean; stateDirectory?: string; savedConsent?: 'on' | 'off';
+  status?: unknown; withoutRuntime?: boolean; stateDirectory?: string; savedConsent?: string; consentLink?: boolean;
   waitForSnapshot?: Promise<void>; savedDestination?: string; destinationError?: string; destinationCredentialInvalid?: boolean;
   agentVersion?: string;
 }
@@ -54,7 +54,7 @@ function host(on: On, settings: Settings, sender?: Promise<void>) {
   on('ui.toast', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
   on('ui.close', () => ({ value: undefined }))
-  on('fs.stat', (_, e) => ({ value: { kind: 'file', size: e.path === CONSENT_PATH ? (settings.savedConsent?.length ?? 0) + 1 : 1_000, mtimeMs: 10, isLink: false } }))
+  on('fs.stat', (_, e) => ({ value: { kind: 'file', size: e.path === CONSENT_PATH ? (settings.savedConsent?.length ?? 0) + 1 : 1_000, mtimeMs: 10, isLink: e.path === CONSENT_PATH && settings.consentLink === true } }))
   on('fs.exists', (_, e) => ({ value: e.path === PYTHON || e.path === CONSENT_PATH && settings.savedConsent !== undefined
     || e.path === DESTINATION_PATH && settings.savedDestination !== undefined }))
   on('fs.read', (_, e) => {
@@ -81,7 +81,8 @@ function host(on: On, settings: Settings, sender?: Promise<void>) {
       return { value: { ...DONE.value, stdout: JSON.stringify({ configuration: settings.savedConsent === 'on' ? 'ready' : 'disabled' }) } }
     }
     if (e.argv[3] === '--status') {
-      const status = settings.status ?? { configuration: settings.savedConsent === 'on' ? 'ready' : 'disabled' }
+      const enabled = settings.savedConsent === undefined ? e.init?.env?.TRAJVIZ_OBS_TELEMETRY === '1' : settings.savedConsent === 'on'
+      const status = settings.status ?? { configuration: enabled ? 'ready' : 'disabled' }
       return { value: { ...DONE.value, stdout: JSON.stringify(status) } }
     }
     if (e.argv[3] === '--destination' || e.argv[3] === '--set-destination') {
@@ -102,13 +103,10 @@ function host(on: On, settings: Settings, sender?: Promise<void>) {
     while (calls.length < n) await new Promise<void>(resolve => { notify = resolve })
     return calls[n - 1]!
   }
-  async function envRead(name: string) {
-    while (!envReads.includes(name)) await new Promise<void>(resolve => { notify = resolve })
-  }
   async function readSettings() {
     while (!settingsRead) await new Promise<void>(resolve => { notify = resolve })
   }
-  return { calls, envReads, fileReads, call, envRead, readSettings, snapshots: () => snapshots }
+  return { calls, envReads, fileReads, call, readSettings, snapshots: () => snapshots }
 }
 
 const command = (args: string) => ({
@@ -121,23 +119,51 @@ const pane = {
   props: { title: 'obs', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 50 }, view: {} },
 } as const
 
-test('launch consent requires the exact opt-in and an endpoint before any runtime work', async ($, on) => {
-  const settings = { consent: 'true', endpoint: ENDPOINT }
+test('Claude records activation, commands, and tools by default without a launch URL', async ($, on) => {
+  const settings: Settings = { stateDirectory: CONSENT_DIRECTORY }
   const world = host(on, settings)
   await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
-  const help = await $.command.run(command('help'))
-  expect(help.text).toContain('Start here:')
-  await world.envRead('TRAJVIZ_OBS_TELEMETRY')
-  expect(world.envReads).toContain('TRAJVIZ_OBS_TELEMETRY')
-  expect(world.envReads).not.toContain('TRAJVIZ_OBS_TELEMETRY_URL')
-
-  settings.consent = '1'
-  settings.endpoint = ''
-  await $.command.run(command('help'))
-  await world.envRead('TRAJVIZ_OBS_TELEMETRY_URL')
-  expect(world.fileReads).toEqual([])
-  expect(world.calls).toEqual([])
+  expect((await world.call(1)).argv.slice(7, 11)).toEqual(['--feature', 'activation', '--outcome', 'success'])
+  expect((await $.command.run(command('help'))).text).toContain('Start here:')
+  expect((await world.call(2)).argv.slice(7, 11)).toEqual(['--feature', 'help', '--outcome', 'success'])
+  await $.tool.call({ tool: TOOL, what: PRIVATE_VALUE } as never)
+  expect((await world.call(3)).argv.slice(7, 11)).toEqual(['--feature', 'tool', '--outcome', 'rejected'])
+  expect((await $.command.run(command('telemetry'))).text).toContain('Usage telemetry · On')
+  expect(world.calls[3]?.argv.slice(3)).toEqual(['--status', '--adapter', 'claude-code'])
+  for (const call of world.calls) expect(call.env).toEqual({ TRAJVIZ_OBS_TELEMETRY: '1', TRAJVIZ_OBS_TELEMETRY_URL: '' })
+  expect(settings.savedConsent).toBeUndefined()
+  expect(settings.savedDestination).toBeUndefined()
+  expect(JSON.stringify(world.calls)).not.toContain(PRIVATE_VALUE)
 })
+
+for (const consent of ['0', '', 'true', 'false', '2']) {
+  test(`explicit launch telemetry value ${JSON.stringify(consent)} disables fresh Claude telemetry`, async ($, on) => {
+    const clock = mock.clock(on)
+    const world = host(on, { consent, endpoint: ENDPOINT })
+    await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+    expect((await $.command.run(command('help'))).text).toContain('Start here:')
+    await clock.settle()
+    expect(world.fileReads).toEqual([])
+    expect(world.calls).toEqual([])
+    expect(world.envReads).not.toContain('TRAJVIZ_OBS_TELEMETRY_URL')
+    expect((await $.command.run(command('telemetry'))).text).toContain('Usage telemetry · Off')
+    expect(world.calls).toHaveLength(1)
+    expect(world.calls[0]?.argv.slice(3)).toEqual(['--status', '--adapter', 'claude-code'])
+    expect(world.calls[0]?.env?.TRAJVIZ_OBS_TELEMETRY).toBe('0')
+  })
+}
+
+for (const preference of [{ savedConsent: 'off' }, { savedConsent: 'yes' }, { savedConsent: 'on', consentLink: true }]) {
+  test(`Claude suppresses default telemetry for saved preference ${JSON.stringify(preference)}`, async ($, on) => {
+    const clock = mock.clock(on)
+    const world = host(on, { stateDirectory: CONSENT_DIRECTORY, ...preference })
+    await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
+    expect((await $.command.run(command('help'))).text).toContain('Start here:')
+    await clock.settle()
+    expect(world.calls).toEqual([])
+    expect(world.envReads).not.toContain('TRAJVIZ_OBS_TELEMETRY_URL')
+  })
+}
 
 test('Claude records fixed feature names and outcomes without waiting for the sender', async ($, on) => {
   let release: () => void = () => {}
@@ -189,7 +215,7 @@ test('Claude records cold-start usage and reads status with the configured inter
 })
 
 test('native Claude consent commands persist, take effect immediately, and are never reported as events', async ($, on) => {
-  const settings: Settings = { stateDirectory: CONSENT_DIRECTORY }
+  const settings: Settings = { stateDirectory: CONSENT_DIRECTORY, consent: '0' }
   const world = host(on, settings)
   const start = { cwd: '/workspace', surface: 'terminal' as const, isInteractive: true }
   await $.session.start(start)
@@ -257,7 +283,7 @@ test('Claude telemetry consent requires a user command and trusted configuration
 })
 
 test('Claude can change the destination during a session without sending telemetry or embedding a token in the command', async ($, on) => {
-  const settings: Settings = { stateDirectory: CONSENT_DIRECTORY, token: TOKEN }
+  const settings: Settings = { stateDirectory: CONSENT_DIRECTORY, consent: '0', token: TOKEN }
   const world = host(on, settings)
   const collector = 'https://collector.example.test:8443'
   const endpoint = `${collector}/v1/events`
@@ -313,7 +339,7 @@ test('the destination command shows an invalid credential binding while telemetr
 })
 
 test('Claude settings cannot supply the telemetry endpoint', async ($, on) => {
-  const world = host(on, { consent: '1', endpoint: ENDPOINT, settingsEnv: { TRAJVIZ_OBS_TELEMETRY_URL: ENDPOINT } })
+  const world = host(on, { settingsEnv: { TRAJVIZ_OBS_TELEMETRY_URL: ENDPOINT } })
   await $.session.start({ cwd: '/workspace', surface: 'terminal', isInteractive: true })
   const help = await $.command.run(command('help'))
   expect(help.text).toContain('Start here:')

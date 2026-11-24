@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Usage, usageFeature, PLUGIN_VERSION } from '../src/telemetry.js'
@@ -43,6 +43,43 @@ test('Pi feature telemetry only names allowlisted commands and variants', () => 
   ] as const) expect(usageFeature(args)).toBe(expected)
 })
 
+test('Pi defaults on without an endpoint and preserves saved and malformed opt-outs', async () => {
+  const state = await mkdtemp(path.join(tmpdir(), 'trajviz-pi-default-'))
+  const marker = path.join(state, 'pi-consent')
+  try {
+    await environment({ TRAJVIZ_OBS_TELEMETRY: undefined, TRAJVIZ_OBS_TELEMETRY_URL: undefined,
+      TRAJVIZ_OBS_TELEMETRY_STATE_DIR: state }, async () => {
+      const runtime = { bridge: state, telemetryPython: () => undefined }
+      const usage = new Usage(runtime, '1.5.2')
+      for (const [value, expected] of [[undefined, true], ['1', true], ['0', false], ['', false], ['true', false], [' 1', false]] as const) {
+        if (value === undefined) delete process.env.TRAJVIZ_OBS_TELEMETRY
+        else process.env.TRAJVIZ_OBS_TELEMETRY = value
+        expect(usage.enabled()).toBe(expected)
+        expect(usage.dashboardArgs().length > 0).toBe(expected)
+      }
+      await expect(readFile(marker, 'utf8')).rejects.toThrow('ENOENT')
+      await writeFile(marker, 'off\n')
+      delete process.env.TRAJVIZ_OBS_TELEMETRY
+      expect(usage.enabled()).toBe(false)
+      process.env.TRAJVIZ_OBS_TELEMETRY = '1'
+      expect(new Usage(runtime, '1.5.2').enabled()).toBe(false)
+      await writeFile(marker, 'on\n')
+      process.env.TRAJVIZ_OBS_TELEMETRY = '0'
+      expect(usage.enabled()).toBe(true)
+      process.env.TRAJVIZ_OBS_TELEMETRY = '1'
+      for (const invalid of ['', 'yes', 'on\nextra']) {
+        await writeFile(marker, invalid)
+        expect(usage.enabled()).toBe(false)
+      }
+      await rm(marker)
+      const target = path.join(state, 'linked-consent')
+      await writeFile(target, 'on\n')
+      await symlink(target, marker)
+      expect(usage.enabled()).toBe(false)
+    })
+  } finally { await rm(state, { recursive: true, force: true }) }
+})
+
 test.skipIf(!python)('fresh Pi consent and destination changes work during a session and stay adapter scoped', async () => {
   const state = await mkdtemp(path.join(tmpdir(), 'trajviz-pi-consent-'))
   try {
@@ -51,8 +88,10 @@ test.skipIf(!python)('fresh Pi consent and destination changes work during a ses
       const usage = new Usage({ bridge: ROOT_BRIDGE, telemetryPython: () => python ?? undefined }, '1.4.0')
       const signal = new AbortController().signal
       await writeFile(path.join(state, 'claude-code-consent'), 'on\n')
-      expect(usage.enabled()).toBe(false)
-      expect(await usage.control('status', signal)).toContain('Usage telemetry · Off')
+      expect(usage.enabled()).toBe(true)
+      expect(await usage.control('status', signal)).toContain('Usage telemetry · On')
+      expect(await usage.control('destination', signal)).toContain('http://127.0.0.1:8765/v1/events')
+      await expect(readFile(path.join(state, 'pi-consent'), 'utf8')).rejects.toThrow('ENOENT')
       expect(await usage.control('on', signal)).toContain('On. Preference saved')
       expect(usage.enabled()).toBe(true)
       expect(await readFile(path.join(state, 'pi-consent'), 'utf8')).toBe('on\n')
@@ -70,6 +109,8 @@ test.skipIf(!python)('fresh Pi consent and destination changes work during a ses
       expect(usage.enabled()).toBe(true)
       expect(await usage.control('off', signal)).toContain('Off. Preference saved')
       expect(usage.enabled()).toBe(false)
+      process.env.TRAJVIZ_OBS_TELEMETRY = '1'
+      expect(new Usage({ bridge: ROOT_BRIDGE, telemetryPython: () => python ?? undefined }, '1.4.0').enabled()).toBe(false)
       expect(usage.dashboardArgs()).toEqual([])
       expect(await readFile(path.join(state, 'claude-code-consent'), 'utf8')).toBe('on\n')
       expect(await usage.control('destination', signal, 'default')).toContain('http://127.0.0.1:8765/v1/events')
@@ -87,7 +128,7 @@ test.skipIf(!python)('worker arguments omit prompts, paths and provider secrets,
       `with open(${JSON.stringify(capture)}, 'a') as target:`,
       '    target.write(json.dumps({"argv": sys.argv[1:], "env": dict(os.environ), "isolated": sys.flags.isolated}) + "\\n")',
     ].join('\n'))
-    await environment({ TRAJVIZ_OBS_TELEMETRY: '0', TRAJVIZ_OBS_TELEMETRY_URL: 'https://collector.example/v1/events',
+    await environment({ TRAJVIZ_OBS_TELEMETRY: '0', TRAJVIZ_OBS_TELEMETRY_URL: undefined,
       TRAJVIZ_OBS_TELEMETRY_STATE_DIR: directory, TRAJVIZ_OBS_TELEMETRY_TOKEN: TOKEN,
       OPENAI_API_KEY: 'private-provider-key', ANTHROPIC_API_KEY: 'private-other-key', PRIVATE_SESSION_PATH: '/private/secret.jsonl',
       SSL_CERT_FILE: '/private/collector-ca.pem' }, async () => {
@@ -95,7 +136,9 @@ test.skipIf(!python)('worker arguments omit prompts, paths and provider secrets,
       const usage = new Usage({ bridge: directory, telemetryPython: () => interpreter }, '1.4.0')
       usage.report({ feature: 'analyze', surface: 'terminal', outcome: 'success', durationMs: 12.7 })
       await usage.flush(); expect(await captured(capture, 0)).toEqual([])
-      process.env.TRAJVIZ_OBS_TELEMETRY = '1'
+      delete process.env.TRAJVIZ_OBS_TELEMETRY
+      expect(usage.enabled()).toBe(true)
+      expect(usage.dashboardArgs()).toContain('--usage-adapter')
       usage.report({ feature: 'analyze', surface: 'terminal', outcome: 'cancelled', durationMs: 12.7 })
       await new Promise<void>(resolve => setImmediate(resolve))
       interpreter = python ?? undefined
@@ -109,6 +152,8 @@ test.skipIf(!python)('worker arguments omit prompts, paths and provider secrets,
         expect(event.argv.slice(0, 2)).toEqual(['--adapter', 'pi'])
         expect(event.argv.slice(-4)).toEqual(['--version', PLUGIN_VERSION, '--agent-version', '1.4.0'])
         expect(event.env.TRAJVIZ_OBS_TELEMETRY_TOKEN).toBe(TOKEN)
+        expect(event.env.TRAJVIZ_OBS_TELEMETRY).toBeUndefined()
+        expect(event.env.TRAJVIZ_OBS_TELEMETRY_URL).toBeUndefined()
         expect(event.env.SSL_CERT_FILE).toBe('/private/collector-ca.pem')
         for (const name of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'PRIVATE_SESSION_PATH']) expect(event.env[name]).toBeUndefined()
       }
@@ -122,7 +167,7 @@ test.skipIf(!python)('worker arguments omit prompts, paths and provider secrets,
 test.skipIf(!python)('turning telemetry off drops unsent Node events and host versions cannot inject private strings', async () => {
   const state = await mkdtemp(path.join(tmpdir(), 'trajviz-pi-pause-'))
   try {
-    await environment({ TRAJVIZ_OBS_TELEMETRY: '1', TRAJVIZ_OBS_TELEMETRY_URL: 'http://127.0.0.1:1/v1/events',
+    await environment({ TRAJVIZ_OBS_TELEMETRY: undefined, TRAJVIZ_OBS_TELEMETRY_URL: undefined,
       TRAJVIZ_OBS_TELEMETRY_STATE_DIR: state, TRAJVIZ_OBS_TELEMETRY_TOKEN: undefined }, async () => {
       let interpreter: string | undefined
       const usage = new Usage({ bridge: ROOT_BRIDGE, telemetryPython: () => interpreter }, '1.4.0-private-user-build')

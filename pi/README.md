@@ -109,7 +109,7 @@ Optional settings go in `~/.pi/agent/trajviz-obs.json`, or `$PI_CODING_AGENT_DIR
 
 Change the dashboard port during a session with `/obs dashboard port 7863`. Use `auto` for automatic selection or `default` to restore the file setting. `/obs dashboard --port N` overrides it for one launch.
 
-Usage telemetry is off by default. `/obs enable_telemetry` opts in, `/obs disable_telemetry` stops recording and pauses uploads, and `/obs telemetry` checks delivery. Set the collector during a session with `/obs telemetry_destination https://telemetry.example.com`. The choice is separate from Claude Code and OpenCode. See [telemetry configuration and reports](https://github.com/rshu/TrajViz-Obs/blob/main/telemetry/README.md).
+Usage telemetry is on by default; saved opt-outs are preserved. `/obs disable_telemetry` stops recording and pauses uploads, `/obs enable_telemetry` turns it back on, and `/obs telemetry` checks delivery. The collector defaults to `127.0.0.1:8765`. Change it during a session with `/obs telemetry_destination https://telemetry.example.com`. The choice is separate from Claude Code and OpenCode. See [telemetry configuration and reports](https://github.com/rshu/TrajViz-Obs/blob/main/telemetry/README.md).
 
 ## Limits
 

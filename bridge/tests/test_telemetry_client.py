@@ -52,14 +52,73 @@ def test_unusable_endpoints_never_create_local_state(opted_in, monkeypatch, url)
     assert not opted_in.exists()
 
 
-@pytest.mark.parametrize("consent", [None, "0", "true", "yes", " 1", "1 "])
+@pytest.mark.parametrize("consent", ["", "0", "true", "yes", " 1", "1 "])
 def test_disabled_sender_never_creates_state(opted_in, monkeypatch, consent):
-    if consent is None:
-        monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
-    else:
-        monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY", consent)
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY", consent)
     assert client.main(ARGV) == 0
     assert not opted_in.exists()
+
+
+@pytest.mark.parametrize("adapter", ["claude-code", "opencode", "pi"])
+@pytest.mark.parametrize("configured", [False, True])
+def test_fresh_installation_defaults_on_without_writing_a_consent_marker(
+    opted_in, monkeypatch, capsys, adapter, configured,
+):
+    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
+    if not configured:
+        monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY_URL")
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", TOKEN)
+    endpoint = ENDPOINT if configured else "http://127.0.0.1:8765/v1/events"
+    credential = TOKEN if configured else None
+    sent = []
+
+    def send(target, batch, *, token):
+        sent.append((target, validate_payload(batch), token))
+        return ACCEPTED
+
+    monkeypatch.setattr(client, "_send", send)
+    assert client.main(["--status", "--adapter", adapter]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["configuration"] == "ready" and status["queue_state"] == "absent"
+    dashboard = DashboardUsage.from_environment(adapter, "0.3.8")
+    assert dashboard is not None and dashboard._target() == (endpoint, opted_in, credential)
+    assert not opted_in.exists() and not sent
+
+    assert client.main([*ARGV, "--adapter", adapter]) == 0
+    target, batch, token = sent[0]
+    assert len(sent) == 1 and (target, token) == (endpoint, credential)
+    assert batch["adapter"] == adapter and batch["events"][0]["feature"] == "overview"
+    assert client.delivery_status(os.environ, adapter)["queued"] == 0
+    assert not (opted_in / f"{adapter}-consent").exists()
+
+
+@pytest.mark.parametrize("adapter", ["claude-code", "opencode", "pi"])
+@pytest.mark.parametrize("launch", [None, "1"])
+@pytest.mark.parametrize("marker_kind", ["off", "empty", "invalid", "symlink", "directory"])
+def test_saved_opt_out_and_unreadable_consent_stay_off_by_default(
+    opted_in, monkeypatch, adapter, launch, marker_kind,
+):
+    if launch is None:
+        monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
+    else:
+        monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY", launch)
+    opted_in.mkdir()
+    marker = opted_in / f"{adapter}-consent"
+    if marker_kind == "symlink":
+        target = opted_in / "target"
+        target.write_bytes(b"on\n")
+        marker.symlink_to(target)
+    elif marker_kind == "directory":
+        marker.mkdir()
+    else:
+        marker.write_bytes({"off": b"off\n", "empty": b"", "invalid": b"enabled\n"}[marker_kind])
+    previous = sorted(path.name for path in opted_in.iterdir())
+    monkeypatch.setattr(client, "_send", lambda *_args, **_kwargs: pytest.fail("disabled telemetry delivered"))
+
+    assert client.delivery_status(os.environ, adapter)["configuration"] == "disabled"
+    assert DashboardUsage.from_environment(adapter, "0.3.8") is None
+    assert client.main([*ARGV, "--adapter", adapter]) == 0
+    assert sorted(path.name for path in opted_in.iterdir()) == previous
 
 
 @pytest.mark.parametrize("url", [
@@ -68,14 +127,15 @@ def test_disabled_sender_never_creates_state(opted_in, monkeypatch, consent):
     "http://localhost:18752/v1/events",
     "http://[::1]:18752/v1/events",
 ])
-def test_allowed_endpoints_keep_their_exact_configured_scope(url):
-    settings = client.usage_settings({"TRAJVIZ_OBS_TELEMETRY": "1", "TRAJVIZ_OBS_TELEMETRY_URL": url}, "opencode")
+def test_allowed_endpoints_keep_their_exact_configured_scope(url, tmp_path):
+    settings = client.usage_settings({"TRAJVIZ_OBS_TELEMETRY": "1", "TRAJVIZ_OBS_TELEMETRY_URL": url,
+                                      "TRAJVIZ_OBS_TELEMETRY_STATE_DIR": str(tmp_path)}, "opencode")
     assert settings.configuration == "ready" and settings.endpoint == url
 
 
 @pytest.mark.parametrize("adapter", ["claude-code", "opencode", "pi"])
 def test_consent_controls_the_local_fallback_without_sending_a_remote_token(opted_in, monkeypatch, capsys, adapter):
-    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY", "0")
     monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY_URL")
     monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", TOKEN)
     sent = []
@@ -151,13 +211,13 @@ def test_destination_is_private_persistent_and_independent_of_consent(opted_in, 
     assert client.main(["--destination", *adapter]) == 0
     status = json.loads(capsys.readouterr().out)
     assert (status["destination"], status["destination_source"], status["configuration"]) == (
-        default, "default", "disabled",
+        default, "default", "ready",
     )
     assert not opted_in.exists()
 
     assert client.main(["--set-destination", saved, *adapter]) == 0
     status = json.loads(capsys.readouterr().out)
-    assert (status["destination"], status["destination_source"], status["configuration"]) == (saved, "saved", "disabled")
+    assert (status["destination"], status["destination_source"], status["configuration"]) == (saved, "saved", "ready")
     marker, = opted_in.iterdir()
     assert marker.name == "claude-code-destination.json"
     if os.name != "nt":
@@ -167,7 +227,7 @@ def test_destination_is_private_persistent_and_independent_of_consent(opted_in, 
 
     monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY", "1")
     assert client.delivery_status(client.os.environ, "claude-code")["configuration"] == "ready"
-    assert client.delivery_status(client.os.environ, "opencode")["configuration"] == "missing_endpoint"
+    assert client.delivery_status(client.os.environ, "opencode")["configuration"] == "ready"
     assert client.main(["--set-consent", "off", *adapter]) == 0
     assert saved not in capsys.readouterr().out
     monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_URL", ENDPOINT)
@@ -340,7 +400,7 @@ def test_destination_query_reports_invalid_credential_while_consent_is_off(opted
 
 
 def test_destination_query_reports_invalid_launch_credential_while_consent_is_off(opted_in, monkeypatch, capsys):
-    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY", "0")
     monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY_TOKEN", "invalid-launch-secret")
     assert client.main(["--destination", "--adapter", "claude-code"]) == 0
     output = capsys.readouterr().out
@@ -477,7 +537,10 @@ def test_switching_destination_between_claim_and_send_releases_the_old_lease(opt
         assert queue.execute("SELECT count(*) FROM pending").fetchone() == (1,)
 
 
-def test_disable_pauses_a_running_dashboard_and_only_its_adapters_queue(opted_in, monkeypatch, capsys):
+@pytest.mark.parametrize("launch", [None, "1"])
+def test_disable_pauses_a_running_dashboard_and_only_its_adapters_queue(opted_in, monkeypatch, capsys, launch):
+    if launch is None:
+        monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
     attempts = []
 
     def send(_endpoint, payload, *, token):
@@ -497,7 +560,7 @@ def test_disable_pauses_a_running_dashboard_and_only_its_adapters_queue(opted_in
     with closing(sqlite3.connect(queue)) as db, db:
         db.execute("UPDATE sender SET retry_at = 0")
 
-    # This object launched while opt-in came from the environment.
+    # The saved opt-out also pauses a dashboard that started before it was written.
     dashboard._enqueue("dashboard.render")
     client.flush_usage(ENDPOINT, opted_in, "claude-code")
     assert client.main(ARGV) == 0
@@ -507,7 +570,7 @@ def test_disable_pauses_a_running_dashboard_and_only_its_adapters_queue(opted_in
 
     assert client.main([*ARGV, "--adapter", "opencode"]) == 0
     assert attempts[-1]["adapter"] == "opencode"
-    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
+    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY", raising=False)
     assert client.main(["--set-consent", "on", "--adapter", "claude-code"]) == 0
     assert json.loads(capsys.readouterr().out)["queued"] == 1
     assert len(attempts) == 2
@@ -780,7 +843,7 @@ def test_status_reads_legacy_queue_without_migrating_it(opted_in, monkeypatch):
         database.execute("DROP TABLE sender_health")
         installation = database.execute("SELECT installation_id FROM sender").fetchone()[0]
     before = queue.read_bytes()
-    monkeypatch.delenv("TRAJVIZ_OBS_TELEMETRY")
+    monkeypatch.setenv("TRAJVIZ_OBS_TELEMETRY", "0")
     status = client.delivery_status(client.os.environ, "claude-code")
     assert status["configuration"] == "disabled"
     assert status["queue_state"] == "present" and status["queued"] == 1
