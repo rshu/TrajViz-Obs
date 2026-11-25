@@ -12,6 +12,7 @@ import type { Usage } from './telemetry.js'
 import type { Snapshot, EmptySnapshot } from './types.js'
 import { protectNativeOutput } from './outputs.js'
 import type { UpdateResult } from './update.js'
+import { promptExplorerArgs } from '../../shared/prompt-capture.js'
 
 export type CommandResult = Result & Pick<UpdateResult, 'reload' | 'applyUpdate'> & { snapshot?: Snapshot | EmptySnapshot; pane?: boolean; url?: string; dashboardSessionID?: string }
 export type Actions = { watch(value?: boolean): boolean; statusline(value?: boolean): boolean; closePane(): void; progress(text: string): void; confirm?: ModelConfirmation; update?(check: boolean, signal: AbortSignal): Promise<CommandResult> }
@@ -140,6 +141,7 @@ export async function runCommand(backend: Backend, ctx: ExtensionContext, input:
       try { await stat(labels); argv.push('--labels', labels) } catch { /* Labels are optional. */ }
       for (const flag of ['dark', 'inline-plotly']) if (flags[flag]) argv.push(`--${flag}`)
       if (typeof flags.html === 'string') return written(await run([...argv, ...valueArgv('html', flags.html)]))
+      if (selected.liveTranscript) argv.push(...promptExplorerArgs(selected.sessionID))
     } else {
       const root = asFlag(flags['data-root']) ?? backend.root
       await mkdir(root, { recursive: true, mode: 0o700 })

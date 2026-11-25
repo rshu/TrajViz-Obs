@@ -317,6 +317,32 @@ test('dashboard --session persists its resolved selection and sends only dashboa
   await $.session.end(END)
 })
 
+test('trusted prompt capture access is granted only to the current native live dashboard', { options: { openBrowser: false } }, async ($, on) => {
+  const { spawned, ran } = host(on, {
+    env: { TRAJVIZ_OBS_PROMPT_CAPTURE: '1', TRAJVIZ_OBS_PROMPT_CAPTURE_DIR: '/private/prompt-captures', OTEL_LOG_RAW_API_BODIES: 'file:/private/native-api' },
+    bridge: {
+      resolve: { exitCode: 0, stdout: JSON.stringify({ path: '/outside/imported.jsonl', session_id: 'imported', kind: 'file' }) },
+      dashboard: { exitCode: 0, stdout: JSON.stringify({ path: '/tmp/dashboard.html' }) },
+      json: { exitCode: 0, stdout: JSON.stringify({ path: '/tmp/session.json', bytes: 10 }) },
+      bundle: { exitCode: 0, stdout: JSON.stringify({ path: '/tmp/session.zip', bytes: 10, members: [] }) },
+    },
+  })
+  await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+  try {
+    await obs($, 'dashboard')
+    expect(children(spawned)[0]).toEqual(['dashboard', '--transcript', DERIVED, '--window', '1000000',
+      '--prompt-capture-root', '/private/prompt-captures', '--prompt-session-id', 'abc', '--prompt-claude-raw', '/private/native-api'])
+    await obs($, 'dashboard --html /tmp/dashboard.html')
+    await obs($, 'json')
+    await obs($, 'bundle')
+    await obs($, 'converge --data-root /runs')
+    await obs($, 'dashboard --session /outside/imported.jsonl')
+    for (const command of ['dashboard', 'json', 'bundle']) expect(ran.some(argv => argv[3] === command)).toBe(true)
+    for (const argv of children(spawned).slice(1)) expect(argv).not.toContain('--prompt-capture-root')
+    for (const argv of ran) expect(argv).not.toContain('--prompt-capture-root')
+  } finally { await $.session.end(END) }
+})
+
 test('dashboard passes available labels and explains a label preload fallback', async ($, on) => {
   const labels = `${CACHE}/sessions/abc/labels.json`
   const { spawned } = host(on, {

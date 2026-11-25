@@ -111,6 +111,8 @@ Change the dashboard port during a session with `/obs dashboard port 7863`. Use 
 
 Usage telemetry is on by default; saved opt-outs are preserved. `/obs disable_telemetry` stops recording and pauses uploads, `/obs enable_telemetry` turns it back on, and `/obs telemetry` checks delivery. The collector defaults to `127.0.0.1:8765`. Change it during a session with `/obs telemetry_destination https://telemetry.example.com`. The choice is separate from Claude Code and OpenCode. See [telemetry configuration and reports](https://github.com/rshu/TrajViz-Obs/blob/main/telemetry/README.md).
 
+For the experimental **Prompt Explorer**, [enable local capture before launching Pi](../PROMPT_CAPTURE.md), complete a response, then run `/obs dashboard` and select **Prompt Explorer**. It shows read-only composition and component changes for the current session. Capture is off by default and separate from usage telemetry.
+
 ## Limits
 
 - Pi's terminal overlay uses Pi's native UI APIs. RPC clients receive command results as notifications. Print and JSON modes do not have a slash-command result UI; use interactive Pi or an RPC client for `/obs`.

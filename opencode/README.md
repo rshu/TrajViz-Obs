@@ -143,6 +143,8 @@ Run `/obs telemetry` to check delivery or `/obs telemetry_destination` to see th
 
 Desktop and terminal clients on a shared OpenCode server share its telemetry installation ID. Agent version, when available, is the connected OpenCode server version.
 
+For the experimental **Prompt Explorer**, [enable local capture on the server before launch](../PROMPT_CAPTURE.md), complete a response, then run `/obs dashboard` and select **Prompt Explorer**. TUI and Desktop use the same read-only, current-session view. Capture is off by default and separate from usage telemetry.
+
 ## Development
 
 From the checkout's `opencode` directory (packaging also requires Node.js/npm):

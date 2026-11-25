@@ -3,10 +3,10 @@ import { OpenCode, type OpenCodeClient } from '@opencode/client'
 import { Service } from '@opencode/client/service'
 import { createHash, randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { readFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, rmdir, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { captureSession, record, validateSource, type NativeSource } from './collect.js'
-import { Runtime, exists, stopChild, type Options } from './runtime.js'
+import { Runtime, atomicFile, exists, stopChild, type Options } from './runtime.js'
 import { Revisions } from './revisions.js'
 import type { EmptySnapshot, Snapshot } from './types.js'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
@@ -14,8 +14,13 @@ import { inspectSource } from './source-info.js'
 import { argvValue, valueArgv } from './shared/args.js'
 import { dashboardUsageArgs } from './telemetry.js'
 
-export type SourceRef = { sessionID: string; transcript: string; artifacts: string; argv: string[]; native?: NativeSource; captureSessionID?: string }
+export type SourceRef = { sessionID: string; transcript: string; artifacts: string; argv: string[]; native?: NativeSource; captureSessionID?: string; promptLiveSource?: string }
 type Server = { child: ChildProcessWithoutNullStreams; url: string; signature: string; preloaded?: boolean }
+type PromptSource = {
+  sessionID: string; file: string; owners: Set<symbol>; writes: Promise<void>; digest?: string; idleSince: number
+  latest?: { text: string; digest: string }; writing?: boolean
+  timer?: ReturnType<typeof setTimeout>; pending?: Promise<void>; controller?: AbortController; dirty: boolean
+}
 type CaptureRequest = { sessionID: string; claimed?: boolean; resolve(source: NativeSource): void; reject(error: Error): void }
 const hash = (text: string | Uint8Array) => createHash('sha256').update(text).digest('hex')
 const sourceIdentity = (file: string, captureSessionID?: string): string => {
@@ -36,6 +41,9 @@ export class Backend {
   private readonly targets = new Map<string, string>()
   private readonly servers = new Map<string, Server>()
   private readonly starting = new Map<string, { promise: Promise<{ url: string; preloaded?: boolean }>; controller: AbortController }>()
+  private readonly promptSources = new Map<string, PromptSource>()
+  private closing = false
+  private closed?: Promise<void>
   private client?: OpenCodeClient
   private readonly captureRequests = new Map<string, CaptureRequest>()
   requestCapture?: (request: { requestID: string; sessionID: string }) => Promise<void>
@@ -153,6 +161,11 @@ export class Backend {
     if (this.sources.has(sessionID)) this.dirty.add(sessionID)
     // Child activity also changes every materialized parent family.
     for (const id of this.parents.get(sessionID) ?? []) this.dirty.add(id)
+    const known = new Set([sessionID, ...this.parents.get(sessionID) ?? []])
+    const related = [...this.promptSources.values()].filter(source => source.owners.size && known.has(source.sessionID))
+    // A new subagent can emit before its parent's captured tool metadata names it.
+    // Open owners refresh once to discover that edge; their native scopes stay fixed.
+    for (const source of related.length ? related : this.promptSources.values()) this.schedulePromptRefresh(source)
   }
   private remember(source: NativeSource): void {
     const id = String(source.session.id)
@@ -165,6 +178,8 @@ export class Backend {
     this.sources.delete(id); this.sources.set(id, source)
     this.capturedAt.set(id, Date.now()); this.dirty.delete(id)
     this.sourceBytes.set(id, Buffer.byteLength(JSON.stringify(source)))
+    const prompt = this.promptSources.get(id)
+    if (prompt) void this.writePromptSource(prompt, source).catch(() => {})
     while (this.sources.size > 64 || [...this.sourceBytes.values()].reduce((a,b) => a+b, 0) > 128 * 1024 * 1024) {
       const oldest = this.sources.keys().next().value!
       this.sources.delete(oldest); this.capturedAt.delete(oldest); this.dirty.delete(oldest); this.sourceBytes.delete(oldest)
@@ -186,9 +201,120 @@ export class Backend {
     const json = JSON.stringify(captured)
     const transcript = await this.revisions.write(artifacts, json)
     this.targets.set(sessionID, transcript)
+    const prompt = this.promptSources.get(sessionID)
+    if (prompt) await this.writePromptSource(prompt, this.pinned.getStore()?.has(sessionID) ? this.sources.get(sessionID) ?? captured : captured).catch(() => {})
     const argv = ['--transcript', transcript, '--artifacts', artifacts]
     if (captured.window) argv.push('--window', String(captured.window))
     return { sessionID, transcript, artifacts, argv, native: captured }
+  }
+  /** A private live alias is separate from immutable diagnostic/export revisions. */
+  async promptSource(source: SourceRef): Promise<string> {
+    if (this.closing) throw new Error('The obs plugin is unloading.')
+    if (!source.native || source.captureSessionID !== undefined) throw new Error('Live prompt capture requires a native OpenCode session.')
+    const native = validateSource(source.native)
+    const current = record(await this.ctx.session.get({ sessionID: source.sessionID } as Parameters<Plugin.Context['session']['get']>[0]))
+    const artifacts = path.join(this.root, hash(source.sessionID).slice(0, 32))
+    if (native.session.id !== source.sessionID || current.id !== source.sessionID || native.directory !== record(current.location).directory ||
+        source.artifacts !== artifacts) throw new Error('Live prompt capture does not match this OpenCode server.')
+    let prompt = this.promptSources.get(source.sessionID)
+    if (!prompt) {
+      while (this.promptSources.size >= 64) {
+        // Protect aliases handed to a dashboard whose dependency setup is still
+        // starting. Closed/abandoned owners become eligible after five minutes.
+        const inactive = [...this.promptSources.values()].find(item => item.owners.size === 0 && !item.pending && !item.writing && Date.now() - item.idleSince >= 300_000)
+        if (!inactive) throw new Error('Too many recent prompt dashboards. Close a dashboard and retry later.')
+        this.promptSources.delete(inactive.sessionID)
+        await inactive.writes.catch(() => {})
+        await unlink(inactive.file).catch(() => {})
+      }
+      prompt = { sessionID: source.sessionID, file: path.join(artifacts, 'prompt-live', this.revisions.instance + '-' + randomUUID() + '.json'),
+        owners: new Set(), writes: Promise.resolve(), dirty: false, idleSince: Date.now() }
+      this.promptSources.set(source.sessionID, prompt)
+    }
+    prompt.idleSince = Date.now()
+    await this.writePromptSource(prompt, this.sources.get(source.sessionID) ?? native)
+    source.promptLiveSource = prompt.file
+    return prompt.file
+  }
+  private writePromptSource(prompt: PromptSource, source: NativeSource): Promise<void> {
+    const captured = validateSource(source)
+    if (captured.session.id !== prompt.sessionID) return Promise.reject(new Error('Live prompt capture belongs to another session.'))
+    const text = JSON.stringify(captured), digest = hash(text)
+    // Direct RPC syncs can arrive faster than disk writes. Keep one in-flight
+    // value and replace a single pending value instead of retaining every JSON copy.
+    prompt.latest = { text, digest }
+    return this.flushPromptSource(prompt)
+  }
+  private flushPromptSource(prompt: PromptSource): Promise<void> {
+    if (!prompt.writing) {
+      prompt.writing = true
+      prompt.writes = Promise.resolve().then(async () => {
+        while (prompt.latest && !this.closing) {
+          const next = prompt.latest
+          prompt.latest = undefined
+          if (prompt.digest !== next.digest || !await exists(prompt.file)) await this.publishPromptSource(prompt, next)
+        }
+      }).finally(() => { prompt.writing = false })
+    }
+    return prompt.writes.then(() => {
+      if (prompt.latest && !this.closing) return this.flushPromptSource(prompt)
+    })
+  }
+  private async publishPromptSource(prompt: PromptSource, next: { text: string; digest: string }): Promise<void> {
+    const folder = path.dirname(prompt.file)
+    await mkdir(folder, { recursive: true, mode: 0o700 })
+    for (const directory of [path.dirname(folder), folder]) {
+      const metadata = await lstat(directory)
+      if (!metadata.isDirectory() || metadata.isSymbolicLink() || (process.getuid && metadata.uid !== process.getuid()) ||
+          process.platform !== 'win32' && (metadata.mode & 0o077)) throw new Error('Live prompt storage is not private.')
+    }
+    const existing = await lstat(prompt.file).catch(error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error })
+    if (existing && (!existing.isFile() || existing.nlink !== 1 || process.getuid && existing.uid !== process.getuid() ||
+        process.platform !== 'win32' && (existing.mode & 0o077))) throw new Error('Live prompt storage is not private.')
+    if (this.closing) return
+    await atomicFile(prompt.file, next.text)
+    prompt.digest = next.digest
+  }
+  private schedulePromptRefresh(prompt: PromptSource): void {
+    if (this.closing || !prompt.owners.size) return
+    prompt.dirty = true
+    this.dirty.add(prompt.sessionID)
+    if (prompt.timer || prompt.pending) return
+    prompt.timer = setTimeout(() => {
+      prompt.timer = undefined
+      if (this.closing || !prompt.owners.size) return
+      prompt.dirty = false
+      const controller = new AbortController()
+      prompt.controller = controller
+      // Timer callbacks may inherit an immutable diagnostic request's context.
+      // Live history must always bypass that pinned snapshot.
+      const pending = this.pinned.run(new Map(), async () => {
+        const source = await this.capture(prompt.sessionID, controller.signal)
+        if (!controller.signal.aborted && prompt.owners.size) await this.writePromptSource(prompt, source)
+      }).catch(() => {}).finally(() => {
+        if (prompt.pending === pending) { prompt.pending = undefined; prompt.controller = undefined }
+        if (prompt.dirty) this.schedulePromptRefresh(prompt)
+      })
+      prompt.pending = pending
+    }, 1000)
+    prompt.timer.unref()
+  }
+  private retainPromptSource(file: string | undefined): () => void {
+    const prompt = [...this.promptSources.values()].find(source => source.file === file)
+    if (!prompt || this.closing) return () => {}
+    const owner = Symbol('prompt dashboard')
+    prompt.owners.add(owner)
+    this.schedulePromptRefresh(prompt)
+    return () => {
+      prompt.owners.delete(owner)
+      if (!prompt.owners.size) {
+        prompt.idleSince = Date.now()
+        if (prompt.timer) clearTimeout(prompt.timer)
+        prompt.timer = undefined
+        prompt.controller?.abort()
+        prompt.dirty = false
+      }
+    }
   }
   async session(currentID: string, selector?: string, signal?: AbortSignal, captureSessionID?: string): Promise<SourceRef> {
     const target = await this.resolve(currentID, selector, captureSessionID)
@@ -237,7 +363,12 @@ export class Backend {
           if (settled) return
           settled = true; clearTimeout(timer); startupSignal.removeEventListener('abort', abort)
           if (error) { stopChild(child); reject(error) }
-          else { release = this.revisions.retain(identity); this.servers.set(key, { child, signature, ...result! }); resolve(result!) }
+          else {
+            const releaseRevision = this.revisions.retain(identity)
+            const releasePrompt = this.retainPromptSource(argvValue(argv, 'prompt-live-source'))
+            release = () => { releaseRevision(); releasePrompt() }
+            this.servers.set(key, { child, signature, ...result! }); resolve(result!)
+          }
         }
         const abort = () => finish(new Error('Cancelled dashboard startup.'))
         const timer = setTimeout(() => finish(new Error('Dashboard startup exceeded 120 seconds.')), 120_000)
@@ -277,9 +408,29 @@ export class Backend {
     await new Promise<void>(resolve => { if (server.child.exitCode !== null || server.child.signalCode !== null) resolve(); else server.child.once('close', () => resolve()) })
     return true
   }
-  async close(): Promise<void> {
-    for (const request of this.captureRequests.values()) request.reject(new Error('The obs plugin is unloading.'))
-    for (const start of this.starting.values()) start.controller.abort()
-    this.runtime.close(); this.servers.clear(); this.sources.clear(); await this.revisions.close()
+  close(): Promise<void> {
+    if (this.closed) return this.closed
+    this.closing = true
+    this.closed = (async () => {
+      for (const prompt of this.promptSources.values()) {
+        if (prompt.timer) clearTimeout(prompt.timer)
+        prompt.timer = undefined; prompt.dirty = false; prompt.controller?.abort()
+      }
+      for (const request of this.captureRequests.values()) request.reject(new Error('The obs plugin is unloading.'))
+      for (const start of this.starting.values()) start.controller.abort()
+      const children = [...new Set([...this.runtime.children, ...[...this.servers.values()].map(server => server.child)])]
+      this.runtime.close()
+      await Promise.all(children.map(child => new Promise<void>(resolve => {
+        if (child.exitCode !== null || child.signalCode !== null) resolve(); else child.once('close', () => resolve())
+      })))
+      await Promise.all([...this.promptSources.values()].map(async prompt => {
+        await prompt.pending
+        await prompt.writes.catch(() => {})
+        await unlink(prompt.file).catch(() => {})
+        await rmdir(path.dirname(prompt.file)).catch(() => {})
+      }))
+      this.promptSources.clear(); this.servers.clear(); this.sources.clear(); await this.revisions.close()
+    })()
+    return this.closed
   }
 }

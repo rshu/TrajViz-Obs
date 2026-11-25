@@ -13,6 +13,7 @@ function fixture(responses: Record<string, unknown> = {}, options: Options = {})
   const served: { kind: string; argv: string[] }[] = []
   const stopped: unknown[][] = []
   const selections: string[] = []
+  const promptSources: string[] = []
   const source = (selector?: string): SourceRef => ({ sessionID: selector ?? 'ses_current',
     transcript: `/tmp/controlled project/${selector ?? 'ses_current'}.json`, artifacts: '/tmp/controlled obs/artifacts',
     argv: ['--transcript', `/tmp/controlled project/${selector ?? 'ses_current'}.json`, '--artifacts', '/tmp/controlled obs/artifacts', '--window', '200000'] })
@@ -30,14 +31,46 @@ function fixture(responses: Record<string, unknown> = {}, options: Options = {})
     async resolve(_id: string, selector?: string) { return { sessionID: selector ?? 'ses_current' } },
     async snapshot() { return { schema_version: 1, empty: true as const, reason: 'No assistant steps', transcript: {} } },
     async sessions() { return [{ id: 'ses_current', title: 'Controlled session' }] },
+    async promptSource(selected: SourceRef) { promptSources.push(selected.sessionID); return `${selected.artifacts}/prompt-live/native.json` },
     async serve(kind: string, argv: string[]) { served.push({ kind, argv }); return { url: 'http://127.0.0.1:7860/', preloaded: true } },
     async stop(...args: unknown[]) { stopped.push(args); return true },
   } as unknown as Backend
   const execute = (args: string) => runCommand(backend, { sessionID: 'ses_current', args, runID: 'run_test' }, new AbortController().signal)
-  return { backend, calls, served, stopped, selections, execute }
+  return { backend, calls, served, stopped, selections, promptSources, execute }
 }
 
 describe('OpenCode obs command contract', () => {
+  test('only native live dashboards receive trusted Prompt Explorer arguments, excluding imports, exports and comparisons', async () => {
+    const keys = ['TRAJVIZ_OBS_PROMPT_CAPTURE', 'TRAJVIZ_OBS_PROMPT_CAPTURE_DIR'] as const
+    const previous = keys.map(key => [key, process.env[key]] as const)
+    try {
+      process.env.TRAJVIZ_OBS_PROMPT_CAPTURE = '1'
+      process.env.TRAJVIZ_OBS_PROMPT_CAPTURE_DIR = '/private/prompt-captures'
+      const h = fixture(), session = h.backend.session.bind(h.backend)
+      h.backend.session = async (...args) => ({ ...await session(...args), native: {} as NonNullable<SourceRef['native']> })
+      await h.execute('dashboard')
+      expect(h.served[0]!.argv).toContain('--prompt-capture-root')
+      expect(h.served[0]!.argv).toContain('ses_current')
+      expect(h.served[0]!.argv).toContain('--prompt-live-source')
+      await h.execute('dashboard --html /tmp/opencode-dashboard.html')
+      await h.execute('json')
+      await h.execute('bundle')
+      await h.execute('converge --data-root /tmp/opencode-comparison')
+      h.backend.session = session
+      await h.execute('dashboard --session /tmp/imported.json --session-id imported-session')
+      for (const call of h.calls) expect(call.argv).not.toContain('--prompt-capture-root')
+      for (const served of h.served.slice(1)) expect(served.argv).not.toContain('--prompt-capture-root')
+      expect(h.promptSources).toEqual(['ses_current'])
+      process.env.TRAJVIZ_OBS_PROMPT_CAPTURE = '0'
+      h.backend.session = async (...args) => ({ ...await session(...args), native: {} as NonNullable<SourceRef['native']> })
+      await h.execute('dashboard')
+      expect(h.served.at(-1)!.argv).not.toContain('--prompt-live-source')
+      expect(h.promptSources).toEqual(['ses_current'])
+    } finally {
+      for (const [key, value] of previous) if (value === undefined) delete process.env[key]; else process.env[key] = value
+    }
+  })
+
   test('server command RPC cannot update packages or invoke diagnostic work', async () => {
     for (const args of ['update', 'update --check']) {
       const h = fixture()

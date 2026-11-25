@@ -12,7 +12,7 @@ const python = input => {
     && (p.endsWith('.py') || !path.extname(p))
 }
 await cp(path.join(root, 'bridge/trajviz_obs'), path.join(output, 'trajviz_obs'), { recursive: true, filter: python })
-for (const name of ['bootstrap.py', 'trajviz_obs_cli.py', 'telemetry_client.py', 'telemetry_protocol.py']) {
+for (const name of ['bootstrap.py', 'trajviz_obs_cli.py', 'telemetry_client.py', 'telemetry_protocol.py', 'prompt_capture.py']) {
   await cp(path.join(root, 'bridge', name), path.join(output, name))
 }
 await cp(path.join(root, 'LICENSE'), path.join(root, 'pi/LICENSE'))

@@ -436,6 +436,8 @@ The browser’s AI controls use the connection in Settings, with environment set
 
 def presentation(kind: str, upstream: dict[str, Any]) -> dict[str, Any]:
     """Append plugin styles without dropping upstream theme, head, or scripts."""
+    from .prompt_explorer_render import EXPLORER_CSS
+
     # Layout JS is attached to the app below, so an upstream launch script is
     # retained exactly and runs independently.
     # Gradio scopes media rules under .gradio-container .contain. A repeated
@@ -444,7 +446,8 @@ def presentation(kind: str, upstream: dict[str, Any]) -> dict[str, Any]:
     # The plugin chooses an explicit palette. Ignore OS-dark media rules so
     # an explicit light page stays light and a dark page uses tv-theme-dark.
     native_css = (upstream.get("css") or "").replace("@media (prefers-color-scheme: dark)", "@media not all")
-    result = {**upstream, "css": f'{native_css}\n{css}'}
+    explorer_css = (EXPLORER_CSS + '\n.obs-prompt-internal {display:none!important;}\n.obs-prompt-toolbar {min-width:0!important;flex-wrap:wrap!important;}\n.obs-prompt-toolbar > * {min-width:0;}') if kind == "insight" else ""
+    result = {**upstream, "css": f'{native_css}\n{css}\n{explorer_css}'}
     if kind == "insight" and isinstance(result.get("head"), str):
         result["head"] = public_translation_head(result["head"], extra={
             **TIMELINE_TRANSLATIONS, **_DEEP_DIVE_TRANSLATIONS, **METRIC_TRANSLATIONS,

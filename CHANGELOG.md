@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add the read-only Prompt Explorer to `/obs dashboard` for Pi, Claude Code, and OpenCode, with separately enabled local capture, composition charts, component diffs, bounded history browsing, and live child-session discovery. Prompt snapshots stay out of session exports and usage telemetry.
 - Enable usage telemetry by default in all three plugins, preserving saved opt-outs and the local collector default. Set `TRAJVIZ_OBS_TELEMETRY=0` to disable it at launch when no preference is saved.
 - Validate Pi 1.6.0 alongside 1.5.2, keep model confirmations visible and cancellable, and keep pane dashboard links tied to the selected session.
 - Match Pi tool results to their owning calls when providers reuse tool-call IDs, preserving pending states and nested usage.
