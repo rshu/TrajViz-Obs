@@ -33,7 +33,7 @@ _CURSORS: OrderedDict[str, tuple] = OrderedDict()
 _CURSOR_LOCK = threading.Lock()
 MAX_DIFF_CHARS = 64 * 1024
 MAX_DIFF_LINES = 1000
-ADAPTER_LABELS = {"pi": "Pi", "claude-code": "Claude Code", "opencode": "OpenCode"}
+ADAPTER_LABELS = {"pi": "Pi", "claude-code": "Claude Code", "opencode": "OpenCode", "deveco": "DevEco Code"}
 STAGE_LABELS = {
     "context": "Engine context", "request.context": "Engine context", "provider.request": "Provider payload",
     "response": "Response evidence", "request.complete": "Response evidence", "lifecycle.compaction": "Compaction",

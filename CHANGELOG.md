@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an experimental DevEco Code adapter for the legacy 0.2.6 plugin interface: browser trajectory diagnostics through an `obs` tool, shared Python runtime, and opt-in read-only prompt component observations. It uses a singular `plugin` configuration. Independent component observations have no automatic deltas or request-level comparisons; exact provider payloads and native OpenCode 2 panes/RPC are unavailable.
+
 - Add the read-only Prompt Explorer to `/obs dashboard` for Pi, Claude Code, and OpenCode, with separately enabled local capture, composition charts, component diffs, bounded history browsing, and live child-session discovery. Prompt snapshots stay out of session exports and usage telemetry.
 - Enable usage telemetry by default in all three plugins, preserving saved opt-outs and the local collector default. Set `TRAJVIZ_OBS_TELEMETRY=0` to disable it at launch when no preference is saved.
 - Validate Pi 1.6.0 alongside 1.5.2, keep model confirmations visible and cancellable, and keep pane dashboard links tied to the selected session.

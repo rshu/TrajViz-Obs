@@ -118,6 +118,9 @@ def load_plugins() -> list[str]:
     from .opencode import install as install_opencode
 
     install_opencode()
+    from .deveco import install as install_deveco
+
+    install_deveco()
     _install_dsh_input_tracking()
     from .pi import install as install_pi
 
@@ -539,9 +542,9 @@ def attribution_identity_message(reason: str | None, *, browser: bool = False) -
 
 def attribution_defaults(fmt: str | None, raw: dict, agent: str | None, instance_id: str | None) -> tuple[str | None, str | None]:
     """Use native OpenCode identities rather than immutable cache folder names."""
-    if fmt == "opencode":
+    if fmt in {"opencode", "deveco"}:
         if agent is None:
-            agent = "opencode"
+            agent = fmt
         if instance_id is None:
             metadata = raw.get("metadata")
             native_id = metadata.get("session_id") if isinstance(metadata, dict) else None
@@ -588,7 +591,7 @@ def _install_attribution_projection() -> None:
     @functools.wraps(original)
     def project(run, agent, instance_id, *, verify_source=True):
         result = original(run, agent, instance_id, verify_source=verify_source)
-        if run.format == "opencode":
+        if run.format in {"opencode", "deveco"}:
             rows = {row["index"]: row for row in run.steps}
             for step in result.steps:
                 row = rows.get((step.source_ref or {}).get("workflow_step"), {})

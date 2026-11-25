@@ -11,7 +11,7 @@ export type PromptObservation = {
   data: unknown
 }
 type Options = {
-  adapter: 'pi' | 'claude-code' | 'opencode'
+  adapter: 'pi' | 'claude-code' | 'opencode' | 'deveco'
   bridge: string
   python: () => string | undefined
   hostVersion?: string

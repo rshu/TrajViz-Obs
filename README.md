@@ -4,16 +4,17 @@
 [![Claude Code supported](https://img.shields.io/badge/Claude_Code-supported-D97757)](#claude-code)
 [![Pi supported](https://img.shields.io/badge/Pi-supported-8B5CF6)](#pi)
 [![OpenCode 2 supported](https://img.shields.io/badge/OpenCode_2-supported-3B82F6)](#opencode-2-terminal-and-desktop)
+[![DevEco Code experimental](https://img.shields.io/badge/DevEco_Code-experimental-2563eb)](#deveco-code-experimental)
 [![Claude Code plugin version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frshu%2FTrajViz-Obs%2Fmain%2F.claude-plugin%2Fplugin.json&query=%24.version&label=Claude%20plugin&prefix=v&color=blue)](https://github.com/rshu/TrajViz-Obs/blob/main/.claude-plugin/plugin.json)
 [![OpenCode plugin version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frshu%2FTrajViz-Obs%2Fmain%2Fopencode%2Fpackage.json&query=%24.version&label=OpenCode%20plugin&prefix=v&color=blue)](https://github.com/rshu/TrajViz-Obs/blob/main/opencode/package.json)
 [![Pi plugin version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frshu%2FTrajViz-Obs%2Fmain%2Fpi%2Fpackage.json&query=%24.version&label=Pi%20plugin&prefix=v&color=blue)](https://github.com/rshu/TrajViz-Obs/blob/main/pi/package.json)
 [![License](https://img.shields.io/github/license/rshu/TrajViz-Obs)](LICENSE)
 
-Visualize and diagnose Claude Code, OpenCode 2, and Pi sessions with [TrajViz](https://github.com/rshu/TrajViz). Use `/obs` to check session health and `/obs dashboard` to inspect steps, tools, subagents, and context use.
+Visualize and diagnose Claude Code, OpenCode 2, Pi, and DevEco Code sessions with [TrajViz](https://github.com/rshu/TrajViz). Use `/obs` to check session health and `/obs dashboard` to inspect steps, tools, subagents, and context use; the experimental DevEco adapter exposes these diagnostics through its `obs` agent tool.
 
 ## Install
 
-All three plugins require [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. The first diagnostic command prepares a private TrajViz runtime; `/obs dashboard` adds its dashboard dependencies automatically. First-time setup requires network access.
+All adapters require [uv](https://docs.astral.sh/uv/) or **Python 3.11+ with `venv` and `pip`**. The first diagnostic command prepares a private TrajViz runtime; `/obs dashboard` adds its dashboard dependencies automatically. First-time setup requires network access.
 
 ### Claude Code
 
@@ -56,6 +57,26 @@ Keep the checkout in place. Restart the interface you use:
 - **Desktop:** quit (**Cmd+Q** on macOS), restart its managed server with `"/Applications/OpenCode.app/Contents/Resources/opencode-cli" service restart`, then reopen. Enable **trajviz-obs** in **Settings → Extensions → Plugins** on the built-in local server. Use the matching Desktop CLI and the server's original launch environment; quitting the app alone can leave its server running.
 
 Run `/obs help` to verify installation. See the [OpenCode guide](opencode/README.md) for custom config paths, project-only installs, standalone and remote servers, updates, and removal.
+
+### DevEco Code (experimental)
+
+A separate adapter targets the legacy plugin interface shipped with **DevEco Code 0.2.6**. Build it with Bun **1.3.0+**:
+
+```sh
+cd /absolute/path/TrajViz-Obs/deveco
+bun install --frozen-lockfile
+bun run build
+```
+
+Append its built entry to the singular `plugin` array in `~/.config/deveco/deveco.jsonc`, preserving existing settings:
+
+```jsonc
+{
+  "plugin": ["/absolute/path/TrajViz-Obs/deveco/dist/index.js"]
+}
+```
+
+Restart DevEco Code, complete a response, and ask it to **call the `obs` tool with command `dashboard`**. Open the returned local URL for trajectory diagnostics and optional Prompt Explorer. This adapter does not register native `/obs` commands or panes. Its independent prompt component observations support timeline, composition, and content inspection; automatic deltas and exact provider payloads are unavailable. See the [DevEco Code guide](deveco/README.md) for setup, supported tool commands, capture, and limitations.
 
 ### Pi
 
@@ -115,6 +136,8 @@ To remove the Git installation, run `pi remove git:github.com/rshu/TrajViz-Obs`;
 
 ## Use
 
+The `/obs` commands below apply to Claude Code, OpenCode 2, and Pi. DevEco Code uses the [`obs` agent tool](deveco/README.md#inspect-a-session) instead.
+
 Run `/obs` after the session’s first assistant response.
 
 - **Claude Code** shows the live pane and keeps the conversation clear. The prompt stays ready for input. The pane docks beside the conversation in wide fullscreen terminals and opens above the prompt in narrower or main-screen layouts. Run `/obs overview` to print a summary in the transcript. Bare `/obs` also prints the summary when the host cannot show a pane, including in headless mode.
@@ -138,7 +161,7 @@ In Claude Code, run `/obs pane` to open or focus the pane. With the pane focused
 
 Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path>` to a session command. Run bare `/obs` to return to the current session.
 
-All three plugins use TrajViz **0.5.1** and expose all **36 views**. `/obs view data_quality` explains missing or partial evidence. The dashboard distinguishes recorded zeros from missing or partial data.
+The Claude Code, OpenCode 2, and Pi plugins use TrajViz **0.5.1** and expose all **36 views**. `/obs view data_quality` explains missing or partial evidence. The dashboard distinguishes recorded zeros from missing or partial data.
 
 Watch refreshes an open pane as the current session progresses. Use `/obs watch off` to turn it off. `/obs statusline on` shows a compact summary in the host UI, and `/obs statusline off` hides it.
 
@@ -237,11 +260,11 @@ The dashboard's AI analysis panel has its own **Settings**, independently of `ll
 
 Exports and cached analysis contain session data and stay on the host unless shared. Plugin dashboards bind to `127.0.0.1` and stop on request or plugin unload. For a remote dashboard with authentication, run the standalone TrajViz CLI with `TRAJVIZ_AUTH` and upload an exported trajectory. [Standalone dashboard options](https://github.com/rshu/TrajViz/blob/v0.5.1/README.md#quickstart)
 
-The experimental **Prompt Explorer** in `/obs dashboard` shows prompt composition, component changes, and bounded session history for Pi, Claude Code, and OpenCode. It is read-only and requires a [separate local capture opt-in](PROMPT_CAPTURE.md). Prompt snapshots are excluded from session exports and usage telemetry.
+The experimental **Prompt Explorer** in the browser dashboard shows prompt composition, available component comparisons, and bounded session history. Open it with `/obs dashboard` in Pi, Claude Code, or OpenCode, or the `obs` tool in DevEco Code. Current DevEco observations support composition/content inspection but have no automatic deltas or request-level comparisons. It is read-only and requires a [separate local capture opt-in](PROMPT_CAPTURE.md). Prompt snapshots are excluded from session exports and usage telemetry.
 
 ### Usage telemetry
 
-Usage telemetry is on by default in all three plugins; saved opt-outs are preserved. Run `/obs disable_telemetry` to stop recording and pause uploads, `/obs enable_telemetry` to turn it back on, and `/obs telemetry` to check delivery. The default collector is local at `127.0.0.1:8765`. Use `/obs telemetry_destination <URL>` to change it during a session.
+Usage telemetry is on by default in the Claude Code, OpenCode 2, and Pi plugins; saved opt-outs are preserved. Run `/obs disable_telemetry` to stop recording and pause uploads, `/obs enable_telemetry` to turn it back on, and `/obs telemetry` to check delivery. The default collector is local at `127.0.0.1:8765`. Use `/obs telemetry_destination <URL>` to change it during a session. The initial DevEco Code adapter does not collect usage telemetry.
 
 Events contain allowlisted feature names, outcomes, coarse timing, plugin and coding agent versions, and random installation IDs. Prompts, transcripts, paths, and command arguments stay on the host. See [telemetry configuration and reports](telemetry/README.md).
 
@@ -271,6 +294,6 @@ uv sync --project bridge --locked --extra dev
 bridge/.venv/bin/python scripts/check.py
 ```
 
-For adapter checks, see [OpenCode development](opencode/README.md#development) or [Pi development](pi/README.md#development). These checks make no external model calls. For real-session testing, see `python3 scripts/e2e.py --help`; it uses your Claude Code account and incurs model usage. Keep test output outside the repository.
+For adapter checks, see [OpenCode development](opencode/README.md#development), [Pi development](pi/README.md#development), or [DevEco Code development](deveco/README.md#development). These checks make no external model calls. For real-session testing, see `python3 scripts/e2e.py --help`; it uses your Claude Code account and incurs model usage. Keep test output outside the repository.
 
 MIT licensed. TrajViz is a separate MIT-licensed project; this plugin is not an Anthropic product.
