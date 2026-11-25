@@ -11,6 +11,7 @@ import { ensureReady, sessionArgv } from '../lib/snapshot'
 import { dashboardUsageArgs, markOutcome } from '../lib/telemetry'
 import type { CommandContext } from './index'
 import { observedError, captureSessionSpec, sessionSpec } from './overview'
+import { promptExplorerArgs } from '../lib/prompt-capture'
 
 const MAX_PORT = 65_535
 let unverifiedSidecar = 0
@@ -117,6 +118,7 @@ async function dashboard($: EngineInterface, ctx: CommandContext, port: number |
       return `Standalone HTML dashboard written to ${doc.path}.`
     }
     if (port !== undefined) argv.push('--port', String(port))
+    if (!spec) argv.push(...await promptExplorerArgs($, transcript.sessionId))
     const what = (preloaded: boolean): string =>
       preloaded
         ? `with session ${transcript.sessionId} loaded`

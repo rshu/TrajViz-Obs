@@ -3,7 +3,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { PromptCapture } from '../../shared/prompt-capture.js'
+import { PromptCapture, promptExplorerArgs } from '../../shared/prompt-capture.js'
 
 const BRIDGE = path.resolve(import.meta.dir, '../../bridge')
 const managedPython = path.join(BRIDGE, '.venv/bin/python')
@@ -51,6 +51,25 @@ async function records(root: string): Promise<any[]> {
     .sort((a, b) => a.sequence - b.sequence)
 }
 const observation = (value = 'original') => ({ session_id: 'isolated-session', stage: 'semantic.context', data: { messages: [{ role: 'user', content: value }] } })
+
+test('Prompt Explorer arguments require the exact launch opt-in, an absolute local root, and a bounded native session ID', () => {
+  env('TRAJVIZ_OBS_PROMPT_CAPTURE_DIR', '/private/capture')
+  env('TRAJVIZ_OBS_TELEMETRY', '1')
+  for (const flag of [undefined, '', '0', 'true', ' 1', '1 ']) {
+    env('TRAJVIZ_OBS_PROMPT_CAPTURE', flag)
+    expect(promptExplorerArgs('pi-native')).toEqual([])
+  }
+  env('TRAJVIZ_OBS_PROMPT_CAPTURE', '1')
+  for (const root of [undefined, '', 'relative/prompts', '~/.capture']) {
+    env('TRAJVIZ_OBS_PROMPT_CAPTURE_DIR', root)
+    expect(promptExplorerArgs('pi-native')).toEqual([])
+  }
+  env('TRAJVIZ_OBS_PROMPT_CAPTURE_DIR', '/private/capture')
+  for (const id of ['', 'bad\0session', 'x'.repeat(4097)]) expect(promptExplorerArgs(id)).toEqual([])
+  env('OTEL_LOG_RAW_API_BODIES', 'file:/private/unrelated-claude-api')
+  expect(promptExplorerArgs('pi-native')).toEqual(['--prompt-capture-root', '/private/capture', '--prompt-session-id', 'pi-native'])
+  expect(promptExplorerArgs('x'.repeat(4096))).toHaveLength(4)
+})
 
 test('prompt capture requires exact opt-in and an absolute explicit destination independently of usage telemetry', async () => {
   let probes = 0

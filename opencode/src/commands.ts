@@ -10,6 +10,7 @@ import { isDashboardPortCommand, pageArguments, parseExtras, validateArguments }
 import { dashboardPortPreference, defaultDashboardPort } from './dashboard-port.js'
 import { runModel } from './llm.js'
 import { setUsageConsent, usageDeliveryStatus, usageDestination, usageOutcome } from './telemetry.js'
+import { promptExplorerArgs } from './shared/prompt-capture.js'
 
 const LONG_TIMEOUT = 600_000
 const EMPTY = 'Nothing to analyze yet: this session has no assistant steps. Run /obs after the first turn.'
@@ -215,6 +216,7 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
         const doc = await run<Written>(args)
         return result(doc, 'Standalone HTML dashboard written', target)
       }
+      if (source.native) args.push(...promptExplorerArgs(source.sessionID))
     } else {
       const dataRoot = flag(root) ?? backend.root
       if (root === undefined) await mkdir(dataRoot, { recursive: true, mode: 0o700 })

@@ -38,6 +38,30 @@ function fixture(responses: Record<string, unknown> = {}, options: Options = {})
 }
 
 describe('OpenCode obs command contract', () => {
+  test('only native live dashboards receive trusted Prompt Explorer arguments, excluding imports, exports and comparisons', async () => {
+    const keys = ['TRAJVIZ_OBS_PROMPT_CAPTURE', 'TRAJVIZ_OBS_PROMPT_CAPTURE_DIR'] as const
+    const previous = keys.map(key => [key, process.env[key]] as const)
+    try {
+      process.env.TRAJVIZ_OBS_PROMPT_CAPTURE = '1'
+      process.env.TRAJVIZ_OBS_PROMPT_CAPTURE_DIR = '/private/prompt-captures'
+      const h = fixture(), session = h.backend.session.bind(h.backend)
+      h.backend.session = async (...args) => ({ ...await session(...args), native: {} as NonNullable<SourceRef['native']> })
+      await h.execute('dashboard')
+      expect(h.served[0]!.argv).toContain('--prompt-capture-root')
+      expect(h.served[0]!.argv).toContain('ses_current')
+      await h.execute('dashboard --html /tmp/opencode-dashboard.html')
+      await h.execute('json')
+      await h.execute('bundle')
+      await h.execute('converge --data-root /tmp/opencode-comparison')
+      h.backend.session = session
+      await h.execute('dashboard --session /tmp/imported.json --session-id imported-session')
+      for (const call of h.calls) expect(call.argv).not.toContain('--prompt-capture-root')
+      for (const served of h.served.slice(1)) expect(served.argv).not.toContain('--prompt-capture-root')
+    } finally {
+      for (const [key, value] of previous) if (value === undefined) delete process.env[key]; else process.env[key] = value
+    }
+  })
+
   test('server command RPC cannot update packages or invoke diagnostic work', async () => {
     for (const args of ['update', 'update --check']) {
       const h = fixture()

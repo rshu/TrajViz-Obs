@@ -304,17 +304,21 @@ def pi_effective_state(record: dict) -> list[dict] | None:
     return rows
 
 
-def claude_native_records(root: Path, sessions: set[str]) -> list[dict]:
+def claude_native_records(root: Path, sessions: set[str], *, max_records: int | None = None,
+                          max_bytes: int | None = None, _inspection: dict | None = None) -> list[dict]:
     """Read Claude's own local successful-request index; never infer request/step joins."""
+    record_limit, byte_limit = _inspection_limits(max_records, max_bytes)
+
     def read_file(directory: int, name: str, limit: int) -> bytes:
         if not stat.S_ISREG(os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode):
             raise CaptureError("unsafe_native_input")
         descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         with os.fdopen(descriptor, "rb") as source:
             metadata = os.fstat(source.fileno())
-            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_uid != os.getuid()
-                    or metadata.st_size > limit):
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_uid != os.getuid():
                 raise CaptureError("unsafe_native_input")
+            if metadata.st_size > limit:
+                raise CaptureError("excessive_input")
             value = source.read(limit + 1)
             if len(value) > limit:
                 raise CaptureError("excessive_input")
@@ -322,7 +326,8 @@ def claude_native_records(root: Path, sessions: set[str]) -> list[dict]:
 
     records, total = [], 0
     with private_directory(str(root), create=False) as directory:
-        index = read_file(directory, "index.jsonl", MAX_RECORD_BYTES)
+        index = read_file(directory, "index.jsonl", min(MAX_RECORD_BYTES, byte_limit))
+        total += len(index)
         for sequence, line in enumerate(index.splitlines()):
             entry = json.loads(line)
             if not isinstance(entry, dict) or entry.get("session_id") not in sessions:
@@ -331,7 +336,7 @@ def claude_native_records(root: Path, sessions: set[str]) -> list[dict]:
                     or any(entry.get(key) is not None and not isinstance(entry[key], str)
                            for key in ("request_id", "message_id", "message_uuid", "query_source"))):
                 raise CaptureError("invalid_native_index")
-            if len(records) >= MAX_RECORDS:
+            if len(records) >= record_limit:
                 raise CaptureError("excessive_input")
             filename = entry.get("request_file")
             if not isinstance(filename, str):
@@ -339,9 +344,9 @@ def claude_native_records(root: Path, sessions: set[str]) -> list[dict]:
             target = Path(filename)
             if (target.is_absolute() and target.parent != root) or target.name != str(target) and not target.is_absolute():
                 raise CaptureError("invalid_native_index")
-            body = read_file(directory, target.name, MAX_RECORD_BYTES)
+            body = read_file(directory, target.name, min(MAX_RECORD_BYTES, byte_limit - total))
             total += len(body)
-            if total > MAX_INSTANCE_BYTES:
+            if total > byte_limit:
                 raise CaptureError("excessive_input")
             payload = json.loads(body)
             if not isinstance(payload, dict):
@@ -379,11 +384,24 @@ def claude_native_records(root: Path, sessions: set[str]) -> list[dict]:
         else:
             origin = current["record_id"]
         row["correlation"]["lineage_id"] = "native-thread-" + fingerprint(origin)[:24]
+    if _inspection is not None:
+        _inspection.update({"records": len(records), "bytes": total})
     return records
 
 
-def inspect_records(root: Path, *, include_content: bool = False, claude_raw: Path | None = None) -> dict:
+def _inspection_limits(max_records: int | None, max_bytes: int | None) -> tuple[int, int]:
+    records = MAX_RECORDS if max_records is None else max_records
+    size = MAX_INSTANCE_BYTES if max_bytes is None else max_bytes
+    if type(records) is not int or type(size) is not int or records < 0 or size < 0:
+        raise CaptureError("invalid_input_limit")
+    return min(records, MAX_RECORDS), min(size, MAX_INSTANCE_BYTES)
+
+
+def inspect_records(root: Path, *, include_content: bool = False, claude_raw: Path | None = None,
+                    max_records: int | None = None, max_bytes: int | None = None,
+                    session_ids: set[str] | None = None) -> dict:
     """Compare only a proven same-session/instance/agent/run/branch and capture boundary."""
+    record_limit, byte_limit = _inspection_limits(max_records, max_bytes)
     records = []
     gaps = []
     scanned, total_bytes = 0, 0
@@ -408,7 +426,7 @@ def inspect_records(root: Path, *, include_content: bool = False, claude_raw: Pa
                     raise CaptureError("unsafe_input")
                 scanned += 1
                 total_bytes += metadata.st_size
-                if scanned > MAX_RECORDS or total_bytes > MAX_INSTANCE_BYTES or metadata.st_size > MAX_RECORD_BYTES + 1:
+                if scanned > record_limit or total_bytes > byte_limit or metadata.st_size > MAX_RECORD_BYTES + 1:
                     raise CaptureError("excessive_input")
                 descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
                 with os.fdopen(descriptor, "rb") as source:
@@ -416,8 +434,11 @@ def inspect_records(root: Path, *, include_content: bool = False, claude_raw: Pa
                     if (not stat.S_ISREG(actual.st_mode) or actual.st_nlink != 1 or actual.st_uid != os.getuid()
                             or stat.S_IMODE(actual.st_mode) & 0o077):
                         raise CaptureError("unsafe_input")
-                    raw = source.read(MAX_RECORD_BYTES + 2)
+                    raw = source.read(min(MAX_RECORD_BYTES + 2, byte_limit - total_bytes + metadata.st_size + 1))
                     if len(raw) > MAX_RECORD_BYTES + 1:
+                        raise CaptureError("excessive_input")
+                    total_bytes += len(raw) - metadata.st_size
+                    if total_bytes > byte_limit:
                         raise CaptureError("excessive_input")
                     value = json.loads(raw, parse_constant=lambda _: (_ for _ in ()).throw(CaptureError("invalid_json")))
                     if not isinstance(value, dict):
@@ -427,16 +448,20 @@ def inspect_records(root: Path, *, include_content: bool = False, claude_raw: Pa
     with private_directory(str(root), create=False) as directory:
         inputs = list(read_tree(directory))
     for record in inputs:
+        if session_ids is not None and record.get("session_id") is not None and record.get("session_id") not in session_ids:
+            continue
         if record.get("stage") in {"capture.status", "capture.gap"}:
             gaps.append(record)
             if record.get("stage") == "capture.status":
                 continue
         validate(record)
         records.append(record)
+    native_inspection = {"records": 0, "bytes": 0}
     if claude_raw is not None:
         sessions = {row["session_id"] for row in records if row["adapter"] == "claude-code"}
-        records.extend(claude_native_records(claude_raw, sessions))
-        if len(records) > MAX_RECORDS or sum(len(encoded(row)) for row in records) > MAX_INSTANCE_BYTES:
+        records.extend(claude_native_records(claude_raw, sessions, max_records=record_limit - scanned,
+                                             max_bytes=byte_limit - total_bytes, _inspection=native_inspection))
+        if len(records) > record_limit or sum(len(encoded(row)) for row in records) > byte_limit:
             raise CaptureError("excessive_input")
     # HTTP body clones can finish out of order. Prefer the order observed at hook entry.
     records.sort(key=lambda row: (row["adapter"], row["instance_id"],
@@ -497,7 +522,8 @@ def inspect_records(root: Path, *, include_content: bool = False, claude_raw: Pa
             summary["effective_state_changes"] = changes(previous_state.get(scope, []), state)
             previous_state[scope] = state
         output.append(summary)
-    return {"schema_version": 1, "records": output, "capture_gaps": gaps, "count": len(output)}
+    return {"schema_version": 1, "records": output, "capture_gaps": gaps, "count": len(output),
+            "inspection": {"records": scanned + native_inspection["records"], "bytes": total_bytes + native_inspection["bytes"]}}
 
 
 def main(argv=None) -> int:

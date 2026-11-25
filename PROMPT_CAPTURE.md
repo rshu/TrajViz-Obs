@@ -1,6 +1,6 @@
-# Read-only prompt capture
+# Prompt Explorer and read-only capture
 
-Experimental capture records how requests change before building a prompt-explorer UI. It observes existing calls; it does not edit prompts, replay requests, or make model calls. Capture is **off by default**, independently of usage telemetry. Captured content never goes to the usage collector.
+The experimental **Prompt Explorer** in `/obs dashboard` shows captured prompt composition and changes per step for Pi, Claude Code, and OpenCode. It reads local observations without editing prompts, replaying requests, or making model calls. Capture is **off by default**, independently of usage telemetry. Prompt snapshots stay out of session exports and the usage collector.
 
 ## Enable
 
@@ -27,7 +27,22 @@ For a terminal-managed server use `opencode service restart`; for a standalone s
 
 Claude Code rejects capture options supplied through `settings.env`; use its launch environment. To stop capture, unset both variables and restart the host or server. Existing capture files remain local until you remove them.
 
-## Inspect composition and changes
+## Use Prompt Explorer
+
+1. Enable capture above, then complete an assistant response in the new agent session.
+2. Run `/obs dashboard` and open the **Prompt Explorer** tab.
+3. Choose a **Capture lane** and a request or observation. The timeline shows snapshots from that lane; click a snapshot to inspect it.
+4. Select a component to read its captured content and, when a verified baseline exists, its added, removed, changed, or moved content. Use **Refresh captures** to include newer requests.
+
+Lanes keep agents, session branches, request purposes, and capture boundaries separate. Engine context and provider request parameters are different views; the explorer does not invent a link between them. A first snapshot or unlinked component observation has no inferred comparison. Gaps remain marked as unavailable evidence rather than empty prompts.
+
+Composition bars show **serialized UTF-8 bytes**, not token counts or context-window occupancy. In Pi, **Pi active system / tools** shows the effective instructions and tool declarations after applying native patches; conversation messages remain in **Request components**.
+
+The explorer is bound to the host session that opened the dashboard and native child sessions confirmed in that capture. Loading another trajectory clears its prompt view; an uploaded file cannot authorize access to unrelated captures. It has no capture-directory browser, prompt-editing actions, or model-analysis buttons. Captured prompt content is not included in the dashboard's HTML report or session export commands.
+
+The browser view loads up to 1,024 observations and 32 MiB of session evidence. A larger session shows a limit notice; use the JSON inspector below for the larger capture.
+
+## Inspect JSON
 
 From the repository root:
 
@@ -35,7 +50,7 @@ From the repository root:
 python3 bridge/prompt_capture.py inspect --root "$TRAJVIZ_OBS_PROMPT_CAPTURE_DIR"
 ```
 
-The JSON report contains component identities, hashes, positions, serialized byte sizes, provenance, and added/removed/modified/moved components. It omits component content by default. Add `--include-content` only when you want prompt text in the report. Keep saved reports outside the capture tree so they are not mistaken for observations.
+The JSON report contains component identities, hashes, positions, serialized byte sizes, provenance, and added/removed/modified/moved components. It omits component content by default. Add `--include-content` only when you want prompt text in this explicit local report. Keep saved reports outside the capture tree so they are not mistaken for observations.
 
 Pi reports both the physical transcript and the effective named system sections/tool declarations after applying native patches. Its local lineage ID allows comparisons across user turns and compaction; a native branch switch starts a new baseline. Request sequences remain scoped to each run.
 
@@ -55,7 +70,7 @@ python3 bridge/prompt_capture.py inspect \
   --claude-raw "$private_dir/claude-api"
 ```
 
-The inspector uses Claude's native request/message IDs and thread continuation references. It does not guess links to plugin step IDs. Requests from other sessions are excluded. Unset `OTEL_LOG_RAW_API_BODIES` when finished.
+The inspector uses Claude's native request/message IDs and thread continuation references. It does not guess links to plugin step IDs. Requests from other sessions are excluded. With local file logging enabled before launch, the live explorer can also show matching native API requests in their own lanes. Unset `OTEL_LOG_RAW_API_BODIES` when finished.
 
 ## Evidence and limits
 
@@ -67,7 +82,7 @@ The inspector uses Claude's native request/message IDs and thread continuation r
 
 Logical context and transmitted payloads are separate. A continuation can send only new messages while the provider retains earlier instructions and tools. Removed fields in a payload diff do **not** mean the model lost that context. WebSocket control frames and omitted captures do not become empty prompt snapshots. A semantic hook also does not prove a request was dispatched.
 
-Component tokens are **not measured** in this prototype. Provider usage, when exposed, remains separate; byte sizes are not token counts. Missing content stays unknown. Capture gaps are explicit, and comparisons stay within the observed session, agent, lineage, and boundary. Capture begun mid-session cannot recover earlier missing observations.
+Component tokens are **not measured**. Provider usage, when exposed, remains separate; byte sizes are not token counts. Missing content stays unknown. Capture gaps are explicit, and comparisons stay within the observed session, agent, lineage, and boundary. Capture begun mid-session cannot recover earlier missing observations. Long component content and diffs have labeled preview limits; the local capture files remain unchanged.
 
 The writer publishes immutable `0600` JSON records under private directories with exclusive instance locking. Queues, record sizes, inspection memory, and shutdown waits are bounded. Pi/OpenCode allow 16 outstanding records and 8 MiB in total; Claude Code allows 128 records and 8 MiB for startup component bursts. Each adapter/session/instance directory stops at 4,096 records or 128 MiB and records a storage-limit marker. Inspection also limits its entire selected input to 4,096 records and 128 MiB; choose a narrower session/instance directory for larger capture trees. Failures never block the agent's model dispatch on disk I/O.
 

@@ -101,6 +101,31 @@ const invokeBridge: Run = (argv, abort) => new Promise((resolve, reject) => {
 })
 
 describe('Pi obs commands', () => {
+  test('only native live dashboards receive trusted Prompt Explorer arguments, excluding imports, exports and comparisons', async () => {
+    const keys = ['TRAJVIZ_OBS_PROMPT_CAPTURE', 'TRAJVIZ_OBS_PROMPT_CAPTURE_DIR'] as const
+    const previous = keys.map(key => [key, process.env[key]] as const)
+    try {
+      process.env.TRAJVIZ_OBS_PROMPT_CAPTURE = '1'
+      process.env.TRAJVIZ_OBS_PROMPT_CAPTURE_DIR = '/private/prompt-captures'
+      const h = await harness()
+      h.source.liveTranscript = path.join(h.dir, 'live.json')
+      await h.run('dashboard')
+      expect((h.served[0]![1] as string[])).toContain('--prompt-capture-root')
+      expect((h.served[0]![1] as string[])).toContain('pi-controlled')
+      await h.run('dashboard --html /tmp/pi-dashboard.html')
+      await h.run('json')
+      await h.run('bundle')
+      await h.run('converge --data-root /tmp/pi-comparison')
+      delete h.source.liveTranscript
+      h.source.captureSessionID = 'imported-session'
+      await h.run('dashboard --session /tmp/imported.json')
+      for (const call of h.calls) expect(call).not.toContain('--prompt-capture-root')
+      for (const served of h.served.slice(1)) expect((served[1] as string[])).not.toContain('--prompt-capture-root')
+    } finally {
+      for (const [key, value] of previous) if (value === undefined) delete process.env[key]; else process.env[key] = value
+    }
+  })
+
   test('private captures cannot let exports overwrite the original live Pi file or its aliases', async () => {
     const h = await harness(), original = path.join(h.dir, 'actual-pi-session.jsonl')
     await writeFile(original, 'Original native Pi session bytes')

@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { registerPromptCapture } from '../src/prompt-capture.js'
-import { PromptCapture } from '../src/shared/prompt-capture.js'
+import { PromptCapture, promptExplorerArgs } from '../src/shared/prompt-capture.js'
 
 type Host = Parameters<typeof registerPromptCapture>[0]
 type Capture = Parameters<typeof registerPromptCapture>[1]
@@ -24,6 +24,33 @@ function freeze<T>(value: T): T {
   if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value) }
   return value
 }
+
+test('packaged OpenCode Prompt Explorer helper requires host opt-in, absolute destination, and the native session ID', () => {
+  const keys = ['TRAJVIZ_OBS_PROMPT_CAPTURE', 'TRAJVIZ_OBS_PROMPT_CAPTURE_DIR', 'TRAJVIZ_OBS_TELEMETRY', 'OTEL_LOG_RAW_API_BODIES'] as const
+  const previous = keys.map(key => [key, process.env[key]] as const)
+  try {
+    process.env.TRAJVIZ_OBS_TELEMETRY = '1'
+    process.env.TRAJVIZ_OBS_PROMPT_CAPTURE_DIR = '/private/capture'
+    for (const flag of [undefined, '', '0', 'true', ' 1', '1 ']) {
+      if (flag === undefined) delete process.env.TRAJVIZ_OBS_PROMPT_CAPTURE
+      else process.env.TRAJVIZ_OBS_PROMPT_CAPTURE = flag
+      expect(promptExplorerArgs('ses_native')).toEqual([])
+    }
+    process.env.TRAJVIZ_OBS_PROMPT_CAPTURE = '1'
+    for (const root of [undefined, '', 'relative/prompts', '~/.capture']) {
+      if (root === undefined) delete process.env.TRAJVIZ_OBS_PROMPT_CAPTURE_DIR
+      else process.env.TRAJVIZ_OBS_PROMPT_CAPTURE_DIR = root
+      expect(promptExplorerArgs('ses_native')).toEqual([])
+    }
+    process.env.TRAJVIZ_OBS_PROMPT_CAPTURE_DIR = '/private/capture'
+    for (const id of ['', 'bad\0session', 'x'.repeat(4097)]) expect(promptExplorerArgs(id)).toEqual([])
+    process.env.OTEL_LOG_RAW_API_BODIES = 'file:/private/unrelated-claude-api'
+    expect(promptExplorerArgs('ses_native')).toEqual(['--prompt-capture-root', '/private/capture', '--prompt-session-id', 'ses_native'])
+    expect(promptExplorerArgs('x'.repeat(4096))).toHaveLength(4)
+  } finally {
+    for (const [key, value] of previous) if (value === undefined) delete process.env[key]; else process.env[key] = value
+  }
+})
 
 test('disabled prompt capture registers no hooks and closes without recording or worker work', async () => {
   const h = host(false)

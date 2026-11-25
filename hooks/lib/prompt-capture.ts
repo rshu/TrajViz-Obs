@@ -71,6 +71,21 @@ function recordBody(state: PromptCapture, config: Configuration, observation: Ob
     capture_health: { dropped: state.totalDropped, failed: state.failed }, ...observation })
 }
 
+/** Only the trusted launch opt-in can grant the dashboard access to private captures. */
+export async function promptExplorerArgs($: EngineInterface, sessionId: string): Promise<string[]> {
+  const config = await configuration($)
+  if (!config || !sessionId || sessionId.length > 4096 || sessionId.includes('\0')) return []
+  const args = ['--prompt-capture-root', config.root, '--prompt-session-id', sessionId]
+  try {
+    const settings = await $.settings.read({ key: 'env' })
+    const trustedRaw = !(settings && typeof settings === 'object'
+      && Object.keys(settings).some(key => key.toUpperCase() === 'OTEL_LOG_RAW_API_BODIES'))
+    const raw = trustedRaw ? await $.env.get('OTEL_LOG_RAW_API_BODIES') : null
+    if (raw?.startsWith('file:/') && !raw.includes('\0')) args.push('--prompt-claude-raw', raw.slice(5))
+  } catch { /* Optional native logs never prevent opening a dashboard. */ }
+  return args
+}
+
 async function writeBody($: EngineInterface, state: PromptCapture, config: Configuration, python: string, body: string): Promise<boolean> {
   try {
     const result = await $.process.run([python, '-I', `${$.plugin.root}/bridge/prompt_capture.py`, 'write', '--root', config.root], {

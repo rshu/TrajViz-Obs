@@ -237,13 +237,13 @@ The dashboard's AI analysis panel has its own **Settings**, independently of `ll
 
 Exports and cached analysis contain session data and stay on the host unless shared. Plugin dashboards bind to `127.0.0.1` and stop on request or plugin unload. For a remote dashboard with authentication, run the standalone TrajViz CLI with `TRAJVIZ_AUTH` and upload an exported trajectory. [Standalone dashboard options](https://github.com/rshu/TrajViz/blob/v0.5.1/README.md#quickstart)
 
+The experimental **Prompt Explorer** in `/obs dashboard` shows captured prompt composition and changes for Pi, Claude Code, and OpenCode. It is read-only and requires a [separate local capture opt-in](PROMPT_CAPTURE.md). Prompt snapshots are excluded from session exports and usage telemetry.
+
 ### Usage telemetry
 
 Usage telemetry is on by default in all three plugins; saved opt-outs are preserved. Run `/obs disable_telemetry` to stop recording and pause uploads, `/obs enable_telemetry` to turn it back on, and `/obs telemetry` to check delivery. The default collector is local at `127.0.0.1:8765`. Use `/obs telemetry_destination <URL>` to change it during a session.
 
 Events contain allowlisted feature names, outcomes, coarse timing, plugin and coding agent versions, and random installation IDs. Prompts, transcripts, paths, and command arguments stay on the host. See [telemetry configuration and reports](telemetry/README.md).
-
-For local prompt analysis, the experimental [read-only prompt capture](PROMPT_CAPTURE.md) records request composition and changes in Pi, Claude Code, and OpenCode. It requires a separate explicit opt-in, has no dashboard UI, and never sends prompt content through usage telemetry.
 
 ## Troubleshooting and limits
 

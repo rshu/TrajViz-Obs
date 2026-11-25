@@ -20,6 +20,14 @@ const MAX_RECORD_BYTES = 4 * 1024 * 1024
 const MAX_QUEUE_BYTES = 8 * 1024 * 1024
 const MAX_PENDING = 16
 
+/** Pin the live viewer to a host-selected native session, independently of Python .env loading. */
+export function promptExplorerArgs(sessionID: string): string[] {
+  const root = process.env.TRAJVIZ_OBS_PROMPT_CAPTURE_DIR
+  if (process.env.TRAJVIZ_OBS_PROMPT_CAPTURE !== '1' || !root || !path.isAbsolute(root) || root.includes('\0')
+    || !sessionID || sessionID.length > 4096 || sessionID.includes('\0')) return []
+  return ['--prompt-capture-root', root, '--prompt-session-id', sessionID]
+}
+
 /** Local prompt evidence. Independent of product telemetry; never installs a runtime. */
 export class PromptCapture {
   private readonly instance = randomUUID()

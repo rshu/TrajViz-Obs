@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { EngineInterface, On, TurnStepInput, TurnStepResult } from 'claude-code'
-import { capturePromptObservation, createPromptCapture, finishPromptCapture } from './lib/prompt-capture'
+import { capturePromptObservation, createPromptCapture, finishPromptCapture, promptExplorerArgs } from './lib/prompt-capture'
 
 const PYTHON = '/cache/trajviz-obs/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python'
 const STATE = JSON.stringify({ revision: 6, python: PYTHON, trajviz: '0.5.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.5.1', createdAt: 1 })
@@ -50,6 +50,65 @@ function host(on: On, world: World = {}) {
   })
   on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
   return { clock, writes, logs, requested, setSessionId: (value: string) => { sessionId = value }, records: () => writes.map(write => JSON.parse(write.stdin) as Saved) }
+}
+
+const EXPLORER_ARGS = ['--prompt-capture-root', '/private/capture', '--prompt-session-id', 'synthetic-session']
+type ExplorerWorld = Pick<World, 'flag' | 'root' | 'settingsEnv'> & { raw?: string; envFails?: string; settingsFailAt?: number }
+
+function explorerHost(world: ExplorerWorld = {}) {
+  let settingsReads = 0
+  const flags: Record<string, string | undefined> = {
+    TRAJVIZ_OBS_PROMPT_CAPTURE: world.flag === null ? undefined : world.flag ?? '1',
+    TRAJVIZ_OBS_PROMPT_CAPTURE_DIR: world.root === null ? undefined : world.root ?? '/private/capture',
+    OTEL_LOG_RAW_API_BODIES: world.raw,
+  }
+  return {
+    env: { async get(name: string) {
+      if (name === world.envFails) throw new Error(PRIVATE)
+      return flags[name]
+    } },
+    settings: { async read() {
+      if (++settingsReads === world.settingsFailAt) throw new Error(PRIVATE)
+      return world.settingsEnv ?? {}
+    } },
+    session: { async id() { return 'synthetic-session' } },
+  } as unknown as EngineInterface
+}
+
+test('Prompt Explorer receives only the explicit local destination and host-selected session without reading prompts or starting Python', async () => {
+  const $ = explorerHost({ raw: 'file:/private/native-api' })
+  expect(await promptExplorerArgs($, 'synthetic-session')).toEqual([...EXPLORER_ARGS, '--prompt-claude-raw', '/private/native-api'])
+})
+
+for (const world of [
+  ...[null, '', '0', 'true', ' 1', '1 '].map(flag => ({ flag })),
+  ...[null, '', 'relative/capture', '~/.capture', '//server/capture', '\\\\server\\capture', '/private/\0capture'].map(root => ({ root })),
+  ...['TRAJVIZ_OBS_PROMPT_CAPTURE', 'TRAJVIZ_OBS_PROMPT_CAPTURE_DIR', 'trajviz_obs_prompt_capture', 'trajviz_obs_prompt_capture_dir'].map(key => ({ settingsEnv: { [key]: '1' } })),
+  { envFails: 'TRAJVIZ_OBS_PROMPT_CAPTURE' }, { envFails: 'TRAJVIZ_OBS_PROMPT_CAPTURE_DIR' }, { settingsFailAt: 1 },
+] satisfies ExplorerWorld[]) {
+  test(`Prompt Explorer refuses untrusted or unavailable capture configuration ${JSON.stringify(world)}`, async () => {
+    const $ = explorerHost(world)
+    expect(await promptExplorerArgs($, 'synthetic-session')).toEqual([])
+  })
+}
+
+for (const sessionId of ['', 'bad\0session', 'x'.repeat(4097)]) {
+  test(`Prompt Explorer refuses an invalid native session id of length ${sessionId.length}`, async () => {
+    const $ = explorerHost()
+    expect(await promptExplorerArgs($, sessionId)).toEqual([])
+  })
+}
+
+for (const world of [
+  ...[undefined, '', '1', 'file:relative', 'https://example.invalid/raw', 'file:/private/\0raw'].map(raw => ({ raw })),
+  ...['OTEL_LOG_RAW_API_BODIES', 'otel_log_raw_api_bodies'].map(key => ({ raw: 'file:/private/native-api', settingsEnv: { [key]: 'file:/project/injected-api' } })),
+  { raw: 'file:/private/native-api', envFails: 'OTEL_LOG_RAW_API_BODIES' },
+  { raw: 'file:/private/native-api', settingsFailAt: 2 },
+] satisfies ExplorerWorld[]) {
+  test(`optional native API log configuration cannot expand or break Prompt Explorer access ${JSON.stringify(world)}`, async () => {
+    const $ = explorerHost(world)
+    expect(await promptExplorerArgs($, 'synthetic-session')).toEqual(EXPLORER_ARGS)
+  })
 }
 
 for (const flag of [null, '', '0', 'true', ' 1', '1 ']) {

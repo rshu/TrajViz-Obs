@@ -281,7 +281,8 @@ def _display_source(transcript_path: str, session_id: str | None, display_path: 
 def build_preloaded_insight(transcript_path: str, *, window: int | None = None,
                             labels_path: str | None = None, session_id: str | None = None,
                             display_path: str | None = None, dark: bool = False,
-                            inline_plotly: bool = False) -> gr.Blocks:
+                            inline_plotly: bool = False, prompt_capture_root: Path | None = None,
+                            prompt_session_id: str | None = None, prompt_claude_raw: Path | None = None) -> gr.Blocks:
     """The Insight dashboard that loads *transcript_path* when the page opens (unchanged if that cannot be wired)."""
     display, temporary = _display_source(transcript_path, session_id, display_path)
     alias = display if Path(display).resolve() != Path(transcript_path).resolve() else None
@@ -295,6 +296,10 @@ def build_preloaded_insight(transcript_path: str, *, window: int | None = None,
         preloaded = _add_preload(app, display)
         labels_preloaded = labels_path is not None and _add_labels_preload(app, transcript_path, labels_path,
             session_id=session_id, display_path=display)
+        from .prompt_explorer import mount_prompt_explorer
+
+        mount_prompt_explorer(app, transcript_path=transcript_path, session_id=prompt_session_id,
+                              capture_root=prompt_capture_root, claude_raw=prompt_claude_raw)
         configure_insight(app, dark=dark, inline_plotly=inline_plotly)
         page = decorate_dashboard(app, "insight", dark=dark)
         page._obs_display_path, page._obs_display_owner = display, temporary
@@ -358,7 +363,8 @@ def _attach_usage(app: gr.Blocks, usage: DashboardUsage | None, kind: str) -> No
 def serve_insight(transcript_path: str, port: int | None, *, exit_on_stdin: bool = False,
                   window: int | None = None, labels_path: str | None = None, session_id: str | None = None,
                   display_path: str | None = None, dark: bool = False, inline_plotly: bool = False,
-                  usage: DashboardUsage | None = None) -> None:
+                  usage: DashboardUsage | None = None, prompt_capture_root: Path | None = None,
+                  prompt_session_id: str | None = None, prompt_claude_raw: Path | None = None) -> None:
     """Serve the preloaded Insight dashboard until terminated; ``{"url"}`` is the first stdout line.
 
     When the preload cannot be wired (a TrajViz release changed the upload row) the dashboard still starts and
@@ -368,7 +374,8 @@ def serve_insight(transcript_path: str, port: int | None, *, exit_on_stdin: bool
     dashboard = _dashboard()
     app = build_preloaded_insight(transcript_path, window=window, labels_path=labels_path,
                                   session_id=session_id, display_path=display_path,
-                                  dark=dark, inline_plotly=inline_plotly)
+                                  dark=dark, inline_plotly=inline_plotly, prompt_capture_root=prompt_capture_root,
+                                  prompt_session_id=prompt_session_id, prompt_claude_raw=prompt_claude_raw)
     try:
         _attach_usage(app, usage, "dashboard")
         with contextlib.redirect_stdout(sys.stderr):  # Gradio's prints: the URL stays the first stdout line
@@ -438,6 +445,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--inline-plotly", action="store_true",
                    help="Make the browser's Export HTML download work offline (implied by --html).")
     p.add_argument("--exit-on-stdin", action="store_true", help=stdin_help)
+    p.add_argument("--prompt-capture-root", type=Path, help=argparse.SUPPRESS)
+    p.add_argument("--prompt-session-id", type=capture_session_id, help=argparse.SUPPRESS)
+    p.add_argument("--prompt-claude-raw", type=Path, help=argparse.SUPPRESS)
     _usage_options(p)
 
     p = sub.add_parser("converge", help="The Converge comparison dashboard, until terminated.")
@@ -475,7 +485,9 @@ def _serve_dashboard(args: argparse.Namespace) -> dict | None:
         return _write_html(run, path, args.html.expanduser().absolute(), labels=labels, dark=args.dark)
     serve_insight(str(path), args.port, exit_on_stdin=args.exit_on_stdin,
                   window=args.window, labels_path=str(labels) if labels is not None else None,
-                  session_id=args.session_id, dark=args.dark, inline_plotly=args.inline_plotly, usage=usage)
+                  session_id=args.session_id, dark=args.dark, inline_plotly=args.inline_plotly, usage=usage,
+                  prompt_capture_root=args.prompt_capture_root, prompt_session_id=args.prompt_session_id,
+                  prompt_claude_raw=args.prompt_claude_raw)
     return None
 
 
