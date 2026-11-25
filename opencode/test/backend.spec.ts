@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from 'bun:test'
 import type { Plugin } from '@opencode/plugin'
-import { link, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, link, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Backend } from '../src/backend.js'
@@ -326,4 +326,171 @@ test('dashboard stop cancels a pending dependency setup for its stable session o
   expect(await backend.stop('dashboard',ref.sessionID)).toBe(true)
   expect((await pending as Error).message).toBe('Startup cancelled')
   expect(backend.runtime.children.size).toBe(0)
+})
+
+test('prompt sources are stable private native aliases, independent of immutable revisions and backend instances', async () => {
+  const { backend, source } = await fixture()
+  const first = await backend.materialize(source)
+  const alias = await backend.promptSource(first)
+  expect(alias).toContain(path.join(first.artifacts, 'prompt-live'))
+  expect(alias).not.toBe(first.transcript)
+  expect(first.promptLiveSource).toBe(alias)
+  expect((await stat(alias)).mode & 0o777).toBe(0o600)
+  expect((await stat(path.dirname(alias))).mode & 0o777).toBe(0o700)
+  const child = { ...source, session: { ...source.session, id: 'ses_child', parentID: 'ses_root' }, messages: [{ id: 'child' }], children: [] }
+  const next = { ...source, messages: [{ id: 'new' }], children: [child] }
+  const second = await backend.materialize(next)
+  expect(await backend.promptSource(second)).toBe(alias)
+  expect(JSON.parse(await readFile(alias, 'utf8')).children[0].session.id).toBe('ses_child')
+  expect(JSON.parse(await readFile(first.transcript, 'utf8')).messages).toEqual([])
+  expect(JSON.parse(await readFile(second.transcript, 'utf8')).messages).toEqual([{ id: 'new' }])
+  const other = new Backend(backend.ctx, backend.options); backends.push(other)
+  expect(await other.promptSource(await other.materialize(source))).not.toBe(alias)
+  await backend.close()
+  await expect(readFile(alias)).rejects.toThrow()
+})
+
+test('saved imports and unsafe or foreign prompt alias storage cannot become live native sources', async () => {
+  const { backend, source, directory } = await fixture()
+  const saved = path.join(directory, 'saved.json')
+  await writeFile(saved, JSON.stringify(source))
+  await expect(backend.promptSource(await backend.session('ses_root', saved))).rejects.toThrow('native OpenCode')
+  const selected = await backend.materialize(source)
+  await expect(backend.promptSource({ ...selected, artifacts: directory })).rejects.toThrow('does not match')
+  await expect(backend.promptSource({ ...selected, native: { ...source, directory: '/foreign' } })).rejects.toThrow('does not match')
+  const alias = await backend.promptSource(selected)
+  const folder = path.dirname(alias)
+  await chmod(folder, 0o755)
+  await expect(backend.promptSource(await backend.materialize({ ...source, messages: [{ id: 'next' }] }))).rejects.toThrow('not private')
+  await chmod(folder, 0o700)
+  await rm(alias)
+  await symlink(saved, alias)
+  await expect(backend.promptSource(await backend.materialize({ ...source, messages: [{ id: 'other' }] }))).rejects.toThrow('not private')
+  expect(JSON.parse(await readFile(saved, 'utf8'))).toEqual(source)
+})
+
+async function openPromptDashboard(backend: Backend, source: NativeSource) {
+  const selected = await backend.materialize(source)
+  const alias = await backend.promptSource(selected)
+  backend.runtime.argv = async () => [process.execPath, '-e', 'console.log(JSON.stringify({url:"http://127.0.0.1:12345/"}));process.stdin.resume()']
+  await backend.serve('dashboard', ['dashboard', ...selected.argv, '--prompt-live-source', alias], undefined, selected.sessionID)
+  return alias
+}
+
+async function eventually(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 400 && !check(); attempt++) await Bun.sleep(5)
+  expect(check()).toBe(true)
+}
+
+test('active prompt dashboards coalesce new-child native events and refresh through authenticated UI capture', async () => {
+  const { backend, source } = await fixture()
+  withoutService(backend)
+  const scheduled: { callback: () => void; handle: ReturnType<typeof setTimeout> }[] = []
+  const original = globalThis.setTimeout
+  const timer = spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, milliseconds: number) => {
+    const handle = original(milliseconds === 1000 ? () => {} : callback, milliseconds === 1000 ? 60_000 : milliseconds)
+    if (milliseconds === 1000) scheduled.push({ callback, handle })
+    return handle
+  }) as typeof setTimeout)
+  let requests = 0, answer!: () => void, done = false
+  const gate = new Promise<void>(resolve => { answer = resolve })
+  const child = { ...source, session: { ...source.session, id: 'ses_new_child', parentID: 'ses_root' }, messages: [{ id: 'child-work' }], children: [] }
+  backend.requestCapture = async ({ requestID }) => { requests++; await gate; await backend.sync({ ...source, messages: [{ id: 'work' }], children: [child] }, requestID); done = true }
+  try {
+    const alias = await openPromptDashboard(backend, source)
+    for (let index = 0; index < 20; index++) expect(backend.invalidate('ses_new_child')).toBeUndefined()
+    expect(scheduled.length).toBe(1)
+    const first = scheduled.shift()!; clearTimeout(first.handle); first.callback()
+    await eventually(() => requests === 1)
+    for (let index = 0; index < 20; index++) backend.invalidate('ses_new_child')
+    expect(scheduled.length).toBe(0)
+    answer()
+    await eventually(() => done && scheduled.length === 1)
+    const native = JSON.parse(await readFile(alias, 'utf8'))
+    expect(native.children[0].session.id).toBe('ses_new_child')
+    expect(native.messages).toEqual([{ id: 'work' }])
+    expect(requests).toBe(1)
+    await backend.stop('dashboard', 'ses_root')
+    for (const next of scheduled.splice(0)) clearTimeout(next.handle)
+    backend.invalidate('ses_root')
+    expect(scheduled.length).toBe(0)
+    expect(await readFile(alias, 'utf8')).toContain('ses_new_child')
+  } finally { answer(); timer.mockRestore() }
+})
+
+test('closing a prompt dashboard cancels pending UI capture, refuses late responses and does not dispatch agent work', async () => {
+  const { backend, source } = await fixture()
+  withoutService(backend)
+  let requestID = ''
+  backend.requestCapture = async request => { requestID = request.requestID }
+  const alias = await openPromptDashboard(backend, source)
+  await eventually(() => !!requestID)
+  await backend.stop('dashboard', 'ses_root')
+  await expect(backend.sync({ ...source, messages: [{ id: 'late' }] }, requestID)).rejects.toThrow('expired')
+  expect(JSON.parse(await readFile(alias, 'utf8')).messages).toEqual([])
+  await backend.close()
+  await expect(readFile(alias)).rejects.toThrow()
+})
+
+test('prompt alias writes retain only the latest pending capture during a burst of direct syncs', async () => {
+  const { backend, source } = await fixture()
+  const alias = await backend.promptSource(await backend.materialize(source))
+  type Prompt = { sessionID: string; file: string; latest?: { text: string }; writes: Promise<void> }
+  const internal = backend as unknown as {
+    promptSources: Map<string, Prompt>
+    publishPromptSource(prompt: Prompt, value: { text: string; digest: string }): Promise<void>
+    writePromptSource(prompt: Prompt, value: NativeSource): Promise<void>
+  }
+  const prompt = internal.promptSources.get('ses_root')!
+  const publish = internal.publishPromptSource.bind(internal)
+  let begin!: () => void, release!: () => void
+  const started = new Promise<void>(resolve => { begin = resolve })
+  const resumed = new Promise<void>(resolve => { release = resolve })
+  const published: number[] = []
+  const held = spyOn(internal, 'publishPromptSource').mockImplementation(async (entry, value) => {
+    published.push(JSON.parse(value.text).messages[0].index)
+    if (published.length === 1) { begin(); await resumed }
+    return publish(entry, value)
+  })
+  try {
+    const first = internal.writePromptSource(prompt, { ...source, messages: [{ index: 0 }] })
+    await started
+    const later = Array.from({ length: 50 }, (_, index) => internal.writePromptSource(prompt, { ...source, messages: [{ index: index + 1 }] }))
+    expect(published).toEqual([0])
+    expect(JSON.parse(prompt.latest!.text).messages[0].index).toBe(50)
+    release()
+    await Promise.all([first, ...later])
+    expect(published).toEqual([0, 50])
+    expect(prompt.latest).toBeUndefined()
+    expect(JSON.parse(await readFile(alias, 'utf8')).messages[0].index).toBe(50)
+  } finally { release(); held.mockRestore() }
+})
+
+test('inactive alias cleanup cannot delete a concurrently reopened generation or exceed the owner bound', async () => {
+  const { backend, source, directory } = await fixture()
+  const selected = await backend.materialize(source)
+  const oldAlias = await backend.promptSource(selected)
+  type Entry = { sessionID: string; file: string; owners: Set<symbol>; writes: Promise<void>; idleSince: number; dirty: boolean }
+  const entries = (backend as unknown as { promptSources: Map<string, Entry> }).promptSources
+  let release!: () => void
+  const cleanupGate = new Promise<void>(resolve => { release = resolve })
+  const old = entries.get('ses_root')!
+  old.idleSince = Date.now() - 600_000; old.writes = cleanupGate
+  for (let index = 0; index < 63; index++) {
+    const sessionID = `inactive-${index}`
+    entries.set(sessionID, { sessionID, file: path.join(directory, 'inactive', `${index}.json`),
+      owners: new Set(), writes: Promise.resolve(), idleSince: Date.now(), dirty: false })
+  }
+  const other = await backend.materialize({ ...source, session: { ...source.session, id: 'ses_other' } })
+  const opening = backend.promptSource(other).catch(error => error as Error)
+  try {
+    await eventually(() => !entries.has('ses_root'))
+    const reopened = await backend.promptSource(selected)
+    expect(reopened).not.toBe(oldAlias)
+    release()
+    expect(String(await opening)).toContain('Too many recent prompt dashboards')
+    expect(entries.size).toBe(64)
+    expect(JSON.parse(await readFile(reopened, 'utf8')).session.id).toBe('ses_root')
+    await expect(readFile(oldAlias)).rejects.toThrow()
+  } finally { release() }
 })

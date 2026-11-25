@@ -332,44 +332,64 @@ def claude_native_records(root: Path, sessions: set[str], *, max_records: int | 
             entry = json.loads(line)
             if not isinstance(entry, dict) or entry.get("session_id") not in sessions:
                 continue
-            if (not isinstance(entry.get("timestamp"), (str, int, float))
-                    or any(entry.get(key) is not None and not isinstance(entry[key], str)
-                           for key in ("request_id", "message_id", "message_uuid", "query_source"))):
-                raise CaptureError("invalid_native_index")
-            if len(records) >= record_limit:
-                raise CaptureError("excessive_input")
             filename = entry.get("request_file")
             if not isinstance(filename, str):
                 raise CaptureError("invalid_native_index")
             target = Path(filename)
             if (target.is_absolute() and target.parent != root) or target.name != str(target) and not target.is_absolute():
                 raise CaptureError("invalid_native_index")
+            if len(records) >= record_limit:
+                raise CaptureError("excessive_input")
             body = read_file(directory, target.name, min(MAX_RECORD_BYTES, byte_limit - total))
             total += len(body)
             if total > byte_limit:
                 raise CaptureError("excessive_input")
-            payload = json.loads(body)
-            if not isinstance(payload, dict):
-                raise CaptureError("invalid_native_request")
-            source = entry.get("query_source") or "unknown"
-            previous_message = _mapping(payload.get("thread")).get("previous_message_id")
-            if previous_message is not None and not isinstance(previous_message, str):
+            records.append(claude_native_request(root, entry, sequence, json.loads(body)))
+    link_claude_native_requests(records)
+    if _inspection is not None:
+        _inspection.update({"records": len(records), "bytes": total})
+    return records
+
+
+def claude_native_request(root: Path, entry: dict, sequence: int, payload: dict) -> dict:
+    """Project one privately read native request; callers authorize its indexed file."""
+    if (not isinstance(entry.get("timestamp"), (str, int, float))
+            or any(entry.get(key) is not None and not isinstance(entry[key], str)
+                   for key in ("request_id", "message_id", "message_uuid", "query_source"))):
+        raise CaptureError("invalid_native_index")
+    if not isinstance(payload, dict):
+        raise CaptureError("invalid_native_request")
+    source = entry.get("query_source") or "unknown"
+    previous_message = _mapping(payload.get("thread")).get("previous_message_id")
+    if previous_message is not None and not isinstance(previous_message, str):
+        raise CaptureError("invalid_native_thread")
+    purpose = {"repl_main_thread": "primary", "compact": "compaction"}.get(source, source)
+    row = {"schema_version": 1, "adapter": "claude-code", "session_id": entry["session_id"],
+           "instance_id": "native-" + fingerprint(str(root))[:24], "record_id": fingerprint(entry)[:32],
+           "sequence": sequence, "observed_at": str(entry["timestamp"]), "stage": "provider.request",
+           "kind": purpose, "correlation": {"request_id": entry.get("request_id"),
+           "message_id": entry.get("message_id"), "message_uuid": entry.get("message_uuid"),
+           "query_source": source, "agent_id": source, "scope_basis": "native_query_source",
+           "previous_message_id": previous_message, "request_linkage": "native_index", "step_linkage": "not_inferred"},
+           "model": {"id": payload.get("model")}, "data": {"payload": payload,
+           "provenance": {"point": "claude_native_request_log", "successful_index_entries_only": True,
+                          "extended_thinking_may_be_redacted": True}}}
+    validate(row)
+    return row
+
+
+def link_claude_native_requests(records: list[dict]) -> None:
+    """Resolve only observed, exact native ancestry; never join agent-type siblings."""
+    native = [row for row in records if _mapping(_mapping(row.get("data")).get("provenance")).get("point") == "claude_native_request_log"]
+    by_message = {}
+    for row in native:
+        message = row["correlation"].get("message_id")
+        if message:
+            key = (row["session_id"], message)
+            if key in by_message:
                 raise CaptureError("invalid_native_thread")
-            purpose = {"repl_main_thread": "primary", "compact": "compaction"}.get(source, source)
-            records.append({"schema_version": 1, "adapter": "claude-code", "session_id": entry["session_id"],
-                            "instance_id": "native-" + fingerprint(str(root))[:24], "record_id": fingerprint(entry)[:32],
-                            "sequence": sequence, "observed_at": str(entry["timestamp"]), "stage": "provider.request",
-                            "kind": purpose, "correlation": {"request_id": entry.get("request_id"),
-                            "message_id": entry.get("message_id"), "message_uuid": entry.get("message_uuid"),
-                            "query_source": source, "agent_id": source, "scope_basis": "native_query_source",
-                            "previous_message_id": previous_message,
-                            "request_linkage": "native_index", "step_linkage": "not_inferred"},
-                            "model": {"id": payload.get("model")}, "data": {"payload": payload,
-                            "provenance": {"point": "claude_native_request_log", "successful_index_entries_only": True,
-                                           "extended_thinking_may_be_redacted": True}}})
-            validate(records[-1])
-    by_message = {(row["session_id"], row["correlation"]["message_id"]): row for row in records if row["correlation"]["message_id"]}
-    for row in records:
+            by_message[key] = row
+    for row in native:
         current, seen = row, set()
         while current["correlation"].get("previous_message_id"):
             previous = current["correlation"]["previous_message_id"]
@@ -384,9 +404,6 @@ def claude_native_records(root: Path, sessions: set[str], *, max_records: int | 
         else:
             origin = current["record_id"]
         row["correlation"]["lineage_id"] = "native-thread-" + fingerprint(origin)[:24]
-    if _inspection is not None:
-        _inspection.update({"records": len(records), "bytes": total})
-    return records
 
 
 def _inspection_limits(max_records: int | None, max_bytes: int | None) -> tuple[int, int]:
@@ -463,6 +480,18 @@ def inspect_records(root: Path, *, include_content: bool = False, claude_raw: Pa
                                              max_bytes=byte_limit - total_bytes, _inspection=native_inspection))
         if len(records) > record_limit or sum(len(encoded(row)) for row in records) > byte_limit:
             raise CaptureError("excessive_input")
+    output = summarize_records(records, include_content=include_content)
+    return {"schema_version": 1, "records": output, "capture_gaps": gaps, "count": len(output),
+            "inspection": {"records": scanned + native_inspection["records"], "bytes": total_bytes + native_inspection["bytes"]}}
+
+
+def summarize_records(records: list[dict], *, include_content: bool = False) -> list[dict]:
+    """Project already validated observations, with comparisons confined to this set.
+
+    The bounded UI reader selects private files before decoding; the CLI reader
+    retains its full-input limits. Neither caller invents a cross-page baseline.
+    """
+    records = list(records)
     # HTTP body clones can finish out of order. Prefer the order observed at hook entry.
     records.sort(key=lambda row: (row["adapter"], row["instance_id"],
                                  _mapping(row.get("correlation")).get("observation_sequence", row.get("sequence", 0)),
@@ -522,8 +551,7 @@ def inspect_records(root: Path, *, include_content: bool = False, claude_raw: Pa
             summary["effective_state_changes"] = changes(previous_state.get(scope, []), state)
             previous_state[scope] = state
         output.append(summary)
-    return {"schema_version": 1, "records": output, "capture_gaps": gaps, "count": len(output),
-            "inspection": {"records": scanned + native_inspection["records"], "bytes": total_bytes + native_inspection["bytes"]}}
+    return output
 
 
 def main(argv=None) -> int:

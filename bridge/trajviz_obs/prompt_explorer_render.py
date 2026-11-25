@@ -32,6 +32,7 @@ EXPLORER_CSS = """
 #obs-prompt-explorer .pe-meta > span { min-width:0; max-width:100%; overflow-wrap:anywhere; }
 #obs-prompt-explorer .pe-badge { display:inline-flex; align-items:center; border:1px solid var(--ov-border,#dce3ef);
  border-radius:5px; padding:2px 7px; font-size:11px; font-weight:600; line-height:1.6; overflow-wrap:anywhere; }
+#obs-prompt-explorer .pe-evidence { display:flex; flex-wrap:wrap; gap:5px; align-items:center; }
 #obs-prompt-explorer .pe-note { padding:10px 12px; background:var(--background-fill-secondary,#f1f5f9);
  border-left:3px solid var(--ov-accent,#2563eb); border-radius:0 5px 5px 0; font-size:12px; }
 #obs-prompt-explorer .pe-note.pe-warning { border-left-color:#b7791f; }
@@ -50,6 +51,13 @@ EXPLORER_CSS = """
  text-align:left; padding:8px; background:var(--background-fill-primary,transparent); border:1px solid var(--ov-border,#dce3ef); border-radius:6px; }
 #obs-prompt-explorer .pe-timeline-item.is-selected { border-color:var(--ov-accent,#2563eb); box-shadow:inset 0 0 0 1px var(--ov-accent,#2563eb); }
 #obs-prompt-explorer .pe-timeline-item strong { font-size:12px; font-weight:650; }
+#obs-prompt-explorer .pe-navigation { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; align-items:center; }
+#obs-prompt-explorer .pe-navigation-buttons { display:flex; flex-wrap:wrap; gap:6px; }
+#obs-prompt-explorer .pe-nav-button { padding:6px 10px; min-height:34px; border:1px solid var(--ov-border,#dce3ef);
+ border-radius:5px; background:var(--background-fill-primary,transparent); font-size:12px; }
+#obs-prompt-explorer .pe-nav-button:disabled { cursor:default; color:var(--ov-muted,#64748b); opacity:.65; }
+#obs-prompt-explorer .pe-page-status { display:grid; gap:5px; margin:0 0 14px; padding:8px 0;
+ border-bottom:1px solid var(--ov-border,#dce3ef); }
 #obs-prompt-explorer .pe-mini-stack { display:flex; height:12px; overflow:hidden; border-radius:2px;
  background:var(--background-fill-secondary,#e2e8f0); }
 #obs-prompt-explorer .pe-timeline-size { font-size:10px; color:var(--ov-muted,#64748b); white-space:nowrap; }
@@ -156,7 +164,8 @@ def _title(component: dict) -> str:
         return identity[len("system:section:"):][:180]
     role = component.get("role")
     if role:
-        return f"{str(role).replace('_', ' ').capitalize()} message"
+        label = {"toolResult": "Tool result", "tool_result": "Tool result"}.get(str(role), str(role).replace('_', ' ').capitalize())
+        return f"{label} message"
     if identity.startswith("component."):
         return identity.removeprefix("component.").replace("_", " ").capitalize()
     return identity[:180]
@@ -256,12 +265,88 @@ def _evidence(record: dict) -> tuple[str, str]:
     if stage in {"context", "request.context"}:
         if record.get("adapter") == "claude-code":
             return ("Normalized engine context",
-                    "System instructions and tool declarations may be exposed separately as unlinked observations. "
-                    "This view is not a reconstructed full API request.")
+                    ("System instructions and tool declarations may be exposed separately as unlinked observations. "
+                     "This view is not a reconstructed full API request."))
         return "Engine context", "Captured before provider-specific transformations. Later handlers may change this context."
     if stage == "lifecycle.compaction":
         return "Compaction result", "This records the native compaction event. Its internal summarizer prompt may not be exposed by the host."
     return "Capture observation", "This observation does not by itself prove a model request was dispatched."
+
+
+def _page_status(dataset: dict) -> str:
+    """Only explicit page summaries are rendered; opaque cursors and paths stay server-side."""
+    page = _mapping(dataset.get("page"))
+    if not page:
+        return ""
+    observations = _bytes(page.get("observations"))
+    known = _bytes(page.get("known_observations"))
+    oversized = _bytes(page.get("omitted_oversized")) or 0
+    older, newer = page.get("has_older") is True, page.get("has_newer") is True
+    parts = ['<section class="pe-page-status" aria-label="Capture page status">']
+    if observations is not None:
+        text = f"{observations:,} observation{'s' if observations != 1 else ''} loaded on this page"
+        if known is not None and known >= observations:
+            text += f" · {known:,} known in this session"
+        parts.append(f'<p class="pe-muted">{_escape(text)}.</p>')
+    availability = []
+    if older:
+        availability.append("Earlier captures available")
+    if newer:
+        availability.append("Later captures available")
+    if availability:
+        parts.append(f'<p class="pe-muted">{_escape(" · ".join(availability))}. Use page navigation to load them.</p>')
+    if (older or newer) and page.get("comparison_boundary") == "visible_page_only":
+        parts.append('<p class="pe-muted">Comparisons use observations on the loaded page; they do not bridge an unloaded page boundary.</p>')
+    if oversized:
+        parts.append(f'<p class="pe-muted">{oversized:,} oversized observation bod{"y is" if oversized == 1 else "ies are"} represented by capture-gap markers. Missing content is not an empty prompt.</p>')
+    parts.append('</section>')
+    return "".join(parts)
+
+
+def _snapshot_badges(selected: dict, baseline: dict | None) -> str:
+    stage = str(selected.get("stage") or "")
+    provenance = _mapping(selected.get("provenance"))
+    badges = []
+    if provenance.get("point") == "claude_native_request_log":
+        badges.append(("Native API log", "Request parameters from the host's local log. This is not a reconstruction of server-held context."))
+    elif stage in {"context", "request.context", "provider.request"}:
+        badges.append(("Host observation", "Captured at the named host boundary; later handlers or provider processing may differ."))
+    elif stage.startswith("component."):
+        badges.append(("Observed separately", "No request association is proven for this component observation."))
+    if selected.get("remote_context"):
+        badges.append(("Continuation payload", "Earlier context can remain on the provider and is not reconstructed here."))
+    if selected.get("omitted_reason"):
+        reason = selected["omitted_reason"]
+        label = "Body not loaded" if reason == "record_exceeds_page_budget" else "No prompt components exposed" if reason == "no_prompt_components_exposed" else "Partial capture"
+        badges.append((label, "The loaded evidence does not expose a complete prompt at this boundary."))
+    elif selected.get("comparison_status") == "capture_gap":
+        badges.append(("Capture gap", "The writer reported lost observations. Their request association is unknown; differences across that loss are not inferred."))
+    elif selected.get("comparison_status") == "page_boundary":
+        badges.append(("Page boundary", "An earlier comparable observation may be on another page; no comparison is inferred across that boundary."))
+    elif baseline is not None:
+        native = selected.get("baseline_relation") == "native_previous_message"
+        badges.append(("Native predecessor" if native else "Comparable baseline",
+                       "Linked by the native previous-message reference." if native else "An earlier observation in the same recorded lane."))
+    else:
+        badges.append(("No comparable baseline", "No verified predecessor is available in the loaded evidence."))
+    boundary = provenance.get("hook") or provenance.get("point")
+    if isinstance(boundary, str) and boundary and boundary != "claude_native_request_log":
+        badges.append((f"Boundary: {boundary[:100]}", "Recorded host hook or capture point."))
+    return '<div class="pe-evidence" aria-label="Capture evidence">' + "".join(
+        f'<span class="pe-badge" title="{_escape(explanation)}">{_escape(label)}</span>' for label, explanation in badges) + '</div>'
+
+
+def _component_badge(component: dict, selected: dict, mode: str) -> str:
+    if mode == "effective":
+        label, reason = "Replayed native state", "Derived from the recorded Pi section and tool patches. Current files are not reread."
+    elif str(selected.get("stage") or "").startswith("component."):
+        label, reason = "Separate observation", "The host exposed this component without a proven request association."
+    else:
+        label, reason = "Captured component", "This content is retained in the selected observation at its recorded boundary."
+    source_label = "Source metadata recorded" if component.get("source") else "Source not attributed"
+    return ('<div class="pe-evidence" aria-label="Component evidence">'
+            f'<span class="pe-badge" title="{_escape(reason)}">{label}</span>'
+            f'<span class="pe-badge">{source_label}</span><span class="pe-badge">Tokens unmeasured</span></div>')
 
 
 def _timeline(records: list[dict], selected: dict, mode: str) -> str:
@@ -283,19 +368,29 @@ def _timeline(records: list[dict], selected: dict, mode: str) -> str:
                        f'aria-current="{"step" if current else "false"}"><strong>Snapshot {offset}</strong>'
                        f'{summary}</button>')
     note = f"Showing {start + 1}–{start + len(visible)} of {len(lane)} snapshots." if len(visible) < len(lane) else f"{len(lane)} snapshots in this lane."
+    navigation = []
+    for direction, label, neighbor in (("previous", "Previous snapshot", lane[index - 1] if index > 0 else None),
+                                       ("next", "Next snapshot", lane[index + 1] if index + 1 < len(lane) else None)):
+        attribute = f'data-obs-prompt-request="{_escape(_selection(neighbor))}"' if neighbor else 'disabled aria-disabled="true"'
+        navigation.append(f'<button type="button" class="pe-nav-button" data-obs-prompt-navigation="{direction}" {attribute}>{label}</button>')
     return (f'<section class="pe-timeline-section" aria-label="Prompt evolution"><div class="pe-heading"><h3>Evolution in this lane</h3>'
-            f'<span class="pe-muted">{_escape(note)}</span></div><div class="pe-timeline">{"".join(buttons)}</div></section>')
+            f'<span class="pe-muted">{_escape(note)}</span></div><div class="pe-timeline">{"".join(buttons)}</div>'
+            f'<div class="pe-navigation"><span class="pe-muted">Snapshot {index + 1} of {len(lane)} loaded in this lane</span>'
+            f'<div class="pe-navigation-buttons">{"".join(navigation)}</div></div></section>')
 
 
-def render_explorer(dataset: dict, selected_request: str | None = None, selected_component: str | None = None, *, mode: str = "physical") -> str:
+def render_explorer(dataset: dict, selected_request: str | None = None, selected_component: str | None = None, *,
+                    mode: str = "physical", changes_only: bool = False) -> str:
     """Render one selected capture. All interactions are selection-only data attributes."""
     records = [row for row in dataset.get("records", []) if isinstance(row, dict)]
     root = '<div id="obs-prompt-explorer">'
+    if dataset.get("history_reset") is True:
+        root += '<p class="pe-note pe-warning">Session history changed or the saved window expired. Showing newest captures.</p>'
     if not records:
         status = dataset.get("status", "empty")
         title = {"disabled": "Prompt capture is off", "unavailable": "Prompt capture is unavailable", "limit": "Capture limit reached"}.get(status, "No prompt snapshots yet")
         message = dataset.get("message") or "Capture a new model request to inspect its composition and changes. Existing uncaptured history cannot be reconstructed here."
-        return root + f'<div class="pe-empty"><h2>{_escape(title)}</h2><p>{_escape(message)}</p><p class="pe-muted">Read-only · Local capture · Separate from usage telemetry</p></div></div>'
+        return root + _page_status(dataset) + f'<div class="pe-empty"><h2>{_escape(title)}</h2><p>{_escape(message)}</p><p class="pe-muted">Read-only · Local capture · Separate from usage telemetry</p></div></div>'
     selected = next((row for row in records if _selection(row) == selected_request), None)
     if selected is None:
         selected = next((row for row in reversed(records) if _rows(row, "physical")), records[-1])
@@ -305,14 +400,16 @@ def render_explorer(dataset: dict, selected_request: str | None = None, selected
     baseline = _baseline(records, selected)
     old_rows = _rows(baseline, mode) if baseline is not None else []
     changes = _mapping(selected.get("effective_state_changes" if mode == "effective" else "changes"))
-    comparable = baseline is not None and selected.get("comparison_status") not in {"unlinked_component", "capture_incomplete"}
+    comparable = baseline is not None and selected.get("comparison_status") not in {"unlinked_component", "capture_incomplete", "capture_gap", "page_boundary"}
     old_by_id = {str(row.get("id")): row for row in old_rows}
     current_by_id = {str(row.get("id")): row for row in rows}
     removed = [old_by_id[str(identity)] for identity in changes.get("removed", []) if str(identity) in old_by_id] if comparable else []
     selectable = [*rows, *removed]
+    changed_ids = [*changes.get("modified", []), *changes.get("added", []), *changes.get("removed", []), *changes.get("moved", [])] if comparable else []
+    if changes_only and comparable:
+        selectable = [row for row in selectable if row.get("id") in changed_ids]
     chosen = next((row for row in selectable if selected_component in {str(row.get("id")), component_token(str(row.get("id")))}), None)
     if chosen is None:
-        changed_ids = [*changes.get("modified", []), *changes.get("added", []), *changes.get("removed", [])] if comparable else []
         chosen = next((row for identity in changed_ids for row in selectable if row.get("id") == identity), selectable[0] if selectable else None)
     boundary, explanation = _evidence(selected)
     adapter = _ADAPTERS.get(selected.get("adapter"), str(selected.get("adapter") or "Unknown agent"))
@@ -323,7 +420,7 @@ def render_explorer(dataset: dict, selected_request: str | None = None, selected
     model_name = model.get("id") or model.get("modelID") or "Model not recorded"
     parts = [root, f'<header class="pe-header"><div class="pe-heading"><h2>Request composition</h2><span class="pe-badge">{_escape(boundary)}</span></div>',
              f'<div class="pe-meta"><span>{_escape(adapter)}</span><span>{_escape(scope)}</span><span>{_escape(model_name)}</span><span>{_escape(selected.get("observed_at", "Time not recorded"))}</span></div>',
-             f'<p class="pe-muted">{_escape(explanation)}</p></header>']
+             f'<p class="pe-muted">{_escape(explanation)}</p>{_snapshot_badges(selected, baseline if comparable else None)}</header>', _page_status(dataset)]
     if selected.get("remote_context"):
         parts.append('<div class="pe-note pe-warning">Earlier context is retained by the provider and is not reconstructed in this payload view. Missing fields here do not mean that context was removed.</div>')
     if mode == "effective":
@@ -332,20 +429,35 @@ def render_explorer(dataset: dict, selected_request: str | None = None, selected
         parts.append('<p class="pe-muted">Pi can record system and tool patches. Choose Pi active system / tools above to inspect the retained instructions and tool declarations.</p>')
     omitted = selected.get("omitted_reason")
     if omitted:
-        parts.append('<div class="pe-note pe-warning">This capture is incomplete. Component removals and an empty prompt cannot be inferred from it.</div>')
+        if omitted == "record_exceeds_page_budget":
+            message = "The observation body exceeds this page's preview budget and was not loaded. Use the local JSON inspector to inspect the retained capture."
+        elif omitted == "no_prompt_components_exposed":
+            message = "No prompt components were exposed by this observation. It may be a control frame; it does not establish an empty prompt or a context removal."
+        else:
+            message = "This capture is incomplete. Component removals and an empty prompt cannot be inferred from it."
+        parts.append(f'<div class="pe-note pe-warning">{message}</div>')
     gaps = [gap for gap in dataset.get("capture_gaps", []) if isinstance(gap, dict)
             and gap.get("adapter") == selected.get("adapter") and gap.get("session_id") == selected.get("session_id")]
     if gaps:
         parts.append(f'<div class="pe-note pe-warning">{len(gaps)} capture gap or health observation{"s" if len(gaps) != 1 else ""} recorded for this session. Some intermediate evidence may be unavailable.</div>')
+    if any(gap.get("reason") == "writer_loss" for gap in gaps):
+        parts.append('<div class="pe-note pe-warning">The capture writer reported dropped or failed observations. Which requests were affected is unknown; this warning can apply beyond the selected lane.</div>')
     parts.append(_timeline(records, selected, mode))
     parts.append(_composition(rows) if rows else '<p class="pe-note">No prompt components were exposed at this boundary.</p>')
     if comparable:
         labels = "".join(f'<span class="pe-{kind}">{len(changes.get(kind, []))} {_CHANGE_LABELS[kind].lower()}</span>' for kind in ("added", "modified", "removed", "moved", "unchanged"))
         parts.append(f'<div class="pe-change-summary" aria-label="Changes from verified baseline">{labels}</div>')
+        parts.append('<p class="pe-muted">Moved counts position shifts separately; it can overlap changed or unchanged content counts.</p>')
     else:
-        reason = "This is an unlinked observation; no request-to-request comparison is inferred." if selected.get("comparison_status") == "unlinked_component" else "No comparable baseline is available for this snapshot."
+        reason = ("This is an unlinked observation; no request-to-request comparison is inferred." if selected.get("comparison_status") == "unlinked_component"
+                  else "The baseline is outside this loaded page; no comparison is inferred across the page boundary." if selected.get("comparison_status") == "page_boundary"
+                  else "No comparable baseline is available for this snapshot.")
         parts.append(f'<p class="pe-muted">{reason}</p>')
+        if changes_only:
+            parts.append('<p class="pe-muted">A changed-components filter needs a comparable baseline. Available captured components remain visible.</p>')
     if not selectable:
+        if changes_only and comparable:
+            parts.append('<p class="pe-note">No changed components in this snapshot. Captured content and component positions match the baseline.</p>')
         return "".join(parts) + '</div>'
     selected_index = next((index for index, row in enumerate(selectable) if row is chosen), 0)
     start = max(0, min(selected_index - MAX_VISIBLE_COMPONENTS // 2, len(selectable) - MAX_VISIBLE_COMPONENTS))
@@ -353,22 +465,24 @@ def render_explorer(dataset: dict, selected_request: str | None = None, selected
     for row in selectable[start:start + MAX_VISIBLE_COMPONENTS]:
         identity = str(row.get("id"))
         statuses = [kind for kind in ("added", "modified", "removed", "moved") if comparable and identity in changes.get(kind, [])]
-        if not statuses:
-            statuses = ["unchanged"] if comparable else []
-        badges = "".join(f'<span class="pe-change pe-{kind}">{_CHANGE_LABELS[kind]}</span>' for kind in statuses)
+        if comparable and identity in changes.get("unchanged", []):
+            statuses.append("unchanged")
+        badges = "".join(f'<span class="pe-change pe-{kind}">{"Content same" if kind == "unchanged" else _CHANGE_LABELS[kind]}</span>' for kind in statuses)
         position = "Removed" if identity not in current_by_id else str(int(row.get("position", 0)) + 1)
         buttons.append(f'<button type="button" class="pe-component{" is-selected" if row is chosen else ""}" '
                        f'data-obs-prompt-component="{component_token(identity)}" aria-pressed="{str(row is chosen).lower()}">'
                        f'<span class="pe-component-name"><span class="pe-position">{_escape(position)}</span>{_escape(_title(row))}</span>'
                        f'<span class="pe-component-meta"><span>{_escape(format_bytes(_bytes(row.get("utf8_bytes"))))}</span>{badges}</span></button>')
     list_note = f" · showing {start + 1}–{start + len(buttons)}" if len(selectable) > len(buttons) else ""
-    parts.append(f'<div class="pe-layout"><section aria-label="Ordered components"><div class="pe-components-heading"><h3>Components</h3>'
-                 f'<span class="pe-muted">{len(rows)} captured{_escape(list_note)}</span></div><div class="pe-components">{"".join(buttons)}</div></section>')
+    list_label = f"{len(selectable)} changed · {len(rows)} captured" if changes_only and comparable else f"{len(rows)} captured"
+    parts.append(f'<div class="pe-layout"><section aria-label="Ordered components"><div class="pe-components-heading"><h3>{"Changed components" if changes_only and comparable else "Components"}</h3>'
+                 f'<span class="pe-muted">{_escape(list_label)}{_escape(list_note)}</span></div><div class="pe-components">{"".join(buttons)}</div></section>')
     identity = str(chosen.get("id"))
     old, current = old_by_id.get(identity), current_by_id.get(identity)
     kind_label = _KINDS.get(chosen.get("kind"), _KINDS["opaque"])[0]
     parts.append(f'<section class="pe-detail" aria-label="Selected component"><div class="pe-detail-heading"><h3 class="pe-detail-title">{_escape(_title(chosen))}</h3>'
                  f'<p class="pe-muted">{_escape(kind_label)} · {_escape(format_bytes(_bytes(chosen.get("utf8_bytes"))))}</p></div>')
+    parts.append(_component_badge(chosen, selected, mode))
     source = chosen.get("source")
     source_text = json.dumps(source, ensure_ascii=False) if isinstance(source, (dict, list)) else str(source) if source is not None else "Source not attributed"
     source_preview = source_text[:1500] + ("… (source preview limited)" if len(source_text) > 1500 else "")
@@ -383,6 +497,10 @@ def render_explorer(dataset: dict, selected_request: str | None = None, selected
     else:
         if comparable:
             parts.append('<p class="pe-muted">Content unchanged from the verified baseline.</p>')
+            if identity in changes.get("moved", []) and old is not None and current is not None:
+                old_position, new_position = _bytes(old.get("position")), _bytes(current.get("position"))
+                if old_position is not None and new_position is not None:
+                    parts.append(f'<p class="pe-muted">Position shifted from {old_position + 1} to {new_position + 1}; the captured content is the same.</p>')
         parts.append(_pre(chosen.get("content", _MISSING), unavailable="Content was not retained in this capture"))
     parts.append('</section></div></div>')
     return "".join(parts)

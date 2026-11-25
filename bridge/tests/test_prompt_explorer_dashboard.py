@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -137,6 +138,20 @@ def test_mount_is_idempotent(scoped_capture):
     assert sum(isinstance(block, gr.Tab) and block.label == "Prompt Explorer" for block in app.blocks.values()) == 1
 
 
+def test_live_native_alias_is_host_only_and_not_a_browser_file_control(scoped_capture):
+    from trajviz_obs.prompt_explorer import mount_prompt_explorer
+
+    fixture = scoped_capture
+    app = dashboard.insight_app()
+    files = {block._id for block in app.blocks.values() if isinstance(block, gr.File)}
+    assert mount_prompt_explorer(app, transcript_path=str(fixture["source"]), session_id="session-a",
+                                 capture_root=fixture["root"], live_source=fixture["forged"])
+    config = json.dumps(app.get_config_file(), default=str)
+    assert str(fixture["forged"]) not in config
+    assert {block._id for block in app.blocks.values() if isinstance(block, gr.File)} == files
+    assert not gr.utils.is_static_file(str(fixture["forged"]))
+
+
 def test_launch_environment_alone_cannot_enable_dashboard_prompt_access(scoped_capture, monkeypatch):
     from trajviz_obs import prompt_explorer
 
@@ -171,7 +186,7 @@ def test_refresh_renders_only_current_authorized_capture_and_clear_removes_it(sc
     assert PRIVATE_B not in json.dumps(populated, default=str)
     assert PRIVATE_PI not in json.dumps(populated, default=str)
     cleared = refresh(None, populated[4], "physical")
-    assert cleared[0]["records"] == [] and cleared[4] == {"request": None, "component": None}
+    assert cleared[0]["records"] == [] and cleared[4] == {"request": None, "component": None, "follow_latest": True, "changes_only": False}
     assert not any(value in cleared[5] for value in (PRIVATE_A, PRIVATE_B, PRIVATE_PI))
 
 
@@ -200,7 +215,7 @@ def test_picker_values_cannot_read_another_capture_or_interpret_paths(scoped_cap
     fixture = scoped_capture
     app = _mounted(fixture)
     run = load_run(str(fixture["source"]))
-    state, _lane, _request, _component, selection, _html, _mode = _callback(app, "obs_prompt_refresh").fn(run, {}, "physical")
+    state, _lane, _request, _component, selection, _html, _mode, *_options = _callback(app, "obs_prompt_refresh").fn(run, {}, "physical")
 
     def unexpected_read(*_args, **_kwargs):
         pytest.fail("A browser selection attempted to load capture files")
@@ -284,6 +299,94 @@ def test_selecting_a_new_snapshot_opens_a_changed_component_first(scoped_capture
     output = _render_state(dataset, {"request": "next-request"}, "physical")
     assert output[4]["component"] == component_token("new-result")
     assert "Changes from baseline" in output[5]
+
+
+def _history(fixture, count):
+    original = json.loads(fixture["file"].read_text())
+    for index in range(2, count + 1):
+        row = {**original, "record_id": f"history-{index}", "sequence": index,
+               "observed_at": f"2026-11-25T00:01:{index:02}.000Z",
+               "data": {"messages": [{"role": "user", "content": f"CAPTURE_{index}"}], "tools": []}}
+        write_record(str(fixture["root"]), row)
+
+
+def test_history_pages_refresh_in_place_and_latest_resumes_following(scoped_capture, monkeypatch):
+    from trajviz_obs import prompt_explorer_data
+
+    fixture = scoped_capture
+    _history(fixture, 7)
+    monkeypatch.setattr(prompt_explorer_data, "MAX_UI_RECORDS", 3)
+    app, run = _mounted(fixture), load_run(str(fixture["source"]))
+    refresh = _callback(app, "obs_prompt_refresh").fn
+    latest = refresh(run, {}, "physical")
+    assert [row["record_id"] for row in latest[0]["records"]] == ["history-5", "history-6", "history-7"]
+    assert latest[9]["interactive"] is True and latest[10]["interactive"] is False
+    older = _callback(app, "obs_prompt_older").fn(run, latest[0], latest[4], "physical")
+    assert [row["record_id"] for row in older[0]["records"]] == ["history-2", "history-3", "history-4"]
+    assert older[4]["follow_latest"] is False
+    original = json.loads(fixture["file"].read_text())
+    write_record(str(fixture["root"]), {**original, "record_id": "new-live", "sequence": 8,
+                                       "observed_at": "2026-11-25T00:02:00.000Z"})
+    paused = refresh(run, older[4], "physical", older[0])
+    assert [row["selection_id"] for row in paused[0]["records"]] == [row["selection_id"] for row in older[0]["records"]]
+    assert paused[4]["request"] == older[4]["request"]
+    newest = _callback(app, "obs_prompt_latest").fn(run, paused[0], paused[4], "physical")
+    assert newest[0]["records"][-1]["record_id"] == "new-live"
+    assert newest[4]["follow_latest"] is True and newest[7]["value"] is True
+
+
+def test_expired_history_is_reauthorized_and_resets_to_newest_with_notice(scoped_capture, monkeypatch):
+    from trajviz_obs import prompt_explorer_data
+
+    fixture = scoped_capture
+    _history(fixture, 5)
+    monkeypatch.setattr(prompt_explorer_data, "MAX_UI_RECORDS", 2)
+    app, run = _mounted(fixture), load_run(str(fixture["source"]))
+    populated = _callback(app, "obs_prompt_refresh").fn(run, {}, "physical")
+    monkeypatch.setattr(prompt_explorer_data, "CURSOR_TTL_SECONDS", 0)
+    result = _callback(app, "obs_prompt_older").fn(run, populated[0], populated[4], "physical")
+    assert result[0]["status"] == "ready" and result[0]["history_reset"] is True
+    assert "Showing newest captures" in result[5]
+    assert PRIVATE_B not in json.dumps(result, default=str)
+
+
+def test_page_navigation_keeps_the_selected_capture_lane_when_present(scoped_capture, monkeypatch):
+    from trajviz_obs import prompt_explorer_data
+
+    fixture = scoped_capture
+    _history(fixture, 7)
+    for file in fixture["file"].parent.glob("history-*.json"):
+        row = json.loads(file.read_text())
+        if row["sequence"] % 2 == 0:
+            metadata = file.stat()
+            row["stage"] = "provider.request"
+            file.write_text(json.dumps(row))
+            os.utime(file, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    monkeypatch.setattr(prompt_explorer_data, "MAX_UI_RECORDS", 3)
+    app, run = _mounted(fixture), load_run(str(fixture["source"]))
+    latest = _callback(app, "obs_prompt_refresh").fn(run, {}, "physical")
+    provider = next(row for row in latest[0]["records"] if row["stage"] == "provider.request")
+    selected = _callback(app, "obs_prompt_request").fn(run, latest[0], latest[4], "physical", provider["selection_id"])
+    older = _callback(app, "obs_prompt_older").fn(run, selected[0], selected[4], "physical")
+    chosen = next(row for row in older[0]["records"] if row["selection_id"] == older[4]["request"])
+    assert chosen["stage"] == "provider.request" and chosen["lane_id"] == provider["lane_id"]
+
+
+def test_changed_filter_and_historical_selection_update_controls_without_loading_files(scoped_capture, monkeypatch):
+    from trajviz_obs import prompt_explorer
+
+    fixture = scoped_capture
+    _history(fixture, 2)
+    app, run = _mounted(fixture), load_run(str(fixture["source"]))
+    populated = _callback(app, "obs_prompt_refresh").fn(run, {}, "physical")
+    monkeypatch.setattr(prompt_explorer, "load_dataset", lambda *_args, **_kw: pytest.fail("Selection reread captures"))
+    changed = _callback(app, "obs_prompt_changed").fn(run, populated[0], populated[4], "physical", True)
+    assert changed[4]["changes_only"] is True and changed[8]["value"] is True
+    assert len(changed[3]["choices"]) == 1
+    old_id = populated[0]["records"][0]["selection_id"]
+    historical = _callback(app, "obs_prompt_request").fn(run, changed[0], changed[4], "physical", old_id)
+    assert historical[4]["follow_latest"] is False and historical[7]["value"] is False
+    assert historical[4]["changes_only"] is True
 
 
 @pytest.mark.parametrize("action", ["refresh", "request"])

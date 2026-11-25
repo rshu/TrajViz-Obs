@@ -31,8 +31,9 @@ Claude Code rejects capture options supplied through `settings.env`; use its lau
 
 1. Enable capture above, then complete an assistant response in the new agent session.
 2. Run `/obs dashboard` and open the **Prompt Explorer** tab.
-3. Choose a **Capture lane** and a request or observation. The timeline shows snapshots from that lane; click a snapshot to inspect it.
-4. Select a component to read its captured content and, when a verified baseline exists, its added, removed, changed, or moved content. Use **Refresh captures** to include newer requests.
+3. Choose a **Capture lane** and a request or observation. Click a timeline snapshot, or use **Previous snapshot** and **Next snapshot**, to inspect it.
+4. Select a component to read its captured content and, when a comparable baseline exists, its changes. **Changed components only** hides unchanged components; position changes can overlap with unchanged content.
+5. Use **Refresh captures** during a task to include newer observations and native child sessions. **Follow newest on refresh** selects the newest snapshot in the chosen lane. Selecting an older snapshot pauses following; **Latest captures** resumes it.
 
 Lanes keep agents, session branches, request purposes, and capture boundaries separate. Engine context and provider request parameters are different views; the explorer does not invent a link between them. A first snapshot or unlinked component observation has no inferred comparison. Gaps remain marked as unavailable evidence rather than empty prompts.
 
@@ -40,7 +41,9 @@ Composition bars show **serialized UTF-8 bytes**, not token counts or context-wi
 
 The explorer is bound to the host session that opened the dashboard and native child sessions confirmed in that capture. Loading another trajectory clears its prompt view; an uploaded file cannot authorize access to unrelated captures. It has no capture-directory browser, prompt-editing actions, or model-analysis buttons. Captured prompt content is not included in the dashboard's HTML report or session export commands.
 
-The browser view loads up to 1,024 observations and 32 MiB of session evidence. A larger session shows a limit notice; use the JSON inspector below for the larger capture.
+**Older captures** and **Newer captures** browse long sessions in bounded windows of up to 1,024 observations and 32 MiB of displayed evidence. History windows follow capture publication order; snapshots within a lane retain their recorded order. An unavailable predecessor at a page boundary is shown explicitly, without inferring additions or removals. An expired window returns to the newest captures with a notice. The metadata catalog is also bounded; exceptionally large capture trees can still require the JSON inspector below.
+
+Refresh rereads the host-selected native session, checks its identity, and discovers newly recorded child sessions. OpenCode maintains a private live native snapshot for this purpose; its diagnostic and export snapshots stay immutable. Capture omissions, writer losses, and missing provenance remain visible during the session. Loss warnings do not identify which requests were affected. Highly fragmented observations can appear as gap markers when they exceed the component preview budget. The explorer does not read current project files to reconstruct past prompts.
 
 ## Inspect JSON
 

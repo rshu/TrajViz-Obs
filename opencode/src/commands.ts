@@ -216,7 +216,10 @@ export async function runCommand(backend: Backend, input: RunInput, signal: Abor
         const doc = await run<Written>(args)
         return result(doc, 'Standalone HTML dashboard written', target)
       }
-      if (source.native) args.push(...promptExplorerArgs(source.sessionID))
+      if (source.native) {
+        const explorer = promptExplorerArgs(source.sessionID)
+        if (explorer.length) args.push(...explorer, '--prompt-live-source', await backend.promptSource(source))
+      }
     } else {
       const dataRoot = flag(root) ?? backend.root
       if (root === undefined) await mkdir(dataRoot, { recursive: true, mode: 0o700 })
