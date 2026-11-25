@@ -12,6 +12,8 @@ import { realpath } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { LocalCheckoutUpdater } from './shared/local-update.js'
 import { LocalUpdateJobs } from './local-update-jobs.js'
+import { PromptCapture } from './shared/prompt-capture.js'
+import { registerPromptCapture } from './prompt-capture.js'
 
 const optionsSchema = z.object({
   python: z.string().optional(), trajvizSource: z.string().min(1).optional(), cacheRoot: z.string().min(1).optional(),
@@ -29,6 +31,9 @@ export default Plugin.define({
   id: 'trajviz-obs',
   async setup(ctx) {
     const backend = new Backend(ctx, optionsSchema.parse(ctx.options))
+    const promptCapture = new PromptCapture({ adapter: 'opencode', bridge: backend.runtime.bridge,
+      python: () => backend.runtime.telemetryPython(), hostVersion: ctx.app?.version })
+    const closePromptCapture = await registerPromptCapture(ctx, promptCapture)
     const report = createUsageReporter(backend.runtime, ctx.app?.version)
     const awaiting = new Map<string, { confirmationID: string; feature: string; durationMs: number; surface: UsageSurface }>()
     const jobs = new Map<string, AbortController>()
@@ -185,7 +190,7 @@ export default Plugin.define({
       for (const job of jobs.values()) job.abort()
       cancelModel(backend)
       const closed = backend.close()
-      await Promise.allSettled([...tasks, rpc.dispose(), tool.dispose(), closed])
+      await Promise.allSettled([...tasks, rpc.dispose(), tool.dispose(), closePromptCapture(), closed])
       await report.flush()
     }
   },

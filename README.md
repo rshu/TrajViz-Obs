@@ -243,6 +243,8 @@ Usage telemetry is on by default in all three plugins; saved opt-outs are preser
 
 Events contain allowlisted feature names, outcomes, coarse timing, plugin and coding agent versions, and random installation IDs. Prompts, transcripts, paths, and command arguments stay on the host. See [telemetry configuration and reports](telemetry/README.md).
 
+For local prompt analysis, the experimental [read-only prompt capture](PROMPT_CAPTURE.md) records request composition and changes in Pi, Claude Code, and OpenCode. It requires a separate explicit opt-in, has no dashboard UI, and never sends prompt content through usage telemetry.
+
 ## Troubleshooting and limits
 
 Run `/obs doctor` to check setup or `/obs setup` to install dependencies. If `/obs` is missing in Claude Code, check its debug log for disabled function hooks or an API mismatch. For the other hosts, follow the [OpenCode restart and verification steps](opencode/README.md#3-restart-and-verify) or [Pi installation steps](pi/README.md#install).

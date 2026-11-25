@@ -5,6 +5,7 @@ import { resetServers, stopAll } from './lib/servers'
 import { rememberTranscript } from './lib/session'
 import { isEmpty, parseSnapshotId } from './lib/snapshot'
 import { finishTelemetry, reportTelemetry, setTelemetrySurface, telemetryConsentAtStart } from './lib/telemetry'
+import { capturePromptObservation, capturePromptRequest, createPromptCapture, finishPromptCapture, promptRequestCorrelation } from './lib/prompt-capture'
 import { OBS_TOOL, serveTool } from './lib/tool'
 import { onTurnComplete, resetStatusLine } from './lib/watch'
 import { readDashboards, readFlags, readLatest, readPaneTab, readSession, readSnapshotMember, resetRefreshLock, seedFlags } from './lib/state'
@@ -14,7 +15,67 @@ import { paneUsage, renderPane, renderPaneFailure } from './render/pane'
 
 export const register: Register = (on, options) => {
   let started = false
+  let promptCapture = createPromptCapture(options)
+
+  // Observe prompt components without changing their text or claiming an agent/request scope.
+  on('prompt.compose', async ($, e, next) => {
+    const capture = promptCapture
+    const result = await next(e)
+    await capturePromptObservation($, capture, { stage: 'component.compose', model: { id: e.model }, data: { input: e, output: result, linkage: 'unlinked' } })
+    return result
+  })
+  on('prompt.section', async ($, e, next) => {
+    const capture = promptCapture
+    const result = await next(e)
+    await capturePromptObservation($, capture, { stage: 'component.section', data: { input: e, output: result, linkage: 'unlinked' } })
+    return result
+  })
+  on('prompt.context', async ($, e, next) => {
+    const capture = promptCapture
+    const result = await next(e)
+    await capturePromptObservation($, capture, { stage: 'component.context', data: { input: e, output: result, linkage: 'unlinked' } })
+    return result
+  })
+  on('prompt.attachment', async ($, e, next) => {
+    const capture = promptCapture
+    const result = await next(e)
+    await capturePromptObservation($, capture, { stage: 'component.attachment',
+      correlation: { agent_id: e.agentId ?? null, scope: e.agentId ? 'agent' : 'main' }, data: { input: e, output: result, linkage: 'request_unlinked' } })
+    return result
+  })
+  on('skill.prompt', async ($, e, next) => {
+    const capture = promptCapture
+    const result = await next(e)
+    await capturePromptObservation($, capture, { stage: 'component.skill', data: { input: e, output: result, linkage: 'unlinked' } })
+    return result
+  })
+  on('tool.describe', async ($, e, next) => {
+    const capture = promptCapture
+    const result = await next(e)
+    await capturePromptObservation($, capture, { stage: 'component.tool', data: { input: e, output: result, linkage: 'unlinked' } })
+    return result
+  })
+  on('turn.step', async function* ($, e, next) {
+    const capture = promptCapture
+    await capturePromptRequest($, capture, e)
+    let completed = false
+    try {
+      const result = yield* next(e)
+      completed = true
+      await capturePromptObservation($, capture, { stage: 'request.complete', kind: 'primary', correlation: promptRequestCorrelation(e),
+        data: { usage: result.usage, stop_reason: result.stopReason, outcome: result.stopReason === null ? 'unavailable' : 'success' } })
+      return result
+    } catch (error) {
+      completed = true
+      await capturePromptObservation($, capture, { stage: 'request.complete', kind: 'primary', correlation: promptRequestCorrelation(e),
+        data: { outcome: error instanceof Error && error.name === 'AbortError' ? 'cancelled' : 'error' } })
+      throw error
+    } finally {
+      if (!completed) await capturePromptObservation($, capture, { stage: 'request.complete', kind: 'primary', correlation: promptRequestCorrelation(e), data: { outcome: 'cancelled' } })
+    }
+  })
   on('session.start', async ($, e, next) => {
+    if (promptCapture.stopped) promptCapture = createPromptCapture(options)
     // Session state survives a reload; the old environment's operations do
     // not. A duplicate start in this live environment must retain its locks.
     if (!started) {
@@ -109,6 +170,9 @@ export const register: Register = (on, options) => {
     const telemetry = e.reason === 'clear' || e.reason === 'resume' ? undefined : finishTelemetry($)
     await stopAll($)
     await telemetry
+    await finishPromptCapture($, promptCapture)
+    // /clear and /resume change the conversation without a new session.start.
+    if (e.reason === 'clear' || e.reason === 'resume') promptCapture = createPromptCapture(options)
     return next(e)
   })
 

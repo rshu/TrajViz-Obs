@@ -113,6 +113,8 @@ Usage telemetry is on by default; saved opt-outs are preserved. `/obs disable_te
 
 ## Limits
 
+For experimental local request snapshots and composition diffs, see [read-only prompt capture](../PROMPT_CAPTURE.md). Capture is off by default and separate from usage telemetry.
+
 - Pi's terminal overlay uses Pi's native UI APIs. RPC clients receive command results as notifications. Print and JSON modes do not have a slash-command result UI; use interactive Pi or an RPC client for `/obs`.
 - Pi subagents are implemented by extensions. Nested tool records are preserved, but child processes are not presented as confirmed subagents without explicit relationships. A fork is session ancestry.
 - Timing uses Pi's native durations when available and recorded timestamps otherwise. Missing evidence appears as unknown. Cost estimates supplied by Pi depend on its configured model pricing.

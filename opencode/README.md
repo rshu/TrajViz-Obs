@@ -145,6 +145,8 @@ Desktop and terminal clients on a shared OpenCode server share its telemetry ins
 
 ## Development
 
+For experimental server-side request snapshots shared by TUI and Desktop, see [read-only prompt capture](../PROMPT_CAPTURE.md). Capture is off by default and separate from usage telemetry.
+
 From the checkout's `opencode` directory (packaging also requires Node.js/npm):
 
 ```sh

@@ -5,6 +5,7 @@ import { Backend } from './backend.js'
 import { loadOptions } from './config.js'
 import { runCommand, type CommandResult } from './commands.js'
 import { Usage, usageFeature, type Outcome } from './telemetry.js'
+import { PiPromptCapture, registerPromptCapture } from './prompt-capture.js'
 import { FramedComponent, ObsPane, renderOverview, type PaneState } from './ui.js'
 import { prepareUpdate, type UpdateOptions, type UpdateResult } from './update.js'
 
@@ -45,6 +46,7 @@ class ResultPane implements Component {
 /** One extension instance owns its processes, UI, cancellation and immutable captures. */
 export class Controller {
   readonly usage: Usage
+  readonly promptCapture: PiPromptCapture
   readonly state: PaneState
   private status: boolean
   private ctx: ExtensionContext
@@ -69,6 +71,7 @@ export class Controller {
     this.state = { tab: 0, watch: backend.options.watch !== false }
     this.status = backend.options.statusline !== false
     this.usage = new Usage(backend.runtime, hostVersion)
+    this.promptCapture = new PiPromptCapture(backend.runtime, hostVersion)
     this.track('activation', 'success', 0)
   }
   private track(feature: string, outcome: Outcome = 'success', durationMs = 0): void {
@@ -312,7 +315,7 @@ export class Controller {
     this.active?.abort(); this.refreshAbort?.abort(); this.dismissPane(); this.closeProgress?.()
     this.progressToken = undefined; this.closeProgress = undefined; this.progressRender = undefined
     if (this.ctx.mode === 'tui') { this.ctx.ui.setWidget('trajviz-obs', undefined); this.ctx.ui.setStatus('trajviz-obs', undefined) }
-    this.closing = (async () => { await this.usage.flush(); await this.backend.close() })()
+    this.closing = (async () => { await this.promptCapture.close(); await this.usage.flush(); await this.backend.close() })()
     return this.closing
   }
 }
@@ -339,6 +342,7 @@ export default function trajvizObs(pi: ExtensionAPI): void {
     },
   })
   pi.on('session_start', async (_event, ctx) => { await get(ctx) })
+  registerPromptCapture(pi, () => controller?.promptCapture)
   const refresh = (_event: unknown, ctx: ExtensionContext) => { controller?.schedule(ctx) }
   pi.on('agent_settled', refresh)
   pi.on('turn_end', refresh)
