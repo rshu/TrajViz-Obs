@@ -93,6 +93,8 @@ A real **DevEco Code 0.2.6 + DeepSeek Flash** run using TrajViz **0.5.1** migrat
 
 The same saved native trace has also been replayed with TrajViz **0.7.1** across all **37 views**: 351 records from 13 sessions and 333 estimated prompt boundaries. Prompt Evolution computes composition for a bounded 200 of those boundaries and identifies transcript comparisons as estimates with unverified request lineage. The private panel still reads the 1,019 component observations independently. This replay made no new coding-model requests and did not repeat the migration or device validation.
 
+A fresh **TrajViz 0.7.1** live run on **2026-11-26** used DevEco Code **0.2.6** and HomeTrans's planner, coder and reviewer to migrate the fixed Simple Progress v1.5 source into a new EmptyAbility project. It recorded **134 native records**, **4 sessions**, **128 estimated assistant boundaries**, **168 tool calls** and **392 independent component observations**. The application passed **11 project tests**, **28 independent tests of its production model**, the **API 26 SDK build** and the changed-ETS ArkTS/CodeLinter precheck. Review found **0 defects**. The unsigned HAP was not deployed; device acceptance remains unvalidated. See the [case study and light-mode screenshots](docs/case-study.md) for Prompt Evolution and runtime examples.
+
 The Captured components panel labels the available boundaries as **System sections**, **Message history**, **User message**, **Generation parameters**, and **Compaction input**. These remain independent observations with no inferred request-level comparisons. Offline contract tests cover hook boundaries beyond those exercised in the case.
 
 ## Development
