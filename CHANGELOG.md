@@ -2,11 +2,13 @@
 
 ## Unreleased
 
-- Upgrade the default analysis engine to TrajViz 0.7.1: 37 single-run views, 54 JSON Schema files (schema version 2), and the built-in Prompt Evolution / `prompt_construction` view. Private capture sidecars remain separate and excluded from exports; their dashboard tab is now named Captured components. DevEco supports a bounded `view prompt_construction --request-id <id>` selector.
+- Upgrade the default analysis engine to TrajViz 0.7.1: 37 single-run views, 54 JSON Schema files (schema version 2), and the built-in Prompt Evolution / `prompt_construction` view. Private component sidecars remain separate and excluded from ordinary session exports; their dashboard tab is now named Captured components. DevEco supports a bounded `view prompt_construction --request-id <id>` selector.
 
 - Preserve Pi live branch selection and original progress-event source indices with the new engine; reject forward parent links and keep tool-owned model usage outside main-model token totals.
 
-- Add an experimental DevEco Code adapter for the legacy 0.2.6 plugin interface: browser trajectory diagnostics through an `obs` tool, shared Python runtime, and opt-in read-only prompt component observations. It uses a singular `plugin` configuration. Independent component observations have no automatic deltas or request-level comparisons; exact provider payloads and native OpenCode 2 panes/RPC are unavailable.
+- Add an experimental DevEco Code adapter for the legacy 0.2.6 plugin interface: browser trajectory diagnostics through an `obs` tool, shared Python runtime, and opt-in read-only prompt component observations. It uses a singular `plugin` configuration. Independent component observations have no automatic deltas or request-level comparisons. Native OpenCode 2 panes/RPC are unavailable in this legacy adapter.
+
+- Add a separate [complete DevEco HTTP request capture opt-in](deveco/README.md#capture-complete-provider-requests): record serialized provider-body bytes and SHA-256, verify native assistant ownership through public trace ancestry and matching processor identity logs, and show captured requests and actual component differences in Prompt Evolution. Pending requests and title/auxiliary requests stay unlinked; retries remain separate without duplicating assistant usage. Private bodies stay outside ordinary trajectory/JSON exports; explicit `view prompt_construction` output can include them in its artifact JSON.
 
 - Add the read-only Captured components panel (previously Prompt Explorer) to `/obs dashboard` for Pi, Claude Code, and OpenCode, with separately enabled local capture, composition charts, component diffs, bounded history browsing, and live child-session discovery. Prompt snapshots stay out of session exports and usage telemetry.
 - Enable usage telemetry by default in all three plugins, preserving saved opt-outs and the local collector default. Set `TRAJVIZ_OBS_TELEMETRY=0` to disable it at launch when no preference is saved.
