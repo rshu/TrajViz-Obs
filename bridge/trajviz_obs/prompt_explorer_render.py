@@ -422,7 +422,7 @@ def render_explorer(dataset: dict, selected_request: str | None = None, selected
     scope = "Main agent" if agent is None and correlation.get("scope") == "main" else str(agent) if agent else "Agent scope not recorded"
     model = _mapping(selected.get("model"))
     model_name = model.get("id") or model.get("modelID") or "Model not recorded"
-    parts = [root, f'<header class="pe-header"><div class="pe-heading"><h2>Request composition</h2><span class="pe-badge">{_escape(boundary)}</span></div>',
+    parts = [root, f'<header class="pe-header"><div class="pe-heading"><h2>Captured composition</h2><span class="pe-badge">{_escape(boundary)}</span></div>',
              f'<div class="pe-meta"><span>{_escape(adapter)}</span><span>{_escape(scope)}</span><span>{_escape(model_name)}</span><span>{_escape(selected.get("observed_at", "Time not recorded"))}</span></div>',
              f'<p class="pe-muted">{_escape(explanation)}</p>{_snapshot_badges(selected, baseline if comparable else None)}</header>', _page_status(dataset)]
     if selected.get("remote_context"):

@@ -81,7 +81,7 @@ def test_pi_active_leaf_can_be_a_nonmessage_entry_with_model_metadata_ancestors(
     assert run.raw["_pi_active_entry_ids"] == ["user", "model", "active", "label"]
 
 
-@pytest.mark.parametrize("invalid", ["missing-parent", "cycle", "self-cycle", "duplicate", "missing-link"])
+@pytest.mark.parametrize("invalid", ["missing-parent", "cycle", "self-cycle", "duplicate", "missing-link", "future-parent"])
 def test_invalid_pi_active_tree_is_refused_without_guessing_a_branch(tmp_path, invalid):
     rows = entries()
     if invalid == "missing-parent":
@@ -92,6 +92,9 @@ def test_invalid_pi_active_tree_is_refused_without_guessing_a_branch(tmp_path, i
         rows[-1]["parentId"] = "active"
     elif invalid == "duplicate":
         rows[-1]["id"] = "abandoned"
+    elif invalid == "future-parent":
+        rows[0][CAPTURE_KEY] = {"schema_version": 1, "leaf_id": "abandoned"}
+        rows[2]["parentId"] = "active"
     else:
         rows[-1].pop("parentId")
     path = write(tmp_path, rows)
@@ -260,6 +263,12 @@ def test_orphan_results_with_reused_ids_preserve_their_own_runtime_details(tmp_p
     assert second["metadata"]["pi_usage"]["input"] == 7
     assert first["metadata"]["pi_nested_calls"]["calls"][0]["id"] == "nested"
     assert second["metadata"]["pi_nested_calls"]["calls"][0]["id"] == "later-nested"
+    assert run.metrics["tokens"]["total"] == 22
+    assert [row["usage"]["input"] for row in run.raw["_pi_auxiliary_usage"]] == [3, 7]
+    assert all(row["included_in_model_totals"] is False for row in run.raw["_pi_auxiliary_usage"])
+    assert all("tokens" not in row["info"] for row in run.raw["messages"]
+               if row["info"].get("type") == "tool_result")
+    assert run.raw["_pi_entries"] == rows
 
 
 @pytest.mark.parametrize("value", [None, True, -.1, "0.04", float("nan"), float("inf"), 10 ** 1000])

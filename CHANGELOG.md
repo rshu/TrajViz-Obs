@@ -2,9 +2,13 @@
 
 ## Unreleased
 
+- Upgrade the default analysis engine to TrajViz 0.7.1: 37 single-run views, 54 JSON Schema files (schema version 2), and the built-in Prompt Evolution / `prompt_construction` view. Private capture sidecars remain separate and excluded from exports; their dashboard tab is now named Captured components. DevEco supports a bounded `view prompt_construction --request-id <id>` selector.
+
+- Preserve Pi live branch selection and original progress-event source indices with the new engine; reject forward parent links and keep tool-owned model usage outside main-model token totals.
+
 - Add an experimental DevEco Code adapter for the legacy 0.2.6 plugin interface: browser trajectory diagnostics through an `obs` tool, shared Python runtime, and opt-in read-only prompt component observations. It uses a singular `plugin` configuration. Independent component observations have no automatic deltas or request-level comparisons; exact provider payloads and native OpenCode 2 panes/RPC are unavailable.
 
-- Add the read-only Prompt Explorer to `/obs dashboard` for Pi, Claude Code, and OpenCode, with separately enabled local capture, composition charts, component diffs, bounded history browsing, and live child-session discovery. Prompt snapshots stay out of session exports and usage telemetry.
+- Add the read-only Captured components panel (previously Prompt Explorer) to `/obs dashboard` for Pi, Claude Code, and OpenCode, with separately enabled local capture, composition charts, component diffs, bounded history browsing, and live child-session discovery. Prompt snapshots stay out of session exports and usage telemetry.
 - Enable usage telemetry by default in all three plugins, preserving saved opt-outs and the local collector default. Set `TRAJVIZ_OBS_TELEMETRY=0` to disable it at launch when no preference is saved.
 - Validate Pi 1.6.0 alongside 1.5.2, keep model confirmations visible and cancellable, and keep pane dashboard links tied to the selected session.
 - Match Pi tool results to their owning calls when providers reuse tool-call IDs, preserving pending states and nested usage.

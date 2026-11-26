@@ -76,7 +76,7 @@ Append its built entry to the singular `plugin` array in `~/.config/deveco/devec
 }
 ```
 
-Restart DevEco Code, complete a response, and ask it to **call the `obs` tool with command `dashboard`**. Open the returned local URL for trajectory diagnostics and optional Prompt Explorer. This adapter does not register native `/obs` commands or panes. Its independent prompt component observations support timeline, composition, and content inspection; automatic deltas and exact provider payloads are unavailable. See the [DevEco Code guide](deveco/README.md) for setup, supported tool commands, capture, and limitations.
+Restart DevEco Code, complete a response, and ask it to **call the `obs` tool with command `dashboard`**. Open the returned local URL for trajectory diagnostics and optional Captured components. This adapter does not register native `/obs` commands or panes. Its independent prompt component observations support timeline, composition, and content inspection; automatic deltas and exact provider payloads are unavailable. See the [DevEco Code guide](deveco/README.md) for setup, supported tool commands, capture, and limitations.
 
 ### Pi
 
@@ -161,7 +161,7 @@ In Claude Code, run `/obs pane` to open or focus the pane. With the pane focused
 
 Find saved sessions with `/obs sessions 20`, then add `--session <id|prefix|path>` to a session command. Run bare `/obs` to return to the current session.
 
-The Claude Code, OpenCode 2, and Pi plugins use TrajViz **0.5.1** and expose all **36 views**. `/obs view data_quality` explains missing or partial evidence. The dashboard distinguishes recorded zeros from missing or partial data.
+All four adapters default to TrajViz **0.7.1**, with **37 single-run views** and **54 JSON Schema files** (view schema version **2**). `/obs view data_quality` explains missing or partial evidence. The dashboard distinguishes recorded zeros from missing or partial data. The new **Prompt Evolution** tab and `prompt_construction` view inspect prompt evidence present in the ordinary trajectory; native evidence is labeled by its boundary, while transcript-derived prompt candidates remain estimates. In Pi, Claude Code, or OpenCode, select a request with `/obs view prompt_construction request_id=<id>`; in DevEco Code, use the `obs` command `view prompt_construction --request-id <id>`.
 
 Watch refreshes an open pane as the current session progresses. Use `/obs watch off` to turn it off. `/obs statusline on` shows a compact summary in the host UI, and `/obs statusline off` hides it.
 
@@ -258,9 +258,9 @@ In the live `/obs dashboard`, go to **Overview → Summary → Issues** and choo
 
 The dashboard's AI analysis panel has its own **Settings**, independently of `llm`. Environment values provide defaults. Keys stay in the current dashboard session, and remembered details exclude keys. Choose **Analyze trajectory** for a full review or enter your own question. Opening the panel makes no model call. **Test API key** sends a small request without trajectory data.
 
-Exports and cached analysis contain session data and stay on the host unless shared. Plugin dashboards bind to `127.0.0.1` and stop on request or plugin unload. For a remote dashboard with authentication, run the standalone TrajViz CLI with `TRAJVIZ_AUTH` and upload an exported trajectory. [Standalone dashboard options](https://github.com/rshu/TrajViz/blob/v0.5.1/README.md#quickstart)
+Exports and cached analysis contain session data and stay on the host unless shared. Plugin dashboards bind to `127.0.0.1` and stop on request or plugin unload. For a remote dashboard with authentication, run the standalone TrajViz CLI with `TRAJVIZ_AUTH` and upload an exported trajectory. [Standalone dashboard options](https://github.com/rshu/TrajViz/blob/v0.7.1/README.md#quickstart)
 
-The experimental **Prompt Explorer** in the browser dashboard shows prompt composition, available component comparisons, and bounded session history. Open it with `/obs dashboard` in Pi, Claude Code, or OpenCode, or the `obs` tool in DevEco Code. Current DevEco observations support composition/content inspection but have no automatic deltas or request-level comparisons. It is read-only and requires a [separate local capture opt-in](PROMPT_CAPTURE.md). Prompt snapshots are excluded from session exports and usage telemetry.
+The experimental **Captured components** tab in the browser dashboard shows prompt composition, available component comparisons, and bounded session history. Open it with `/obs dashboard` in Pi, Claude Code, or OpenCode, or the `obs` tool in DevEco Code. Current DevEco observations support composition/content inspection but have no automatic deltas or request-level comparisons. It is read-only and requires a [separate local capture opt-in](PROMPT_CAPTURE.md). Private capture sidecars are excluded from session exports and usage telemetry. They do not feed the built-in **Prompt Evolution** tab. Ordinary trajectory exports can include native prompt evidence already recorded by the host; review them before sharing.
 
 ### Usage telemetry
 

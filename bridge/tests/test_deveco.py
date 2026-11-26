@@ -311,7 +311,7 @@ def test_forced_deveco_format_requires_explicit_native_provenance(tmp_path):
     assert error.value.code == "invalid_deveco"
 
 
-def test_all_36_registered_views_support_native_deveco_without_fabricating_missing_evidence(tmp_path):
+def test_all_37_registered_views_support_native_deveco_without_fabricating_missing_evidence(tmp_path):
     measured = {"input": 0, "output": 5, "total": 8, "reasoning": 1, "cache": {"read": 3, "write": 0}}
     pending = message(mid="pending", completed=None, parts=[{"type": "step-start"},
                                                           {"type": "text", "text": "Still running"}])
@@ -330,7 +330,7 @@ def test_all_36_registered_views_support_native_deveco_without_fabricating_missi
     assert "reasoning" not in unknown["tokens"]
     assert run.raw["token_usage"] == {}
     catalog = tuple(tv.VIEW_CATALOG)
-    assert len(catalog) == 36
+    assert len(catalog) == 37
     views = {name: run.view(name) for name in catalog}
     for name, view in views.items():
         assert json.loads(view.to_json())["id"] == name

@@ -58,7 +58,7 @@ async function harness(execute?: Run) {
   const backend = {
     cwd: dir, root: path.join(dir, 'sessions'), options: { llm: 'session' },
     runtime: { cache: dir, bridge,
-      ready: async (extras: string[]) => ({ python, source: 'agent-trajviz==0.5.1', extras }),
+      ready: async (extras: string[]) => ({ python, source: 'agent-trajviz==0.7.1', extras }),
       run: async (argv: string[], abort?: AbortSignal) => {
         abort?.throwIfAborted(); calls.push(argv)
         if (execute) return execute(argv, abort)
@@ -157,7 +157,7 @@ describe('Pi obs commands', () => {
     expect((await h.run('pane close')).text).toContain('closed')
     expect(h.state().closed).toBe(1)
     expect(h.calls).toEqual([]); expect(h.served).toEqual([]); expect(h.state().streams).toBe(0)
-    expect((await h.run('help')).text).toContain('all 36 views')
+    expect((await h.run('help')).text).toContain('all 37 views')
     expect((await h.run('watch off')).text).toBe('watch off.')
     expect((await h.run('statusline off')).text).toBe('statusline off.')
     expect((await h.run('watch')).text).toBe('watch off.')
@@ -404,7 +404,7 @@ describe('Pi commands through the real shared bridge', () => {
     const h = await harness(invokeBridge)
     const before = await readFile(h.source.transcript)
     const catalog = await h.run('view')
-    expect(catalog.text).toContain('36 TrajViz views')
+    expect(catalog.text).toContain('37 TrajViz views')
     for (const input of ['issues', 'health', 'patterns', 'agents', 'context', 'timeline', 'brief', 'doctor', 'attribution']) {
       const result = await h.run(input)
       expect(result.text).not.toBeEmpty(); expect(result.outcome).not.toBe('error')

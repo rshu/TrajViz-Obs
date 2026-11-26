@@ -224,7 +224,7 @@ test('failed live refresh is labeled stale and a later successful refresh clears
 })
 
 
-test.skipIf(!python)('real browser dashboard mounts DevEco trajectory and private Prompt Explorer without a model', async () => {
+test.skipIf(!python)('real browser dashboard mounts DevEco trajectory and private Captured components without a model', async () => {
   const h = await fixture()
   const keys = ['TRAJVIZ_OBS_PROMPT_CAPTURE', 'TRAJVIZ_OBS_PROMPT_CAPTURE_DIR'] as const
   const previous = keys.map(key => [key, process.env[key]] as const)
@@ -241,7 +241,7 @@ test.skipIf(!python)('real browser dashboard mounts DevEco trajectory and privat
     const response = await fetch(url + 'config', { signal: AbortSignal.timeout(15000) })
     expect(response.ok).toBe(true)
     const config = JSON.stringify(await response.json())
-    expect(config).toContain('Prompt Explorer')
+    expect(config).toContain('Captured components')
     expect(config).toContain('Capture lane')
     expect(h.backend.servers.has('ses_main')).toBe(true)
   } finally {

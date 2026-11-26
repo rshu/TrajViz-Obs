@@ -1,6 +1,6 @@
 """Version-checked compatibility shims for TrajViz internals.
 
-The plugin ships against the published ``agent-trajviz>=0.5.0,<0.6``. These integrations need internal seams:
+The plugin ships against the published ``agent-trajviz>=0.7.1,<0.8``. These integrations need internal seams:
 
 1. **The real context window everywhere.** ``context_pressure(window_limit=)`` and the ``context_*`` views take
    an override, but the issues, the brief and the export do not. :func:`load_run` writes the window
@@ -50,8 +50,8 @@ from .native_records import claude_usage_gaps, normalize_native_records
 #: The installed TrajViz version.
 TRAJVIZ_VERSION: str = agent_trajviz.__version__
 
-#: Supported releases: ``>=0.5.0,<0.6`` as ``[lowest, first unsupported)``.
-_SUPPORTED = ((0, 5, 0), (0, 6, 0))
+#: Supported releases: ``>=0.7.1,<0.8`` as ``[lowest, first unsupported)``.
+_SUPPORTED = ((0, 7, 1), (0, 8, 0))
 
 #: ``LoadError`` codes that mean "no assistant step yet" for the session being written.
 _EMPTY_CODES = frozenset({"unknown_format", "no_steps"})
@@ -83,12 +83,12 @@ def _release(version: str) -> tuple[int, int, int] | None:
 
 
 def check_supported() -> None:
-    """Refuse a TrajViz outside ``>=0.5.0,<0.6``, whose internals the shims were not written against."""
+    """Refuse a TrajViz outside ``>=0.7.1,<0.8``, whose internals the shims were not written against."""
     release = _release(TRAJVIZ_VERSION)
     if release is None or not _SUPPORTED[0] <= release < _SUPPORTED[1]:
         raise BridgeError("unsupported_trajviz",
-                          f"agent-trajviz {TRAJVIZ_VERSION} is installed; this bridge needs >=0.5.0,<0.6.",
-                          version=TRAJVIZ_VERSION, required=">=0.5.0,<0.6")
+                          f"agent-trajviz {TRAJVIZ_VERSION} is installed; this bridge needs >=0.7.1,<0.8.",
+                          version=TRAJVIZ_VERSION, required=">=0.7.1,<0.8")
 
 
 @functools.cache

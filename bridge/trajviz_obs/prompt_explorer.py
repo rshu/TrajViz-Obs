@@ -1,4 +1,4 @@
-"""Read-only, host-pinned Prompt Explorer in the live session dashboard."""
+"""Read-only, host-pinned Captured components in the live session dashboard."""
 
 from __future__ import annotations
 
@@ -191,7 +191,10 @@ def mount_prompt_explorer(app: gr.Blocks, *, transcript_path: str, session_id: s
     with app:
         state = gr.State(initial)
         selected = gr.State({})
-        with tabs, gr.Tab("Prompt Explorer", id="obs-prompt-explorer-tab", elem_id="obs-prompt-tab"):
+        with tabs, gr.Tab("Captured components", id="obs-prompt-explorer-tab", elem_id="obs-prompt-tab"):
+            gr.Markdown("Private host observations, separate from the trajectory evidence and estimated transcript "
+                        "candidates in **Prompt Evolution**. Sizes here are serialized UTF-8 bytes, not token counts. "
+                        "Viewing captured components does not make model requests.", elem_id="obs-prompt-guide")
             with gr.Row(elem_classes=["obs-prompt-toolbar"]):
                 lane = gr.Dropdown(label="Capture lane", choices=[], interactive=True, scale=4, min_width=220, elem_id="obs-prompt-lane")
                 mode = gr.Radio([("Request components", "physical"), ("Pi active system / tools", "effective")],

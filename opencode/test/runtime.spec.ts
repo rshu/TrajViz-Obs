@@ -25,13 +25,13 @@ test('telemetry resolves the configured interpreter before runtime setup', () =>
 
 test.each([
   { revision: 5, source: 'agent-trajviz==0.5.1' },
-  { revision: 6, source: 'agent-trajviz==0.5.0' },
+  { revision: 6, source: 'agent-trajviz==0.5.1' },
 ])('runtime replaces a stale engine ($revision, $source) and reuses its current one', async (stale) => {
   const instance = await runtime()
   const interpreter = (generation: string) => path.join(instance.cache, 'envs', 'a'.repeat(24), generation.repeat(32),
     ...(process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python']))
   const old = { ...stale, python: interpreter('b'), extras: ['llm', 'charts', 'zstd'] }
-  const current = { ...old, revision: 6, source: 'agent-trajviz==0.5.1', python: interpreter('c') }
+  const current = { ...old, revision: 6, source: 'agent-trajviz==0.7.1', python: interpreter('c') }
   const statePath = path.join(instance.cache, 'state.json')
   await atomicJSON(old.python, 'old interpreter')
   await atomicJSON(current.python, 'current interpreter')

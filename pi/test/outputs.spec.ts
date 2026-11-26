@@ -45,7 +45,7 @@ async function fixture(name = 'native-session.jsonl') {
   } as unknown as ExtensionContext
   const backend = new Backend(directory, { cacheRoot: path.join(directory, 'cache') }); backends.push(backend)
   // Reuse a known interpreter; argv, subprocess execution and every Python writer remain real.
-  backend.runtime.ready = async () => ({ python, source: 'agent-trajviz==0.5.1', revision: 6, extras: ['llm', 'charts', 'zstd', 'app'] })
+  backend.runtime.ready = async () => ({ python, source: 'agent-trajviz==0.7.1', revision: 6, extras: ['llm', 'charts', 'zstd', 'app'] })
   return { directory, native, original, ctx, manager, backend, modelCalls: () => modelCalls,
     run: (input: string) => backend.revisions.run(() => runCommand(backend, ctx, input, signal(), actions, usage)) }
 }

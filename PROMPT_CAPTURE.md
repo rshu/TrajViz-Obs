@@ -1,10 +1,16 @@
-# Prompt Explorer and read-only capture
+# Captured components and read-only capture
 
-The experimental **Prompt Explorer** in the browser dashboard shows captured prompt composition and available component comparisons for Pi, Claude Code, and OpenCode. DevEco Code contributes independent component observations for timeline, composition, and content inspection; automatic deltas and request-level comparisons are unavailable. Open it with `/obs dashboard` in the first three hosts, or the `obs` tool with `command: "dashboard"` in DevEco Code. It reads local observations without editing prompts, replaying requests, or making model calls. Capture is **off by default**, independently of usage telemetry. Prompt snapshots stay out of session exports and the usage collector.
+The experimental **Captured components** tab in the browser dashboard shows captured prompt composition and available component comparisons for Pi, Claude Code, and OpenCode. DevEco Code contributes independent component observations for timeline, composition, and content inspection; automatic deltas and request-level comparisons are unavailable. Open it with `/obs dashboard` in the first three hosts, or the `obs` tool with `command: "dashboard"` in DevEco Code. It reads local observations without editing prompts, replaying requests, or making model calls. Capture is **off by default**, independently of usage telemetry. Private capture sidecars stay out of session exports and the usage collector.
+
+## Prompt Evolution and private captures
+
+TrajViz **0.7.1** also provides a built-in **Prompt Evolution** dashboard tab and the `prompt_construction` view. They inspect evidence already in the loaded trajectory: supported native prompt evidence when available, or explicitly estimated candidates reconstructed from transcript history. Estimates do not prove the final model request. Request selection uses `/obs view prompt_construction request_id=<id>` in Pi, Claude Code, and OpenCode; DevEco Code's `obs` tool accepts `view prompt_construction --request-id <id>`.
+
+The **Captured components** tab, documented below, reads separately authorized private capture sidecars. They are not injected into the ordinary trajectory, the built-in Prompt Evolution view, or session exports. Native prompt evidence already contained in ordinary host history can still appear in ordinary `trajectory.json` and view exports. Review those exports before sharing. An engine upgrade does not turn DevEco's unlinked component observations into request-level comparisons.
 
 ## Enable
 
-Use a checkout containing Prompt Explorer and your host adapter. Build the adapter after updating it (`bun run build` in `pi`, `opencode`, or `deveco`). The writer uses an available Python interpreter and only the standard library; capture never installs a runtime.
+Use a checkout containing the Captured components panel and your host adapter. Build the adapter after updating it (`bun run build` in `pi`, `opencode`, or `deveco`). The writer uses an available Python interpreter and only the standard library; capture never installs a runtime.
 
 In a macOS or Linux shell, create a private directory and resolve temporary-path aliases:
 
@@ -29,10 +35,10 @@ For DevEco Code, fully quit and relaunch `deveco` from the configured shell. Thi
 
 Claude Code rejects capture options supplied through `settings.env`; use its launch environment. To stop capture, unset both variables and restart the host or server. Existing capture files remain local until you remove them.
 
-## Use Prompt Explorer
+## Use Captured components
 
 1. Enable capture above, then complete an assistant response in the new agent session.
-2. Run `/obs dashboard` (DevEco Code: invoke the `obs` tool with `command: "dashboard"`) and open the **Prompt Explorer** tab.
+2. Run `/obs dashboard` (DevEco Code: invoke the `obs` tool with `command: "dashboard"`) and open the **Captured components** tab.
 3. Choose a **Capture lane** and a request or observation. Click a timeline snapshot, or use **Previous snapshot** and **Next snapshot**, to inspect it.
 4. Select a component to read its captured content and, when a comparable baseline exists, its changes. **Changed components only** hides unchanged components; position changes can overlap with unchanged content.
 5. Use **Refresh captures** during a task to include newer observations and native child sessions. **Follow newest on refresh** selects the newest snapshot in the chosen lane. Selecting an older snapshot pauses following; **Latest captures** resumes it.

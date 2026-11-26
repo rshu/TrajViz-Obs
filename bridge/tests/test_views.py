@@ -21,7 +21,7 @@ def synthetic_run(tmp_path):
     return load_run(make_session(tmp_path, steps=40, agents=1))
 
 
-def test_catalog_has_36_views(): assert len(catalog()) == 36 and "data_quality" in {v["id"] for v in catalog()}
+def test_catalog_has_37_views(): assert len(catalog()) == 37 and "data_quality" in {v["id"] for v in catalog()}
 
 
 def test_coerce_snapshot_step_and_agent(fixture_run):

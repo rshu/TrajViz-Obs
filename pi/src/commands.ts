@@ -22,7 +22,7 @@ Diagnostics run locally. Session commands accept --session <id|prefix|path>.
 Look
   /obs · compact live overview    pane | pane close · interactive seven-tab overlay
   issues | health | patterns | agents | context | timeline · diagnostic views
-  view [ID] [key=value] [--limit 1–500] [--offset N] [--json] · all 36 views
+  view [ID] [key=value] [--limit 1–500] [--offset N] [--json] · all 37 views
   brief    attribution [--reference-root DIR] [--agent A] [--instance I]
 
 Browser and exports

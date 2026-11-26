@@ -10,11 +10,13 @@ import copy
 import functools
 import inspect
 import math
+from contextvars import ContextVar
 from datetime import UTC, datetime
 
 from agent_trajviz import LoadError
 
 CAPTURE_KEY = "_trajviz_obs_pi"
+_EVENT_STREAM: ContextVar[bool] = ContextVar("trajviz_obs_pi_event_stream", default=False)
 
 
 def _number(value) -> bool:
@@ -57,9 +59,9 @@ def active_branch(events: list) -> list:
         return events
     if version not in {2, 3}:
         raise LoadError("Unsupported Pi tree version; expected 2 or 3.", code="unsupported_schema")
-    entries = {}
+    entries, indices = {}, {}
     leaf = None
-    for event in events[1:]:
+    for source_index, event in enumerate(events[1:], 1):
         if not isinstance(event, dict) or event.get("type") == "session":
             raise LoadError("Pi tree entries require one leading session header.", code="invalid_pi_branch")
         identity, parent = event.get("id"), event.get("parentId")
@@ -67,6 +69,7 @@ def active_branch(events: list) -> list:
                 or (parent is not None and (not isinstance(parent, str) or not parent))):
             raise LoadError("Pi tree entries require unique ids and explicit parentId links.", code="invalid_pi_branch")
         entries[identity] = event
+        indices[identity] = source_index
         leaf = identity
     if "leaf_id" in capture:
         leaf = capture["leaf_id"]
@@ -79,7 +82,10 @@ def active_branch(events: list) -> list:
         seen.add(leaf)
         entry = entries[leaf]
         branch.append(entry)
-        leaf = entry["parentId"]
+        parent = entry["parentId"]
+        if parent in indices and indices[parent] >= indices[leaf]:
+            raise LoadError("Pi active branch requires a parent recorded before its child.", code="invalid_pi_branch")
+        leaf = parent
     return [events[0], *reversed(branch)]
 
 
@@ -150,7 +156,7 @@ def is_user_prompt(step: dict) -> bool:
         for part in step.get("parts", []) if isinstance(part, dict))
 
 
-def _conversion_input(selected: list) -> list:
+def _conversion_input(selected: list, *, tool_auxiliary: bool = False) -> list:
     """Bound the engine's numeric casts while keeping the source untouched."""
     normalized = copy.deepcopy(selected)
     used = {entry.get("id") for entry in normalized if isinstance(entry, dict) and isinstance(entry.get("id"), str)}
@@ -180,6 +186,15 @@ def _conversion_input(selected: list) -> list:
                 for key in ("input", "output", "reasoning", "cacheRead", "cacheWrite", "totalTokens"):
                     if key in usage and not _count(usage[key]):
                         usage.pop(key)
+                cost = usage.get("cost")
+                if isinstance(cost, dict) and "total" in cost and not _number(cost["total"]):
+                    cost.pop("total")
+        if message.get("role") == "toolResult" and not tool_auxiliary:
+            # Nested implementation calls and a tool's own model usage are
+            # auxiliary evidence, not additional calls/usage by the main model.
+            # Restore them from the untouched source in _observations below.
+            message.pop("nestedCalls", None)
+            message.pop("usage", None)
         if "durationMs" in message and not _number(message["durationMs"]):
             message.pop("durationMs")
         if isinstance(message.get("timestamp"), (int, float)) and not _number(message["timestamp"]):
@@ -189,6 +204,8 @@ def _conversion_input(selected: list) -> list:
 
 def _observations(selected: list, normalized: list, result: dict) -> None:
     """Restore native fields absent from the engine's portable Pi converter."""
+    for key in ("_pi_reported_cost_usd", "_pi_reported_cost_source", "_pi_auxiliary_usage"):
+        result.pop(key, None)
     by_id = {converted.get("id"): (index, entry) for index, (entry, converted) in enumerate(zip(selected, normalized))
              if isinstance(entry, dict) and isinstance(converted, dict) and converted.get("id")}
     results, pending, orphaned = {}, {}, []
@@ -246,7 +263,11 @@ def _observations(selected: list, normalized: list, result: dict) -> None:
         message = source.get("message")
         message = message if isinstance(message, dict) else {}
         usage = message.get("usage") if source.get("type") == "message" else source.get("usage")
-        if isinstance(usage, dict):
+        if message.get("role") == "toolResult":
+            # Orphan results are assistant-shaped only for the tool display.
+            # Their separate model usage must never become main-model tokens.
+            info.pop("tokens", None)
+        elif isinstance(usage, dict):
             # The engine accepts old Pi records with incomplete usage. Its
             # numeric defaults must not turn absent native counters into zero.
             info["tokens"] = _tokens(usage)
@@ -263,8 +284,9 @@ def _observations(selected: list, normalized: list, result: dict) -> None:
                 continue
             # Providers can reuse a call id in later turns. Match the result to
             # its owning assistant/part, not to the last result with that id.
-            tool = next(orphaned, None) if not source and part.get("type") == "tool" \
-                else results.get((conversion_id, tool_index))
+            tool = (message if message.get("role") == "toolResult" and part.get("type") == "tool"
+                    else next(orphaned, None) if not source and part.get("type") == "tool"
+                    else results.get((conversion_id, tool_index)))
             tool_index += 1
             if tool is None:
                 # A command can inspect between tool call and result. No result
@@ -341,7 +363,7 @@ def install() -> None:
 
     @functools.wraps(original)
     def convert(events):
-        selected = active_branch(events)
+        selected = events if _EVENT_STREAM.get() else active_branch(events)
         normalized = _conversion_input(selected)
         result = original(normalized)
         result["_pi_entries"] = copy.deepcopy(events)
@@ -364,3 +386,172 @@ def install() -> None:
 
     convert._trajviz_obs_active_branch = True
     loaders._convert_pi_to_internal = convert
+    _install_event_boundary(loaders)
+    _install_prompt_branch()
+
+
+def _install_event_boundary(loaders) -> None:
+    """Select the runtime leaf before the engine selects a saved-file branch.
+
+    TrajViz 0.7 selects its default leaf at the event boundary, before invoking
+    the portable converter. Feeding that converter an already pruned sibling
+    would lose an explicitly selected live leaf. Preserve the original entries
+    and their source indices while reusing the engine for event conversion.
+    """
+    original = loaders._convert_pi_events
+    if set(inspect.signature(original).parameters) != {"payload", "source_path"}:
+        raise RuntimeError("TrajViz's Pi event boundary changed; update the plugin.")
+
+    @functools.wraps(original)
+    def convert_events(payload, *, source_path=None):
+        from agent_trajviz.insight.formats.pi_files import normalize_pi_stream, pi_session_usage
+
+        events, streamed, _warnings = normalize_pi_stream(payload)
+        if streamed:
+            _validate_stream_scope(payload)
+            token = _EVENT_STREAM.set(True)
+            try:
+                result = original(payload, source_path=source_path)
+                _restore_stream_indices(payload, events, result)
+                return result
+            finally:
+                _EVENT_STREAM.reset(token)
+        selected = active_branch(events)
+        prepared = _conversion_input(selected)
+        result = original(prepared, source_path=source_path)
+        _observations(selected, prepared, result)
+        _fork_timing(selected, result)
+        result["_pi_entries"] = copy.deepcopy(payload)
+        if selected is not events:
+            ids = [entry["id"] for entry in selected[1:]]
+            result["_pi_active_entry_ids"] = ids
+            indices = {entry["id"]: index for index, entry in enumerate(events)
+                       if isinstance(entry, dict) and entry.get("type") != "session"}
+            for message in result.get("messages", []):
+                info = message.get("info") or {}
+                if info.get("id") in indices:
+                    info["rawIndex"] = indices[info["id"]]
+            result.setdefault("metadata", {}).update(
+                history_scope="active_branch", pi_active_leaf_id=ids[-1] if ids else None,
+                pi_excluded_entry_count=max(0, len(events) - len(selected)),
+                pi_session_usage=pi_session_usage(_conversion_input(events, tool_auxiliary=True)))
+        return result
+
+    convert_events._trajviz_obs_active_branch = True
+    loaders._convert_pi_events = convert_events
+    loaders._EVENT_CONVERTERS["pi"] = convert_events
+
+
+def _install_prompt_branch() -> None:
+    """Replay the same validated native branch with original source indices.
+
+    Scope stays in a context variable, so concurrent views cannot borrow a
+    different session's live leaf. Full raw entries remain unchanged in exports.
+    No independent prompt-capture sidecar becomes native prompt-state evidence.
+    """
+    from agent_trajviz.insight import prompt_pi
+
+    original = prompt_pi.inspect_pi
+    if getattr(original, "_trajviz_obs_active_branch", False):
+        return
+    active_ids: ContextVar[tuple[str, ...] | None] = ContextVar("trajviz_obs_pi_prompt_branch", default=None)
+    path = prompt_pi._active_path
+    request = prompt_pi._request
+    source_steps: ContextVar[dict[tuple[str, int], int | None] | None] = ContextVar(
+        "trajviz_obs_pi_prompt_steps", default=None)
+
+    @functools.wraps(request)
+    def source_request(row, session_id, model, step_map, branch_id, previous_id, missing):
+        result = request(row, session_id, model, step_map, branch_id, previous_id, missing)
+        source_index, entry = row
+        if not entry.get("id") and result.get("step_index") is None:
+            mapping = source_steps.get()
+            index = mapping.get((session_id, source_index)) if mapping is not None else None
+            if index is not None:
+                result.update(step_index=index, step_index_basis="native_source_index")
+        return result
+
+    @functools.wraps(path)
+    def active_path(entries):
+        identities = active_ids.get()
+        if identities is None:
+            return path(entries)
+        by_id = {entry.get("id"): (index, entry) for index, entry in entries}
+        if any(identity not in by_id for identity in identities):
+            return [], ["The selected runtime branch is unavailable in native prompt entries."], ["active_leaf"]
+        return [by_id[identity] for identity in identities], [], []
+
+    @functools.wraps(original)
+    def inspect_pi(raw, steps, request_id=None, *, detail_cache=None):
+        events = raw.get("_pi_entries")
+        if not isinstance(events, list):
+            return original(raw, steps, request_id, detail_cache=detail_cache)
+        from agent_trajviz.insight.formats.pi_files import normalize_pi_stream
+
+        _normalized, streamed, _warnings = normalize_pi_stream(events)
+        if streamed:
+            _validate_stream_scope(events)
+            identities = None
+        else:
+            selected = active_branch(events)
+            identities = tuple(entry["id"] for entry in selected[1:]) if selected is not events else None
+        mapped = {}
+        for position, step in enumerate(steps):
+            source_index, index = step.get("raw_index"), step.get("index", position)
+            if (step.get("role") != "assistant" or type(source_index) is not int or type(index) is not int):
+                continue
+            key = (str(step.get("session_id") or ""), source_index)
+            mapped[key] = None if key in mapped else index
+        token = active_ids.set(identities)
+        step_token = source_steps.set(mapped)
+        try:
+            return original(raw, steps, request_id, detail_cache=detail_cache)
+        finally:
+            source_steps.reset(step_token)
+            active_ids.reset(token)
+
+    inspect_pi._trajviz_obs_active_branch = True
+    prompt_pi._active_path = active_path
+    prompt_pi._request = source_request
+    prompt_pi.inspect_pi = inspect_pi
+
+
+def _validate_stream_scope(events: list) -> None:
+    """A progress marker must not hide native ancestry or discarded records."""
+    native_kinds = {"message", "model_change", "thinking_level_change", "compaction",
+                    "branch_summary", "custom_message", "label"}
+    for event in events:
+        if not isinstance(event, dict):
+            raise LoadError("Pi progress events require explicit object records.", code="invalid_pi_branch")
+        appended = event.get("entry") if event.get("type") == "entry_appended" else None
+        if ("parentId" in event or event.get("type") in native_kinds
+                or event.get("type") == "session" and CAPTURE_KEY in event
+                or isinstance(appended, dict) and "parentId" in appended):
+            raise LoadError("Pi progress events mixed with native ancestry cannot select a branch.",
+                            code="invalid_pi_branch")
+
+
+def _restore_stream_indices(payload: list, normalized: list, result: dict) -> None:
+    """Map finalized rows to their explicit protocol positions, never by text/time."""
+    positions = []
+    for index, event in enumerate(payload):
+        kind = event.get("type")
+        if (kind in {"session", "session_info_changed"}
+                or kind == "message_end" and isinstance(event.get("message"), dict)
+                or kind == "entry_appended" and isinstance(event.get("entry"), dict)
+                or kind == "compaction_end" and isinstance(event.get("result"), dict) and not event.get("aborted")):
+            positions.append(index)
+    if len(positions) != len(normalized):
+        raise RuntimeError("TrajViz's Pi progress normalization changed; update source provenance mapping.")
+    native_ids = {}
+    for position, entry in zip(positions, normalized):
+        identity = entry.get("id")
+        if isinstance(identity, str) and identity:
+            native_ids[identity] = None if identity in native_ids else position
+    for message in result.get("messages", []):
+        info = message.get("info") or {}
+        index = info.get("rawIndex")
+        if type(index) is int and 0 <= index < len(positions):
+            info["rawIndex"] = positions[index]
+        elif native_ids.get(info.get("id")) is not None:
+            info["rawIndex"] = native_ids[info["id"]]

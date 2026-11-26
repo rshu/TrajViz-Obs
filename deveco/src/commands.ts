@@ -10,7 +10,8 @@ Commands
   brief                    Concise diagnostic brief
   issues | health | agents | context | timeline
   view [ID] [--limit 1–500] [--offset N] [--json]
-  dashboard [--port N]      Local browser dashboard and opt-in Prompt Explorer
+  view prompt_construction [--request-id ID]
+  dashboard [--port N]      Local browser dashboard and opt-in Captured components
   dashboard stop           Stop this session's dashboard
   sessions [1–500]          Native sessions in this project
   json                     Export trajectory and views into private session artifacts
@@ -21,7 +22,7 @@ No command calls an analysis model or enables prompt capture. The host may use i
 coding model to route a natural-language request to this tool. Prompt capture needs
 trusted launch-time opt-in and records components, not verified provider payloads.
 An open dashboard receives coalesced native copies; use its Load action to reload
-trajectory views, and Prompt Explorer's Refresh captures for prompt observations.`
+trajectory views, and Refresh captures in Captured components for prompt observations.`
 
 const views: Record<string, string> = { issues: 'issues', health: 'health', agents: 'agents', context: 'context_pressure', timeline: 'workflow' }
 const pretty = (value: unknown) => JSON.stringify(value, null, 2)
@@ -35,7 +36,7 @@ const rendered = (value: Record<string, unknown>) => {
 export async function runCommand(backend: Backend, sessionID: string, input = '', signal?: AbortSignal): Promise<string> {
   if (input.length > 8192 || input.includes('\0')) throw new Error('The obs command is too long or contains NUL.')
   const { sub, positional, flags } = parseArgs(input)
-  const allowed = sub === 'view' ? ['limit', 'offset', 'json'] : sub === 'dashboard' ? ['port'] : []
+  const allowed = sub === 'view' ? ['limit', 'offset', 'json', 'request-id'] : sub === 'dashboard' ? ['port'] : []
   if (Object.keys(flags).some(key => !allowed.includes(key))) throw new Error(`Unsupported option. ${HELP}`)
   if (sub === 'help') return HELP
   if (sub === 'doctor') {
@@ -54,20 +55,24 @@ export async function runCommand(backend: Backend, sessionID: string, input = ''
     const port = flags.port === undefined ? backend.options.dashboardPort : Number(flags.port)
     if (flags.port === true || port !== undefined && (!Number.isSafeInteger(port) || port < 1 || port > 65535)) throw new Error('Dashboard port must be an integer from 1 to 65535.')
     const result = await backend.dashboard(sessionID, port, signal)
-    return `TrajViz dashboard: ${result.url}\nUse Load to reload the current trajectory; Prompt Explorer has a separate Refresh captures action.`
+    return `TrajViz dashboard: ${result.url}\nUse Load to reload the current trajectory; the Captured components tab has a separate Refresh captures action.`
   }
   if (sub === 'overview' || sub === 'brief' || sub === 'json') {
     if (positional.length) throw new Error(`Usage: ${sub}`)
     return rendered(await backend.inspect(sessionID, sub === 'overview' ? 'snapshot' : sub, [], signal))
   }
   if (sub === 'view' || views[sub]) {
-    if (sub !== 'view' && positional.length || sub === 'view' && positional.length > 1) throw new Error('Usage: view [ID] [--limit N] [--offset N] [--json]')
+    if (sub !== 'view' && positional.length || sub === 'view' && positional.length > 1) throw new Error('Usage: view [ID] [--limit N] [--offset N] [--json]; view prompt_construction [--request-id ID]')
     const limit = flags.limit === undefined ? 25 : Number(flags.limit)
     const offset = flags.offset === undefined ? 0 : Number(flags.offset)
     if (flags.limit === true || !Number.isSafeInteger(limit) || limit < 1 || limit > 500 || flags.offset === true || !Number.isSafeInteger(offset) || offset < 0) throw new Error('View limit must be 1–500 and offset a nonnegative integer.')
     const id = sub === 'view' ? positional[0] : views[sub]
     if (id !== undefined && !/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Invalid view ID.')
-    return rendered(await backend.inspect(sessionID, 'view', [...(id ? [id] : []), '--limit', String(limit), '--offset', String(offset), '--json'], signal))
+    const requestID = flags['request-id']
+    if (requestID !== undefined && (id !== 'prompt_construction' || sub !== 'view')) throw new Error('--request-id is only supported by view prompt_construction.')
+    if (requestID !== undefined && (typeof requestID !== 'string' || !requestID.trim() || requestID.length > 4096 || requestID.includes('\0'))) throw new Error('--request-id needs an exact request ID up to 4096 characters, without NUL.')
+    const options = typeof requestID === 'string' ? ['--option', `request_id=${requestID}`] : []
+    return rendered(await backend.inspect(sessionID, 'view', [...(id ? [id] : []), ...options, '--limit', String(limit), '--offset', String(offset), '--json'], signal))
   }
   throw new Error(`Unsupported DevEco obs command '${sub}'. Use help for the supported read-only commands.`)
 }
