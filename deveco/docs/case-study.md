@@ -70,3 +70,10 @@ The [bilingual HTML report](reports/complete-request-capture-20261126.html) incl
 ![Actual added feedback, complete-body hash and verified native assistant](screenshots/deveco-code/complete-request-feedback-light.jpg)
 
 ![The request link opens native Workflow step151, after verification feedback at step150](screenshots/deveco-code/complete-request-step-link-light.jpg)
+
+
+### Installed on Pura 80 Pro
+
+After the recorded agent run, the verified source was built with a device-specific debug signature and installed on a connected HUAWEI Pura 80 Pro running API 26. Version 1.0.0 launched successfully; its window was focused and the countdown screen was visible. The screenshot below is the actual phone display in light mode. Installation and launch are verified; the nine functional scenarios have not been executed on the phone.
+
+<img src="screenshots/deveco-code/harmonyos-app-pura80-light.png" alt="Simple Progress countdown screen running on the connected Pura 80 Pro in light mode" width="360">
