@@ -26,6 +26,28 @@ Use the [complete capture launch command](../README.md#capture-complete-provider
 
 The recorder uses private `0700` directories and `0600` files, with a 16 MiB body cap. It temporarily changes only explicitly selected provider base URLs in the running configuration. Normal upstream HTTPS verification remains enabled; the implementation uses no TLS interception and does not modify the installed DevEco binary. See the [installation guide](../README.md) for the full storage limits and export boundaries.
 
+## Inspect the information changed at each step
+
+For complete HTTP captures, **Prompt snapshot** now lists system instructions, tool definitions, conversation messages and individual request settings. Each component has a JSON pointer back to the recorded request and an expandable content view. **Changes** groups added, removed, updated, moved and unchanged components, with before/after content and a text diff. Limited previews identify where to find the full value in **Evidence JSON**.
+
+The recorded feedback pair at steps149 and151 is a useful check: the system text and17 tool definitions stay unchanged, while the conversation gains two messages and the body grows by3,261bytes. The feedback marker changes from absent to present. This comparison uses the unique captured request at the preceding native assistant step as its display baseline; it does not assert causal influence or request lineage. The new inspector can read these saved captures without sending another model request.
+
+![Prompt Evolution component changes at native step151](screenshots/deveco-code/prompt-inspector-overview-light.jpg)
+
+<details>
+<summary>Component inventory and tool-schema inspector</summary>
+
+![Grouped request components with the read tool schema expanded](screenshots/deveco-code/prompt-inspector-components-light.jpg)
+
+</details>
+
+<details>
+<summary>Added feedback with its exact request location</summary>
+
+![Two added messages and the captured verification feedback](screenshots/deveco-code/prompt-inspector-changes-light.jpg)
+
+</details>
+
 ## Follow prompt context during execution
 
 ![Prompt Evolution during live DevEco coding](screenshots/deveco-code/live-prompt-02-light.jpg)

@@ -120,6 +120,16 @@ def _render_binding(core):
         detail = result[5]
         if getattr(run, "format", None) != "deveco" or not _body(detail):
             return result
+        if isinstance(detail.get("component_inventory"), list) and isinstance(detail.get("component_delta"), dict):
+            from .deveco_prompt_inspector import render_changes, render_inventory, request_choices
+
+            selector = result[0]
+            catalog = detail.get("request_catalog")
+            if isinstance(selector, dict) and isinstance(catalog, list) and isinstance(selector.get("choices"), list):
+                selector = {**selector, "choices": request_choices(catalog, selector["choices"], language)}
+            # The header's component count reflects the exact inventory, including settings.
+            summary_detail = {**detail, "components": detail["component_inventory"]}
+            return (selector, result[1], summary(summary_detail, run), render_inventory(detail), render_changes(detail), detail)
         return (*result[:2], summary(detail, run), result[3], changes(detail), detail)
 
     return outputs

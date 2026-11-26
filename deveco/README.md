@@ -98,6 +98,23 @@ Call obs with command "view prompt_construction --json".
 
 Open **Prompt Evolution** and select a request. Its evidence is `captured` / `recorded_request`; the JSON view retains `serialized_body`, its SHA-256 digest, byte count, and the lossless `request_body` JSON. `view prompt_construction --request-id <id> --json` selects one exact physical request. Use the dashboard's **Load** control to refresh native steps; request-view reads also re-read the capture journal, so a late identity export can resolve a pending link.
 
+### Inspect components and per-step changes
+
+The request selector identifies the native assistant step and each physical request attempt. Open **Prompt snapshot** for the selected request's component inventory:
+
+- **System instructions:** top-level instructions and system/developer messages.
+- **Tool definitions:** complete tool objects, including descriptions and parameter schemas.
+- **Conversation messages:** message roles, full content blocks, tool calls and results. File contents and attachments remain at their actual location in these objects.
+- **Request settings:** individual remaining fields such as model, sampling, output limits and response-format options.
+
+Each entry shows its JSON pointer in `request_body`, its recorded order, a content hash, and its decoded JSON value. The component byte count measures a canonical JSON projection; the separate body byte count and SHA-256 describe the original HTTP bytes. Long values have an explicitly bounded preview. **Evidence JSON** retains the complete value at the displayed pointer, along with `serialized_body` for the original body.
+
+Open **Changes** to inspect additions, removals, updates, retained content and position changes against the labeled baseline. Expand a changed component for its exact before/after values and text diff. Unchanged content stays collapsed. Matching uses stable component identities where available and unambiguous content alignment; a new message is an addition, even if it discusses an earlier file. Ambiguous replacements remain additions/removals. A shifted array index alone does not mean the content changed.
+
+Inventory materialization is capped at 4,096 components. The HTML lists at most 600 entries and bounds text previews; the complete raw request remains in Evidence JSON. An incomplete inventory is labeled and never used to infer additions or removals.
+
+A missing or ambiguous baseline makes the comparison unavailable; it does not mean the previous prompt was empty. Request attempts remain separate, and a native-order comparison does not prove request-parent lineage or what influenced the model. The JSON view exposes the same inventory and comparison in `selected_request.component_inventory` and `selected_request.component_delta`.
+
 The step link follows an explicit chain: the public OpenTelemetry API identifies the active plugin span; exported parent spans lead to the nearest `SessionProcessor.process`; DevEco's INFO `process` log on that same trace/span supplies the native session and assistant message ID. The reader checks those IDs against the loaded native source before marking the mapping `verified`. Until the required span, identity log, and native assistant record arrive, the complete body remains visible with no step link. Compaction requests can link to their native summary assistant through the same proof; title and auxiliary requests remain unlinked. Timestamps and neighboring requests never supply an assistant identity. For content comparison, a request may use the single captured request on the immediately preceding native assistant step as a display baseline. This shows actual added/removed body components, is labeled as a native-order comparison, and does not claim request lineage or causal influence. Ambiguous retry sets do not supply that baseline.
 
 Each physical HTTP send receives a distinct request ID. SDK retries may share an invocation ID and assistant step; their recorded bodies stay separate. Native assistant usage is an aggregate and is not repeated across those attempts. Per-request billed usage remains unknown, and composition token counts remain estimates. A saved body can exist before forwarding finishes; `dispatch_status` and HTTP `status` describe that progress separately from body completeness.

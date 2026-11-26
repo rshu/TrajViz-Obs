@@ -467,6 +467,12 @@ def inspect_prompt_construction(raw: dict, steps: list[dict], request_id: str | 
     from agent_trajviz.insight.prompt_components import composition_summary
     from agent_trajviz.insight.prompt_text import build_text_evolution
 
+    from .deveco_prompt_components import (
+        build_component_inventory,
+        compare_component_inventory,
+        component_inventory_coverage,
+    )
+
     if agent_trajviz.__version__ != "0.7.1" or tuple(inspect.signature(core._components).parameters) != ("detail",):
         raise RequestCaptureError("unsupported_prompt_view_version")
     if request_id is not None and not isinstance(request_id, str):
@@ -527,6 +533,19 @@ def inspect_prompt_construction(raw: dict, steps: list[dict], request_id: str | 
             "comparison_request_id": comparison["id"], "lineage_verified": False,
             "reason": "Differences between captured bodies at consecutive native assistant boundaries. "
                       "Native order supplies a display baseline, not request-parent or causal proof."})
+    # This inventory preserves original decoded JSON values and pointer paths,
+    # independently of the engine's normalized/token-estimated composition.
+    selected["component_inventory_coverage"] = component_inventory_coverage(selected)
+    selected["component_inventory"] = build_component_inventory(selected)
+    if previous is not None:
+        previous["component_inventory_coverage"] = component_inventory_coverage(previous)
+        previous["component_inventory"] = build_component_inventory(previous)
+    selected["component_delta"] = compare_component_inventory(
+        selected, previous, basis=selected["changes"].get("basis", "recorded_baseline"),
+        lineage_verified=selected["changes"].get("lineage_verified") is True)
+    catalog_keys = ("id", "step_index", "session_id", "agent_id", "actor_kind", "actor_name",
+                    "purpose", "invocation_id", "assistant_message_id", "native_mapping")
+    selected["request_catalog"] = [{key: copy.deepcopy(row.get(key)) for key in catalog_keys} for row in rows]
     selected["text_evolution"] = build_text_evolution(selected, previous["components"] if previous else [])
     selected["composition"] = composition_summary(selected["components"], selected["token_estimate"])
     # Pass no native steps: one assistant's aggregate usage can span multiple
