@@ -41,6 +41,9 @@ STAGE_LABELS = {
     "component.compose": "System composition", "component.section": "System sections",
     "component.context": "Initial context", "component.attachment": "Attachments",
     "component.skill": "Expanded skills", "component.tool": "Tool descriptions",
+    "component.system": "System sections", "component.messages": "Message history",
+    "component.user_message": "User message", "component.parameters": "Generation parameters",
+    "component.compaction": "Compaction input",
 }
 _GAP_REASONS = {"storage_limit", "queue_full", "record_too_large", "context_unavailable", "capture_unavailable",
                 "write_failed", "size_limit", "read_timeout", "read_failed", "capture_busy", "invalid_json",

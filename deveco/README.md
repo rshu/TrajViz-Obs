@@ -86,7 +86,9 @@ If the `obs` tool is missing, check the singular `plugin` array, the absolute `d
 
 ## Validation status
 
-An isolated **DevEco Code 0.2.6** smoke check loaded the built plugin, registered the `obs` tool and its schema, read native session history through the host API, and produced `component.user_message` and `component.messages` observations. The host required product-agreement consent before model dispatch, so this check did not use a real account, make a provider call, or validate an end-to-end coding task. Other hook boundaries are covered by offline contract tests rather than a completed live model task.
+A real **DevEco Code 0.2.6 + DeepSeek Flash** run migrated the nine foreground Duration countdown scenarios from Simple Progress v1.5 using HomeTrans. The run exercised the `obs` tool, native history and confirmed child sessions, the browser trajectory dashboard, and Prompt Explorer with private component captures. Independent checks passed **25 tests** against the exact production countdown model, a **DevEco CLI 1.3.0** build against **API 26**, and the HomeTrans ArkTS/CodeLinter precheck. The resulting HAP is unsigned; device installation, UI rendering, screenshot parity, background behavior, and restart restoration were not validated.
+
+Prompt Explorer labels the available boundaries as **System sections**, **Message history**, **User message**, **Generation parameters**, and **Compaction input**. These remain independent observations with no inferred request-level comparisons. Offline contract tests cover hook boundaries beyond those exercised in the case.
 
 ## Development
 
