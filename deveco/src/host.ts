@@ -53,6 +53,7 @@ export type HostHooks = {
   tool?: Record<string, HostTool>
   'chat.message'?: (input: HookInput, output: { message: Record<string, unknown>; parts: Record<string, unknown>[] }) => Promise<void>
   'chat.params'?: (input: HookInput, output: Record<string, unknown>) => Promise<void>
+  'chat.headers'?: (input: HookInput, output: { headers: Record<string, string> }) => Promise<void>
   'command.execute.before'?: (input: { command: string; sessionID: string; arguments: string }, output: { parts: Record<string, unknown>[] }) => Promise<void>
   'tool.execute.before'?: (input: HookInput, output: { args: unknown }) => Promise<void>
   'tool.execute.after'?: (input: HookInput, output: Record<string, unknown>) => Promise<void>

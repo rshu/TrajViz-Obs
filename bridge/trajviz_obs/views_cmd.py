@@ -239,7 +239,11 @@ def view_payload(run: Trajectory, view_id: str, options: dict, *, limit: int, of
     """One view (*options* already coerced): written whole to ``out_dir/<id>.json``, a page of it inline (at most
     :data:`INLINE_STDOUT_BYTES` on stdout)."""
     _options_help(view_id)
-    view = project_view(run, run.view(view_id, **options))
+    from .deveco_request_scope import captured_view
+
+    view = captured_view(run, view_id, **options)
+    if view is None:
+        view = project_view(run, run.view(view_id, **options))
     path = out_dir / f"{view_id}.json"
     protect_run_outputs(run, [path])
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -355,6 +359,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("view", help="The view catalog, or one view drawn inline and written to views/<id>.json.")
     _session_args(p)
     p.add_argument("view_id", nargs="?", metavar="ID", help="The view (default: list the catalog).")
+    p.add_argument("--request-capture-root", type=Path, help=argparse.SUPPRESS)
+    p.add_argument("--request-session-id", type=capture_session_id, help=argparse.SUPPRESS)
     p.add_argument("--option", action="append", default=[], metavar="K=V", help="A view option (repeatable).")
     p.add_argument("--limit", type=page_limit, default=25,
                    help=f"Rows drawn inline (default: 25, at most {MAX_LIMIT}; --offset pages on).")
@@ -397,6 +403,14 @@ def _view(args: argparse.Namespace) -> dict:
         run = _load(args)
     except EmptySession as exc:
         return {"empty": True, "reason": exc.reason}
+    if args.view_id == "prompt_construction":
+        from .deveco_request_scope import bind_request_scope
+
+        bind_request_scope(run, args.request_capture_root, args.request_session_id)
+        if args.request_capture_root is not None:
+            output = (_artifacts(args) / "views").resolve()
+            if output.is_relative_to(args.request_capture_root.resolve()):
+                raise BridgeError("request_capture_scope", "View output must be outside the private capture root.")
     return view_payload(run, args.view_id, coerce_options(args.view_id, raw, run), limit=args.limit,
                         offset=args.offset, out_dir=_artifacts(args) / "views", inline_json=args.json)
 

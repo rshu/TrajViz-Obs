@@ -469,7 +469,9 @@ def _dashboard_load_packer():
 
 
 def dashboard_window_callback(callback: Callable, transcript: str, window: int | None, *,
-                              session_id: str | None = None, display_path: str | None = None) -> Callable:
+                              session_id: str | None = None, display_path: str | None = None,
+                              request_capture_root: Path | None = None,
+                              request_session_id: str | None = None) -> Callable:
     """Give one Insight load callback defaults for its preloaded source only.
 
     TrajViz does not expose a dashboard loader option. Clone the two small function objects that
@@ -510,6 +512,9 @@ def dashboard_window_callback(callback: Callable, transcript: str, window: int |
         if format_hint in agent_trajviz.FORMATS and run.format != format_hint:
             return load_native(transcript, format_hint, selected_session_id)
         try:
+            from .deveco_request_scope import bind_request_scope
+
+            bind_request_scope(run, request_capture_root, request_session_id)
             return project_dashboard_session(session_from_run(run, transcript))
         except Exception as exc:  # noqa: BLE001 - same visible failure contract as the native loader
             return SessionLoadError(code="analysis_error", message=(

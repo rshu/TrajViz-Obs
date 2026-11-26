@@ -12,6 +12,14 @@ import type { HostClient } from './host.js'
 
 export type Source = { sessionID: string; transcript: string; liveTranscript: string; artifacts: string; argv: string[] }
 type Server = { child: ChildProcessWithoutNullStreams; url: string }
+
+/** Capture access is an explicit capability from the host launch environment. */
+export function requestCaptureArgs(sessionID: string, env = process.env): string[] {
+  const root = env.TRAJVIZ_OBS_REQUEST_CAPTURE_DIR
+  if (env.TRAJVIZ_OBS_REQUEST_CAPTURE !== '1' || !root || !path.isAbsolute(root) || root.includes('\0')
+    || !sessionID || sessionID.length > 4096 || sessionID.includes('\0')) return []
+  return ['--request-capture-root', root, '--request-session-id', sessionID]
+}
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 
 /** Host-owned copies only: no direct access to DevEco's database or credentials. */
@@ -83,7 +91,8 @@ export class Backend {
   async inspect(sessionID: string, command: string, args: string[] = [], signal?: AbortSignal): Promise<Record<string, unknown>> {
     return this.revisions.run(async () => {
       const source = await this.source(sessionID, signal)
-      return this.runtime.run([command, ...source.argv, ...args], this.signal(signal))
+      const captures = command === 'view' && args[0] === 'prompt_construction' ? requestCaptureArgs(sessionID) : []
+      return this.runtime.run([command, ...source.argv, ...args, ...captures], this.signal(signal))
     })
   }
   async sessions(limit: number, requested?: AbortSignal): Promise<Record<string, unknown>[]> {
@@ -153,7 +162,7 @@ export class Backend {
     const signal = AbortSignal.any([this.signal(requested), controller.signal])
     const promise = this.track(this.revisions.run(async () => {
       const source = await this.source(sessionID, signal)
-      const args = ['dashboard', '--transcript', source.liveTranscript, '--exit-on-stdin', ...promptExplorerArgs(sessionID)]
+      const args = ['dashboard', '--transcript', source.liveTranscript, '--exit-on-stdin', ...promptExplorerArgs(sessionID), ...requestCaptureArgs(sessionID)]
       if (port !== undefined) args.push('--port', String(port))
       const argv = await this.runtime.argv(args, signal, ['app'])
       signal.throwIfAborted()

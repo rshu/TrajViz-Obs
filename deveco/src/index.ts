@@ -4,6 +4,8 @@ import { runCommand } from './commands.js'
 import { PromptCapture } from '../../shared/prompt-capture.js'
 import { registerPromptCapture } from './prompt-capture.js'
 import { record } from './collect.js'
+import { RequestCapture } from './request-capture.js'
+import { getNativeTraceContext } from './native-request-context.js'
 import type { HostHooks, HostPlugin } from './host.js'
 
 const optionsSchema = z.object({
@@ -18,10 +20,13 @@ const plugin: HostPlugin = async (ctx, rawOptions = {}) => {
   const capture = new PromptCapture({ adapter: 'deveco', bridge: backend.runtime.bridge,
     python: () => backend.runtime.telemetryPython() })
   const prompt = registerPromptCapture(capture)
+  const requests = new RequestCapture({ directory: ctx.directory, resolveContext: getNativeTraceContext })
   let disposed = false
   const jobs = new Set<Promise<unknown>>()
   const hooks: HostHooks = {
     ...prompt.hooks,
+    async config(config) { await requests.configure(config) },
+    async 'chat.headers'(input, output) { await requests.headers(input, output) },
     tool: {
       obs: {
         description: 'Inspect the current DevEco Code session using TrajViz. Read-only diagnostics and a local browser dashboard; no extra model calls. Use command "help" for options.',
@@ -48,7 +53,7 @@ const plugin: HostPlugin = async (ctx, rawOptions = {}) => {
     async dispose() {
       if (disposed) return
       disposed = true
-      await Promise.allSettled([prompt.close(), backend.close()])
+      await Promise.allSettled([prompt.close(), requests.close(), backend.close()])
       await Promise.allSettled(jobs)
     },
   }

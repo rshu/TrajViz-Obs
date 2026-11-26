@@ -488,7 +488,11 @@ class _DashboardTrajectory(Trajectory):
     """Route chart reads through the same projection used for JSON exports."""
 
     def view(self, view_id, **options):
-        view = project_view(self, super().view(view_id, **options))
+        from .deveco_request_scope import captured_view
+
+        view = captured_view(self, view_id, **options)
+        if view is None:
+            view = project_view(self, super().view(view_id, **options))
         if view_id == "agent_tokens" and any(
                 row[field] is None for row in view.data["agents"] for field in ("input", "output", "total")):
             from agent_trajviz.figures import FIGURE_VIEWS, register_figure
@@ -505,8 +509,20 @@ def project_dashboard_session(session):
     run = session.shown
     if run is None:
         return session
+    from .deveco_request_scope import has_request_scope, inherit_request_scope
+
+    # Prompt Evolution callbacks consume state_run (the full trajectory), while
+    # initial chart packing consumes shown. Give the pinned source's full run
+    # the same private view dispatch, without altering core .views() exports.
+    if has_request_scope(session.run):
+        full = _DashboardTrajectory(**{field.name: getattr(session.run, field.name)
+                                      for field in dataclass_fields(session.run)})
+        inherit_request_scope(session.run, full)
+        session = replace(session, run=full)
     projection = project_analysis(run)
     shown = _DashboardTrajectory(**{field.name: getattr(run, field.name) for field in dataclass_fields(run)})
+    inherit_request_scope(session.run, shown)
+    inherit_request_scope(run, shown)
     metrics = projection.metrics
     elapsed = metrics.get("wall_clock")
     if session.truncated and session.run is not None:
