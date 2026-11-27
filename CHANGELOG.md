@@ -10,6 +10,8 @@
 
 - Add a separate [complete DevEco HTTP request capture opt-in](deveco/README.md#capture-complete-provider-requests): record serialized provider-body bytes and SHA-256, verify native assistant ownership through public trace ancestry and matching processor identity logs, and show captured requests and actual component differences in Prompt Evolution. Pending requests and title/auxiliary requests stay unlinked; retries remain separate without duplicating assistant usage. Private bodies stay outside ordinary trajectory/JSON exports; explicit `view prompt_construction` output can include them in its artifact JSON.
 
+- Show DevEco Prompt Evolution markers derived from complete captured snapshots, with separate labels for observed presence, request comparisons, and native event evidence. Distinguish unavailable compaction telemetry from unchanged compared content, and identify interleaved agent contexts with colored request markers and switch separators. Prompt-size drops do not imply compaction.
+
 - Add the read-only Captured components panel (previously Prompt Explorer) to `/obs dashboard` for Pi, Claude Code, and OpenCode, with separately enabled local capture, composition charts, component diffs, bounded history browsing, and live child-session discovery. Prompt snapshots stay out of session exports and usage telemetry.
 - Enable usage telemetry by default in all three plugins, preserving saved opt-outs and the local collector default. Set `TRAJVIZ_OBS_TELEMETRY=0` to disable it at launch when no preference is saved.
 - Validate Pi 1.6.0 alongside 1.5.2, keep model confirmations visible and cancellable, and keep pane dashboard links tied to the selected session.

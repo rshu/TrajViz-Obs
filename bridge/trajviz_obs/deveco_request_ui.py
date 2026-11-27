@@ -112,11 +112,14 @@ def _presenters(core):
 
 
 def _render_binding(core):
+    from .deveco_prompt_chart import evolution_chart
+
     summary, changes = _presenters(core)
+    native_outputs = _clone_native_function(core.outputs, {"evolution_chart": evolution_chart})
 
     @functools.wraps(core.outputs)
     def outputs(run, request_id=None, language="en"):
-        result = core.outputs(run, request_id, language)
+        result = native_outputs(run, request_id, language)
         detail = result[5]
         if getattr(run, "format", None) != "deveco" or not _body(detail):
             return result
@@ -161,11 +164,13 @@ def install(app) -> None:
         return
     signatures = ((core.outputs, ("run", "request_id", "language")),
                   (core._summary, ("detail", "run")), (core._changes, ("detail",)),
-                  (core._recorded_events, ("detail",)))
+                  (core._recorded_events, ("detail",)),
+                  (core.evolution_chart, ("data", "selected_id", "language")))
     if (agent_trajviz.__version__ != "0.7.1"
             or any(tuple(inspect.signature(fn).parameters) != expected for fn, expected in signatures)
             or "_summary" not in core.outputs.__code__.co_names
             or "_changes" not in core.outputs.__code__.co_names
+            or "evolution_chart" not in core.outputs.__code__.co_names
             or "_recorded_events" not in core._changes.__code__.co_names
             or "quality_note" not in core._summary.__code__.co_names):
         raise BridgeError("dashboard_incompatible", "TrajViz's captured-request render seam changed.")

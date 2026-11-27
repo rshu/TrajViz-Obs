@@ -16,6 +16,8 @@ The public OpenTelemetry active span, its native processor ancestry, and the INF
 
 In **Prompt Evolution**, or the `obs` command `view prompt_construction --request-id <id> --json`, evidence is labeled `captured` / `recorded_request`. Actual component changes can use the unique captured request on the preceding native assistant boundary as a display baseline; that order does not establish request-parent lineage or causal influence. Independent `component.*` snapshots remain in Captured components without request pairing.
 
+The DevEco chart labels first-snapshot presence as observed capture evidence and later component changes as derived request comparisons. Native events, when supplied, remain a separate evidence source. Empty instruction/tool lanes distinguish unavailable event evidence from no observed changes in completed comparisons. Native edit/compaction coverage can remain unavailable even with complete bodies and derived message differences. Context-colored request markers and dotted separators identify interleaved agent histories; a smaller prompt at a context switch is not evidence of compaction. See [Read the evolution chart](deveco/README.md#read-the-evolution-chart).
+
 The complete request sidecars stay outside ordinary trajectory/JSON exports and usage telemetry. An explicitly requested `view prompt_construction` can include the body in its local view artifact JSON. Browser uploads cannot acquire the host-selected capture scope by reusing its session ID. This path has separate storage limits and fails closed on recording rejection; the component-writer queue limits below do not apply to it.
 
 ## Enable

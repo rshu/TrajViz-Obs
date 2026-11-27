@@ -399,3 +399,32 @@ def test_native_comparison_does_not_skip_a_missing_captured_assistant_step(tmp_p
     root, *_ = captured(tmp_path, aid="a")
     _, third, *_ = captured(tmp_path, aid="c")
     assert view(run, root, third["request_id"])["selected_request"]["changes"]["available"] is False
+
+
+def test_event_history_uses_verified_snapshots_and_keeps_tool_output_private(tmp_path):
+    run = two_step_run(tmp_path)
+    first_body = {"model": "x", "messages": [
+        {"role": "system", "content": "Private instructions"},
+        {"role": "user", "content": "Task"}],
+        "tools": [{"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}}]}
+    second_body = {**first_body, "messages": [*first_body["messages"],
+        {"role": "assistant", "content": "Reading"},
+        {"role": "tool", "tool_call_id": "call-1", "content": "PRIVATE_TOOL_RESULT_SENTINEL"}]}
+    root, first, *_ = captured(tmp_path, aid="a", body=first_body,
+        observed_at="2026-11-26T10:00:01Z")
+    _, second, *_ = captured(tmp_path, aid="b", body=second_body,
+        observed_at="2026-11-26T10:00:02Z")
+    data = view(run, root, second["request_id"])
+    points = {point["id"]: point for point in data["evolution"]}
+    initial, later = points[first["request_id"]], points[second["request_id"]]
+    assert initial["prompt_event_coverage"]["instructions"] == "snapshot_only"
+    assert later["prompt_event_coverage"]["tools"] == "compared"
+    assert later["prompt_event_coverage"]["context_edits"] == "unavailable"
+    result_events = [event for event in later["prompt_events"] if event["kind"] == "tool_results"]
+    assert len(result_events) == 1 and result_events[0]["count"] == 1
+    assert result_events[0]["native_event"] is False
+    assert result_events[0]["evidence"] == "snapshot_comparison"
+    assert "PRIVATE_TOOL_RESULT_SENTINEL" not in json.dumps(data["evolution"])
+    assert "PRIVATE_TOOL_RESULT_SENTINEL" not in json.dumps(data["requests"])
+    assert not any(event["kind"] == "compaction" for point in data["evolution"]
+                   for event in point["prompt_events"])

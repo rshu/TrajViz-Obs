@@ -472,6 +472,7 @@ def inspect_prompt_construction(raw: dict, steps: list[dict], request_id: str | 
         compare_component_inventory,
         component_inventory_coverage,
     )
+    from .deveco_prompt_events import build_prompt_events
 
     if agent_trajviz.__version__ != "0.7.1" or tuple(inspect.signature(core._components).parameters) != ("detail",):
         raise RequestCaptureError("unsupported_prompt_view_version")
@@ -503,6 +504,25 @@ def inspect_prompt_construction(raw: dict, steps: list[dict], request_id: str | 
                 or positions[previous["id"]] >= positions[row["id"]]):
             row.pop("previous_request_id", None)
             by_id[row["id"]].pop("previous_request_id", None)
+    # Build compact event markers from the already loaded, source-owned bodies.
+    # A request snapshot is observed evidence; a difference between two verified
+    # native boundaries is a derived comparison, never a native event or lineage.
+    for row in rows:
+        detail = by_id[row["id"]]
+        previous_row = core._previous_row(rows, detail)
+        if previous_row is None and not detail.get("previous_request_id"):
+            previous_row = _comparison_row(rows, detail, indexed)
+        baseline = by_id.get(previous_row["id"]) if previous_row else None
+        earlier = [step for (session, _), step in indexed.items()
+                   if session == detail.get("session_id") and step.get("role") == "assistant"
+                   and type(detail.get("step_index")) is int
+                   and step["index"] < detail["step_index"]]
+        baseline_status = "available" if baseline is not None else "unavailable" if earlier else "first_request"
+        event_view = build_prompt_events(detail, baseline, baseline_status=baseline_status)
+        detail["prompt_events"] = event_view["events"]
+        detail["prompt_event_coverage"] = event_view["coverage"]
+        row["prompt_events"] = copy.deepcopy(event_view["events"])
+        row["prompt_event_coverage"] = copy.deepcopy(event_view["coverage"])
     wanted = request_id if request_id is not None else rows[-1]["id"]
     if wanted not in by_id:
         raise ValueError("Unknown prompt construction request_id")
@@ -551,6 +571,9 @@ def inspect_prompt_construction(raw: dict, steps: list[dict], request_id: str | 
     # Pass no native steps: one assistant's aggregate usage can span multiple
     # invocations and physical retries, so assigning it per request duplicates it.
     evolution = core._evolution(rows, [])
+    row_index = {row["id"]: row for row in rows}
+    for point in evolution:
+        point["prompt_event_coverage"] = copy.deepcopy(row_index[point["id"]]["prompt_event_coverage"])
     data = {"available": True, "requests": rows, "request_order": order, "selected_request": selected,
             "limitations": [_BODY_LIMIT, _USAGE_LIMIT, *evidence.limitations], "format": "deveco", "evolution": evolution}
     core._composition_history(data, load, materialized)
