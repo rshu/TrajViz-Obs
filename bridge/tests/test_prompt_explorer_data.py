@@ -172,6 +172,30 @@ def test_component_boundaries_and_restarted_captures_have_distinct_lane_labels(t
     assert len({lane["label"] for lane in result["lanes"]}) == len(result["lanes"])
 
 
+def test_deveco_component_lanes_identify_observation_stages_without_pairing(tmp_path):
+    stages = {
+        "component.system": ("System sections", {"system": ["rules"]}),
+        "component.messages": ("Message history", {"messages": [{"role": "user", "content": "history"}]}),
+        "component.user_message": ("User message", {"messages": [{"role": "user", "content": "new task"}]}),
+        "component.parameters": ("Generation parameters", {"parameters": {"temperature": 0.5}}),
+        "component.compaction": ("Compaction input", {"context": ["compaction context"]}),
+    }
+    for stage, (_label, data) in stages.items():
+        for sequence in (1, 2):
+            capture.write_record(str(tmp_path), observation(adapter="deveco", stage=stage, sequence=sequence, data=data))
+    result = explorer.load_dataset(tmp_path, session_ids={"authorized"}, adapter="deveco")
+    assert result["status"] == "ready"
+    assert {lane["stage"]: lane["label"] for lane in result["lanes"]} == {
+        stage: f"DevEco Code · {label} · Unlinked observation · Session" for stage, (label, _data) in stages.items()
+    }
+    for row in result["records"]:
+        assert row["comparison_status"] == "unlinked_component"
+        assert row["baseline_selection_id"] is None and row["changes"] is None
+        selected = explorer.select_record(result, row["selection_id"])
+        assert selected["components"]
+        assert all(component["changes"] == ["uncompared"] for component in selected["components"])
+
+
 def test_gaps_control_frames_and_compaction_do_not_become_context_removals(tmp_path):
     capture.write_record(str(tmp_path), observation())
     capture.write_record(str(tmp_path), observation(stage="provider.request", data={"payload": {"messages": [{"role": "user", "content": "one"}]}}))

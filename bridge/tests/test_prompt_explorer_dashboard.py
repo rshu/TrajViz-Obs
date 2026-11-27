@@ -120,7 +120,7 @@ def test_mount_keeps_capture_files_out_of_config_static_paths_and_upload_control
     app = dashboard.insight_app()
     upload_ids = {block._id for block in app.blocks.values() if isinstance(block, gr.File)}
     assert mount_prompt_explorer(app, transcript_path=str(fixture["source"]), session_id="session-a", capture_root=fixture["root"])
-    assert any(isinstance(block, gr.Tab) and block.label == "Prompt Explorer" for block in app.blocks.values())
+    assert any(isinstance(block, gr.Tab) and block.label == "Captured components" for block in app.blocks.values())
     config = json.dumps(app.get_config_file(), default=str)
     assert not any(value in config for value in (PRIVATE_A, PRIVATE_B, PRIVATE_PI))
     assert str(fixture["root"]) not in config
@@ -135,7 +135,7 @@ def test_mount_is_idempotent(scoped_capture):
     app = dashboard.insight_app()
     assert mount_prompt_explorer(app, transcript_path=str(fixture["source"]), session_id="session-a", capture_root=fixture["root"])
     mount_prompt_explorer(app, transcript_path=str(fixture["source"]), session_id="session-a", capture_root=fixture["root"])
-    assert sum(isinstance(block, gr.Tab) and block.label == "Prompt Explorer" for block in app.blocks.values()) == 1
+    assert sum(isinstance(block, gr.Tab) and block.label == "Captured components" for block in app.blocks.values()) == 1
 
 
 def test_live_native_alias_is_host_only_and_not_a_browser_file_control(scoped_capture):
@@ -417,3 +417,71 @@ def test_source_clear_during_component_render_cannot_publish_stale_private_conte
         assert PRIVATE_A not in json.dumps(result, default=str)
     finally:
         drop_latest_run(request.session_hash)
+
+
+
+def test_private_components_stay_separate_from_upstream_prompt_evolution(scoped_capture, tmp_path):
+    from agent_trajviz import export_json
+
+    fixture = scoped_capture
+    app = _mounted(fixture)
+    assert {block.label for block in app.blocks.values() if isinstance(block, gr.Tab)} >= {
+        "Prompt Evolution", "Captured components",
+    }
+    guide = next(block for block in app.blocks.values() if block.elem_id == "obs-prompt-guide")
+    assert "estimated transcript candidates" in guide.value
+    assert "serialized UTF-8 bytes, not token counts" in guide.value
+    run = load_run(str(fixture["source"]))
+    before = run.to_dict(include_raw=True)
+    selected = _callback(app, "obs_prompt_refresh").fn(run, {}, "physical")
+    assert PRIVATE_A in selected[5]
+    assert run.to_dict(include_raw=True) == before
+    prompt = run.view("prompt_construction").data
+    assert not any(secret in json.dumps(prompt, default=str) for secret in (PRIVATE_A, PRIVATE_B, PRIVATE_PI))
+    target = tmp_path / "exports"
+    export_json(run, str(target))
+    assert not any(secret in file.read_text() for file in target.glob("*.json")
+                   for secret in (PRIVATE_A, PRIVATE_B, PRIVATE_PI))
+    public = json.dumps(app.get_api_info(), default=str)
+    assert "obs_prompt_" not in public
+    assert not any(secret in public for secret in (PRIVATE_A, PRIVATE_B, PRIVATE_PI))
+
+
+
+def test_deveco_semantic_components_do_not_become_native_prompt_requests(tmp_path):
+    from agent_trajviz import export_json
+
+    source = tmp_path / "deveco.json"
+    source.write_text(json.dumps({
+        "source_format": "deveco_v1", "schema_version": 1, "directory": str(tmp_path),
+        "session": {"id": "session-a", "directory": str(tmp_path)}, "children": [],
+        "messages": [
+            {"info": {"id": "user", "sessionID": "session-a", "role": "user", "time": {"created": 1790000000000}},
+             "parts": [{"type": "text", "text": "Visible native task"}]},
+            {"info": {"id": "assistant", "sessionID": "session-a", "role": "assistant",
+                      "time": {"created": 1790000000100, "completed": 1790000000200}},
+             "parts": [{"type": "text", "text": "Visible native answer"}]},
+        ],
+    }))
+    root = tmp_path / "private-captures"
+    private = "DEVECO_PRIVATE_SYSTEM_OBSERVATION_2dcd1e"
+    write_record(str(root), {
+        "schema_version": 1, "adapter": "deveco", "session_id": "session-a", "instance_id": "instance",
+        "record_id": "system-observation", "sequence": 1, "observed_at": "2026-11-25T00:00:01.000Z",
+        "stage": "component.system", "kind": "experimental.chat.system.transform",
+        "correlation": {"pairing": "independent"}, "data": {"system": [private]},
+    })
+    fixture = {"source": source, "root": root}
+    app, run = _mounted(fixture), load_run(str(source))
+    captured = _callback(app, "obs_prompt_refresh").fn(run, {}, "physical")
+    assert private in captured[5]
+    assert captured[0]["records"][0]["comparison_status"] == "unlinked_component"
+    prompt = run.view("prompt_construction").data
+    assert prompt["selected_request"]["evidence"] == "estimated"
+    assert prompt["selected_request"]["scope"] == "trajectory_estimate"
+    assert private not in json.dumps(prompt, default=str)
+    target = tmp_path / "exports"
+    export_json(run, str(target))
+    assert all(private not in file.read_text() for file in target.glob("*.json"))
+    assert private not in json.dumps(app.get_api_info(), default=str)
+    assert str(root) not in json.dumps(app.get_config_file(), default=str)

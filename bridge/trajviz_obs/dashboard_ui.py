@@ -468,6 +468,9 @@ def configure_insight(app: gr.Blocks, *, dark: bool = False, inline_plotly: bool
     _bound_expanded_workflow(app)
     _scope_overview_issues(app)
     _scope_gantt_hover(app)
+    from .deveco_request_ui import install as install_deveco_request_ui
+
+    install_deveco_request_ui(app)
     original = upload.prepare_html_export
     exports = [entry for entry in app.fns.values() if entry.fn is original]
     if not exports:

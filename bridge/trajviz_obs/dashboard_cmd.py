@@ -94,7 +94,9 @@ def _add_preload(app: gr.Blocks, transcript_path: str) -> bool:
 
 
 def _apply_context_window(app: gr.Blocks, transcript_path: str, window: int | None, *,
-                          session_id: str | None = None, display_path: str | None = None) -> None:
+                          session_id: str | None = None, display_path: str | None = None,
+                          request_capture_root: Path | None = None,
+                          request_session_id: str | None = None) -> None:
     """Apply bridge evidence quality and scope host context options to the selected transcript."""
     callbacks = [block for block in app.fns.values()
                  if getattr(block.fn, "__module__", "") == "agent_trajviz.insight.ui.load"
@@ -103,7 +105,9 @@ def _apply_context_window(app: gr.Blocks, transcript_path: str, window: int | No
         raise BridgeError("dashboard_incompatible", "TrajViz's dashboard loader changed; cannot preserve the "
                           "Claude Code context window. Update the plugin or use /obs context.")
     callbacks[0].fn = dashboard_window_callback(callbacks[0].fn, transcript_path, window,
-                                               session_id=session_id, display_path=display_path)
+                                               session_id=session_id, display_path=display_path,
+                                               request_capture_root=request_capture_root,
+                                               request_session_id=request_session_id)
 
 
 def _capture_session(run) -> str | None:
@@ -283,7 +287,9 @@ def build_preloaded_insight(transcript_path: str, *, window: int | None = None,
                             display_path: str | None = None, dark: bool = False,
                             inline_plotly: bool = False, prompt_capture_root: Path | None = None,
                             prompt_session_id: str | None = None, prompt_claude_raw: Path | None = None,
-                            prompt_live_source: Path | None = None) -> gr.Blocks:
+                            prompt_live_source: Path | None = None,
+                            request_capture_root: Path | None = None,
+                            request_session_id: str | None = None) -> gr.Blocks:
     """The Insight dashboard that loads *transcript_path* when the page opens (unchanged if that cannot be wired)."""
     display, temporary = _display_source(transcript_path, session_id, display_path)
     alias = display if Path(display).resolve() != Path(transcript_path).resolve() else None
@@ -292,7 +298,8 @@ def build_preloaded_insight(transcript_path: str, *, window: int | None = None,
         from .label_quality import install_chart
 
         install_chart()
-        _apply_context_window(app, transcript_path, window, session_id=session_id, display_path=alias)
+        _apply_context_window(app, transcript_path, window, session_id=session_id, display_path=alias,
+                              request_capture_root=request_capture_root, request_session_id=request_session_id)
         _apply_capture_default(app, transcript_path, display, session_id)
         preloaded = _add_preload(app, display)
         labels_preloaded = labels_path is not None and _add_labels_preload(app, transcript_path, labels_path,
@@ -366,7 +373,8 @@ def serve_insight(transcript_path: str, port: int | None, *, exit_on_stdin: bool
                   display_path: str | None = None, dark: bool = False, inline_plotly: bool = False,
                   usage: DashboardUsage | None = None, prompt_capture_root: Path | None = None,
                   prompt_session_id: str | None = None, prompt_claude_raw: Path | None = None,
-                  prompt_live_source: Path | None = None) -> None:
+                  prompt_live_source: Path | None = None, request_capture_root: Path | None = None,
+                  request_session_id: str | None = None) -> None:
     """Serve the preloaded Insight dashboard until terminated; ``{"url"}`` is the first stdout line.
 
     When the preload cannot be wired (a TrajViz release changed the upload row) the dashboard still starts and
@@ -378,7 +386,8 @@ def serve_insight(transcript_path: str, port: int | None, *, exit_on_stdin: bool
                                   session_id=session_id, display_path=display_path,
                                   dark=dark, inline_plotly=inline_plotly, prompt_capture_root=prompt_capture_root,
                                   prompt_session_id=prompt_session_id, prompt_claude_raw=prompt_claude_raw,
-                                  prompt_live_source=prompt_live_source)
+                                  prompt_live_source=prompt_live_source, request_capture_root=request_capture_root,
+                                  request_session_id=request_session_id)
     try:
         _attach_usage(app, usage, "dashboard")
         with contextlib.redirect_stdout(sys.stderr):  # Gradio's prints: the URL stays the first stdout line
@@ -452,6 +461,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--prompt-session-id", type=capture_session_id, help=argparse.SUPPRESS)
     p.add_argument("--prompt-claude-raw", type=Path, help=argparse.SUPPRESS)
     p.add_argument("--prompt-live-source", type=Path, help=argparse.SUPPRESS)
+    p.add_argument("--request-capture-root", type=Path, help=argparse.SUPPRESS)
+    p.add_argument("--request-session-id", type=capture_session_id, help=argparse.SUPPRESS)
     _usage_options(p)
 
     p = sub.add_parser("converge", help="The Converge comparison dashboard, until terminated.")
@@ -491,7 +502,8 @@ def _serve_dashboard(args: argparse.Namespace) -> dict | None:
                   window=args.window, labels_path=str(labels) if labels is not None else None,
                   session_id=args.session_id, dark=args.dark, inline_plotly=args.inline_plotly, usage=usage,
                   prompt_capture_root=args.prompt_capture_root, prompt_session_id=args.prompt_session_id,
-                  prompt_claude_raw=args.prompt_claude_raw, prompt_live_source=args.prompt_live_source)
+                  prompt_claude_raw=args.prompt_claude_raw, prompt_live_source=args.prompt_live_source,
+                  request_capture_root=args.request_capture_root, request_session_id=args.request_session_id)
     return None
 
 

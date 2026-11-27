@@ -1,6 +1,6 @@
 """Version-checked compatibility shims for TrajViz internals.
 
-The plugin ships against the published ``agent-trajviz>=0.5.0,<0.6``. These integrations need internal seams:
+The plugin ships against the published ``agent-trajviz>=0.7.1,<0.8``. These integrations need internal seams:
 
 1. **The real context window everywhere.** ``context_pressure(window_limit=)`` and the ``context_*`` views take
    an override, but the issues, the brief and the export do not. :func:`load_run` writes the window
@@ -50,8 +50,8 @@ from .native_records import claude_usage_gaps, normalize_native_records
 #: The installed TrajViz version.
 TRAJVIZ_VERSION: str = agent_trajviz.__version__
 
-#: Supported releases: ``>=0.5.0,<0.6`` as ``[lowest, first unsupported)``.
-_SUPPORTED = ((0, 5, 0), (0, 6, 0))
+#: Supported releases: ``>=0.7.1,<0.8`` as ``[lowest, first unsupported)``.
+_SUPPORTED = ((0, 7, 1), (0, 8, 0))
 
 #: ``LoadError`` codes that mean "no assistant step yet" for the session being written.
 _EMPTY_CODES = frozenset({"unknown_format", "no_steps"})
@@ -83,12 +83,12 @@ def _release(version: str) -> tuple[int, int, int] | None:
 
 
 def check_supported() -> None:
-    """Refuse a TrajViz outside ``>=0.5.0,<0.6``, whose internals the shims were not written against."""
+    """Refuse a TrajViz outside ``>=0.7.1,<0.8``, whose internals the shims were not written against."""
     release = _release(TRAJVIZ_VERSION)
     if release is None or not _SUPPORTED[0] <= release < _SUPPORTED[1]:
         raise BridgeError("unsupported_trajviz",
-                          f"agent-trajviz {TRAJVIZ_VERSION} is installed; this bridge needs >=0.5.0,<0.6.",
-                          version=TRAJVIZ_VERSION, required=">=0.5.0,<0.6")
+                          f"agent-trajviz {TRAJVIZ_VERSION} is installed; this bridge needs >=0.7.1,<0.8.",
+                          version=TRAJVIZ_VERSION, required=">=0.7.1,<0.8")
 
 
 @functools.cache
@@ -118,6 +118,9 @@ def load_plugins() -> list[str]:
     from .opencode import install as install_opencode
 
     install_opencode()
+    from .deveco import install as install_deveco
+
+    install_deveco()
     _install_dsh_input_tracking()
     from .pi import install as install_pi
 
@@ -466,7 +469,9 @@ def _dashboard_load_packer():
 
 
 def dashboard_window_callback(callback: Callable, transcript: str, window: int | None, *,
-                              session_id: str | None = None, display_path: str | None = None) -> Callable:
+                              session_id: str | None = None, display_path: str | None = None,
+                              request_capture_root: Path | None = None,
+                              request_session_id: str | None = None) -> Callable:
     """Give one Insight load callback defaults for its preloaded source only.
 
     TrajViz does not expose a dashboard loader option. Clone the two small function objects that
@@ -507,6 +512,9 @@ def dashboard_window_callback(callback: Callable, transcript: str, window: int |
         if format_hint in agent_trajviz.FORMATS and run.format != format_hint:
             return load_native(transcript, format_hint, selected_session_id)
         try:
+            from .deveco_request_scope import bind_request_scope
+
+            bind_request_scope(run, request_capture_root, request_session_id)
             return project_dashboard_session(session_from_run(run, transcript))
         except Exception as exc:  # noqa: BLE001 - same visible failure contract as the native loader
             return SessionLoadError(code="analysis_error", message=(
@@ -539,9 +547,9 @@ def attribution_identity_message(reason: str | None, *, browser: bool = False) -
 
 def attribution_defaults(fmt: str | None, raw: dict, agent: str | None, instance_id: str | None) -> tuple[str | None, str | None]:
     """Use native OpenCode identities rather than immutable cache folder names."""
-    if fmt == "opencode":
+    if fmt in {"opencode", "deveco"}:
         if agent is None:
-            agent = "opencode"
+            agent = fmt
         if instance_id is None:
             metadata = raw.get("metadata")
             native_id = metadata.get("session_id") if isinstance(metadata, dict) else None
@@ -588,7 +596,7 @@ def _install_attribution_projection() -> None:
     @functools.wraps(original)
     def project(run, agent, instance_id, *, verify_source=True):
         result = original(run, agent, instance_id, verify_source=verify_source)
-        if run.format == "opencode":
+        if run.format in {"opencode", "deveco"}:
             rows = {row["index"]: row for row in run.steps}
             for step in result.steps:
                 row = rows.get((step.source_ref or {}).get("workflow_step"), {})

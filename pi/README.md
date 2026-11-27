@@ -1,6 +1,6 @@
 # TrajViz Obs for Pi
 
-Inspect a running Pi session with local diagnostics, colored terminal charts, and the [TrajViz](https://github.com/rshu/TrajViz) browser dashboard. Tested with **Pi 1.5.2 and 1.6.0** and TrajViz **0.5.1**.
+Inspect a running Pi session with local diagnostics, colored terminal charts, and the [TrajViz](https://github.com/rshu/TrajViz) browser dashboard. The default analysis engine is TrajViz **0.7.1**. Earlier live-host validation covered **Pi 1.5.2 and 1.6.0** with TrajViz **0.5.1**.
 
 ## Install
 
@@ -105,13 +105,13 @@ Optional settings go in `~/.pi/agent/trajviz-obs.json`, or `$PI_CODING_AGENT_DIR
 | `llm` | `session`; use `env` for the shared `ANALYZE_*` / `LABEL_*` provider settings |
 | `analysisModel`, `labelModel` | Selected Pi model; optionally set `provider/model` or `session` |
 | `labelMaxSteps` | `50` |
-| `python`, `trajvizSource`, `cacheRoot` | Automatic Python discovery, `agent-trajviz==0.5.1`, and `~/.cache/trajviz-obs/pi` |
+| `python`, `trajvizSource`, `cacheRoot` | Automatic Python discovery, `agent-trajviz==0.7.1`, and `~/.cache/trajviz-obs/pi` |
 
 Change the dashboard port during a session with `/obs dashboard port 7863`. Use `auto` for automatic selection or `default` to restore the file setting. `/obs dashboard --port N` overrides it for one launch.
 
 Usage telemetry is on by default; saved opt-outs are preserved. `/obs disable_telemetry` stops recording and pauses uploads, `/obs enable_telemetry` turns it back on, and `/obs telemetry` checks delivery. The collector defaults to `127.0.0.1:8765`. Change it during a session with `/obs telemetry_destination https://telemetry.example.com`. The choice is separate from Claude Code and OpenCode. See [telemetry configuration and reports](https://github.com/rshu/TrajViz-Obs/blob/main/telemetry/README.md).
 
-For the experimental **Prompt Explorer**, [enable local capture before launching Pi](../PROMPT_CAPTURE.md), complete a response, then run `/obs dashboard` and select **Prompt Explorer**. It shows read-only composition and component changes for the current session. Capture is off by default and separate from usage telemetry.
+For the experimental **Captured components**, [enable local capture before launching Pi](../PROMPT_CAPTURE.md), complete a response, then run `/obs dashboard` and select **Captured components**. It shows read-only composition and component changes for the current session. Capture is off by default and separate from usage telemetry. These private sidecars are excluded from exports and do not populate the built-in **Prompt Evolution** tab. That tab and `/obs view prompt_construction request_id=<id>` inspect native evidence or explicitly estimated transcript candidates in the ordinary trajectory; ordinary exports can retain that evidence.
 
 ## Limits
 

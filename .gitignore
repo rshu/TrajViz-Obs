@@ -21,3 +21,9 @@ dist/
 !.env.example
 # Local plans and verification reports are not plugin distribution files.
 /docs/
+
+# Generated case reports and captured screenshots stay local; never commit or push them.
+output/
+reports/
+screenshots/
+/deveco/docs/case-study.md

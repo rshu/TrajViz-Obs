@@ -11,8 +11,8 @@ const CACHE = `${HOME}/.cache/trajviz-obs`
 const VENV_PY = `${CACHE}/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python`
 const STATE = `${CACHE}/state.json`
 const BOOTSTRAP = '/plugin/bridge/bootstrap.py'
-const OPTIONS: PluginOptions = { trajvizSource: 'agent-trajviz==0.5.1', python: '' }
-const STATE_JSON = JSON.stringify({ revision: 6, python: VENV_PY, trajviz: '0.5.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.5.1', createdAt: 1700000000000 })
+const OPTIONS: PluginOptions = { trajvizSource: 'agent-trajviz==0.7.1', python: '' }
+const STATE_JSON = JSON.stringify({ revision: 6, python: VENV_PY, trajviz: '0.7.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.7.1', createdAt: 1700000000000 })
 
 function fake(world: FakeWorld): Fake {
   const files = { ...(world.files ?? {}) }, writes: Record<string, string> = {}
@@ -40,7 +40,7 @@ function fake(world: FakeWorld): Fake {
         let a = world.spawn?.(request.argv)
         if (!a) {
           const payload = JSON.parse(request.argv[request.argv.indexOf('--request') + 1] as string)
-          const doc = { revision: 6, python: VENV_PY, pythonOption: payload.pythonOption, trajviz: '0.5.1', extras: [...new Set(['llm', 'charts', 'zstd', ...payload.extras])], source: payload.source, createdAt: 1 }
+          const doc = { revision: 6, python: VENV_PY, pythonOption: payload.pythonOption, trajviz: '0.7.1', extras: [...new Set(['llm', 'charts', 'zstd', ...payload.extras])], source: payload.source, createdAt: 1 }
           files[STATE] = writes[STATE] = JSON.stringify(doc)
           pythonExists = true
           a = { chunks: [{ stream: 'stderr', text: 'Installing isolated environment\n' }, { stream: 'stdout', text: JSON.stringify(doc) }], code: 0 }
@@ -59,8 +59,10 @@ const payload = (argv: string[]) => JSON.parse(argv[argv.indexOf('--request') + 
 test('readEnvState parses state.json', async () => {
   const ok = fake({ files: { [STATE]: STATE_JSON } })
   const state = await readEnvState(ok.$)
-  expect(state).toEqual({ revision: 6, python: VENV_PY, trajviz: '0.5.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.5.1', createdAt: 1700000000000 })
+  expect(state).toEqual({ revision: 6, python: VENV_PY, trajviz: '0.7.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.7.1', createdAt: 1700000000000 })
   expect(needsSetup(state, OPTIONS)).toBe(false)
+  expect(needsSetup(state, {})).toBe(false)
+  expect(needsSetup(state && { ...state, source: 'agent-trajviz==0.5.1', trajviz: '0.5.1' }, {})).toBe(true)
   expect(needsSetup(state && { ...state, source: 'agent-trajviz==0.5.0', trajviz: '0.5.0' }, {})).toBe(true)
   expect(needsSetup(state, { ...OPTIONS, trajvizSource: '/Users/me/TrajViz' })).toBe(true)
   expect(needsSetup(null, OPTIONS)).toBe(true)

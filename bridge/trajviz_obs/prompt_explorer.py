@@ -1,4 +1,4 @@
-"""Read-only, host-pinned Prompt Explorer in the live session dashboard."""
+"""Read-only, host-pinned Captured components in the live session dashboard."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def _session(run: Trajectory) -> str | None:
 def _adapter(run: Trajectory) -> str | None:
     if run.raw.get("_pi_format"):
         return "pi"
-    return {"opencode": "opencode", "claude_code": "claude-code"}.get(run.format)
+    return {"opencode": "opencode", "claude_code": "claude-code", "deveco": "deveco"}.get(run.format)
 
 
 def scoped_dataset(run, pinned_source: Path, capture_root: Path | None, *, session_id: str | None = None,
@@ -101,9 +101,16 @@ def scoped_dataset(run, pinned_source: Path, capture_root: Path | None, *, sessi
         sessions = {identity}
         # Child IDs come from the same host-pinned native capture, never a browser selector.
         sessions.update(str(row["session_id"]) for row in run.steps if row.get("session_id"))
-        return load_dataset(capture_root, session_ids=sessions, adapter=adapter,
-                            claude_raw=claude_raw if adapter == "claude-code" else None,
-                            **({"cursor": cursor, "direction": direction} if cursor or direction != "latest" else {}))
+        result = load_dataset(capture_root, session_ids=sessions, adapter=adapter,
+                              claude_raw=claude_raw if adapter == "claude-code" else None,
+                              **({"cursor": cursor, "direction": direction} if cursor or direction != "latest" else {}))
+        native = run.raw.get("_trajviz_obs_deveco_v1") if adapter == "deveco" else None
+        health = native.get("source_health") if isinstance(native, dict) else None
+        if isinstance(health, dict) and health.get("status") == "stale":
+            result["source_health"] = {"status": "stale"}
+            if isinstance(health.get("reason"), str):
+                result["source_health"]["reason"] = health["reason"][:128]
+        return result
     except (LoadError, OSError, ValueError, TypeError, KeyError):
         return _empty("The session or its local captures are temporarily unavailable. Retry Refresh captures after the current write finishes.", "unavailable")
 
@@ -184,7 +191,10 @@ def mount_prompt_explorer(app: gr.Blocks, *, transcript_path: str, session_id: s
     with app:
         state = gr.State(initial)
         selected = gr.State({})
-        with tabs, gr.Tab("Prompt Explorer", id="obs-prompt-explorer-tab", elem_id="obs-prompt-tab"):
+        with tabs, gr.Tab("Captured components", id="obs-prompt-explorer-tab", elem_id="obs-prompt-tab"):
+            gr.Markdown("Private host observations, separate from the trajectory evidence and estimated transcript "
+                        "candidates in **Prompt Evolution**. Sizes here are serialized UTF-8 bytes, not token counts. "
+                        "Viewing captured components does not make model requests.", elem_id="obs-prompt-guide")
             with gr.Row(elem_classes=["obs-prompt-toolbar"]):
                 lane = gr.Dropdown(label="Capture lane", choices=[], interactive=True, scale=4, min_width=220, elem_id="obs-prompt-lane")
                 mode = gr.Radio([("Request components", "physical"), ("Pi active system / tools", "effective")],

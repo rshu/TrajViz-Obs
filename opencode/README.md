@@ -110,7 +110,7 @@ Focus the panel to switch tabs with **1–7**. In Desktop, use **Expand** for a 
 
 Use `/obs help` for all commands. Diagnostics, exports, comparisons, analysis, fixes, step labeling, and attribution follow the [shared usage guide](https://github.com/rshu/TrajViz-Obs#use). `/obs sessions` lists this project's saved sessions; session commands accept `--session <id|prefix|path>`.
 
-For a saved OTLP capture, use `/obs sessions --session /path/to/capture`, then `/obs overview --session /path/to/capture --session-id <id>`. Each selected session has separate artifacts and model history. Refresh imported sessions manually after their inputs change. TrajViz **0.5.1** provides all **36 views**, including `/obs view data_quality`.
+For a saved OTLP capture, use `/obs sessions --session /path/to/capture`, then `/obs overview --session /path/to/capture --session-id <id>`. Each selected session has separate artifacts and model history. Refresh imported sessions manually after their inputs change. The default TrajViz **0.7.1** runtime provides **37 single-run views**, including `/obs view data_quality` and `/obs view prompt_construction request_id=<id>`. Its built-in **Prompt Evolution** tab shows native evidence or explicitly estimated transcript candidates from the loaded trajectory.
 
 ## Options
 
@@ -143,7 +143,7 @@ Run `/obs telemetry` to check delivery or `/obs telemetry_destination` to see th
 
 Desktop and terminal clients on a shared OpenCode server share its telemetry installation ID. Agent version, when available, is the connected OpenCode server version.
 
-For the experimental **Prompt Explorer**, [enable local capture on the server before launch](../PROMPT_CAPTURE.md), complete a response, then run `/obs dashboard` and select **Prompt Explorer**. TUI and Desktop use the same read-only, current-session view. Capture is off by default and separate from usage telemetry.
+For the experimental **Captured components**, [enable local capture on the server before launch](../PROMPT_CAPTURE.md), complete a response, then run `/obs dashboard` and select **Captured components**. TUI and Desktop use the same read-only, current-session view. Capture is off by default and separate from usage telemetry. These private sidecars are excluded from exports and do not populate the built-in **Prompt Evolution** tab; native prompt evidence already in an ordinary trajectory can be exported.
 
 ## Development
 

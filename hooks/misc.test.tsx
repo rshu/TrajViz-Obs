@@ -13,11 +13,11 @@ const DERIVED = `${HOME}/.claude/projects/-Users-me-p/abc.jsonl`
 const ARTIFACTS = `${CACHE}/sessions/abc`
 const USAGE = { startedAt: 0, context: { window: 1_000_000, percent: 12 }, rateLimits: [] }
 const NOW = 1_761_150_000_000
-const SOURCE = 'agent-trajviz==0.5.1'
+const SOURCE = 'agent-trajviz==0.7.1'
 
 /** `state.json` with the given extras installed. */
 const stateJson = (extras: string[]): string =>
-  JSON.stringify({ revision: 6, python: VENV_PY, trajviz: '0.5.1', extras, source: SOURCE, createdAt: NOW })
+  JSON.stringify({ revision: 6, python: VENV_PY, trajviz: '0.7.1', extras, source: SOURCE, createdAt: NOW })
 
 /** The argv every session-bound bridge subcommand gets for the current session. */
 const SESSION_ARGV = ['--transcript', DERIVED, '--window', '1000000', '--artifacts', ARTIFACTS, '--kind', 'current']
@@ -94,7 +94,7 @@ function host(on: On, world: World = {}): Host {
     spawned.push([...e.argv])
     if (e.argv.some(a => a.endsWith('/bridge/bootstrap.py'))) {
       const req = JSON.parse(e.argv[e.argv.indexOf('--request') + 1] as string)
-      const state = { revision: 6, python: VENV_PY, pythonOption: req.pythonOption, trajviz: (world.commands?.[VENV_PY]?.stdout.trim() || '0.5.1'), extras: [...new Set(['llm', 'charts', 'zstd', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
+      const state = { revision: 6, python: VENV_PY, pythonOption: req.pythonOption, trajviz: (world.commands?.[VENV_PY]?.stdout.trim() || '0.7.1'), extras: [...new Set(['llm', 'charts', 'zstd', ...req.extras])], source: req.source, ...(req.local ? { sourceCwd: CWD } : {}), createdAt: 1 }
       files[STATE_PATH] = JSON.stringify(state)
 
       yield { stream: 'stderr' as const, text: 'Installed\n' }
@@ -345,13 +345,13 @@ test('passArgs is every token after the subcommand, a leading -- dropped', () =>
 test('setup --extras all builds llm and charts together, then installs app once', async ($, on) => {
   const { ran, spawned, files, statuses, toasts } = host(on, {
     extras: null,
-    commands: { uv: { exitCode: 0, stdout: 'uv 0.9.0\n' }, [VENV_PY]: { exitCode: 0, stdout: '0.5.1\n' } },
+    commands: { uv: { exitCode: 0, stdout: 'uv 0.9.0\n' }, [VENV_PY]: { exitCode: 0, stdout: '0.7.1\n' } },
   })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   const out = await obs($, 'setup --extras all')
   expect(setupRequests(spawned).map(r => r.extras)).toEqual([['llm', 'charts', 'zstd'], ['llm', 'charts', 'zstd', 'llm', 'charts', 'zstd', 'app']])
   expect(JSON.parse(files[STATE_PATH] as string).extras).toEqual(['llm', 'charts', 'zstd', 'app'])
-  expect(out.text).toBe(`TrajViz 0.5.1 is set up at ${VENV_PY} (source ${SOURCE}; extras llm, charts, zstd, app).`)
+  expect(out.text).toBe(`TrajViz 0.7.1 is set up at ${VENV_PY} (source ${SOURCE}; extras llm, charts, zstd, app).`)
   // Progress went to the status line, cleared at the end; the first run's toast, no ask.
   expect(statuses[0]).toBe('obs setup: Installed')
   expect(statuses[statuses.length - 1]).toBeUndefined()
@@ -368,7 +368,7 @@ test('setup alone leaves a ready environment alone; --extras names are checked; 
     commands: { uv: { exitCode: 0, stdout: 'uv 0.9.0\n' }, [VENV_PY]: { exitCode: 0, stdout: '0.2.2\n' } },
   })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-  expect((await obs($, 'setup')).text).toBe(`TrajViz 0.5.1 is set up at ${VENV_PY} (source ${SOURCE}; extras llm, charts, zstd).`)
+  expect((await obs($, 'setup')).text).toBe(`TrajViz 0.7.1 is set up at ${VENV_PY} (source ${SOURCE}; extras llm, charts, zstd).`)
   expect((await obs($, 'setup --extras none')).text).toContain('extras llm, charts, zstd)')
   expect((await obs($, 'setup --extras llm')).text).toContain('extras llm, charts, zstd)')
   expect(spawned).toEqual([])
@@ -390,7 +390,7 @@ test('setup alone leaves a ready environment alone; --extras names are checked; 
 test('manual setup and a later automatic rebuild restore the enabled summary after progress', { options: { statusline: true } }, async ($, on) => {
   const h = host(on, {
     bridge: { snapshot: json(SNAPSHOT), json: json({ path: '/tmp/views', bytes: 1, files: ['index.json'] }) },
-    commands: { uv: { exitCode: 0, stdout: 'uv 0.9.0\n' }, [VENV_PY]: { exitCode: 0, stdout: '0.5.1\n' } },
+    commands: { uv: { exitCode: 0, stdout: 'uv 0.9.0\n' }, [VENV_PY]: { exitCode: 0, stdout: '0.7.1\n' } },
   })
   await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
   await obs($, '')

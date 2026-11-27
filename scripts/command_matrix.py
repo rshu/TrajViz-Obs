@@ -87,7 +87,8 @@ def run_matrix(python: str, output: Path) -> dict:
         call('doctor')
         catalog = call('view', *common)['views']
         ids = {entry['id'] for entry in catalog}
-        require(len(ids) == len(catalog) and len(ids) >= 36, 'Incomplete/duplicate view catalog')
+        require(len(ids) == len(catalog) and len(ids) >= 37 and 'prompt_construction' in ids,
+                'Incomplete/duplicate view catalog or missing prompt construction')
         schemas = call('schemas', '--out', str(output / 'schemas'))
         for filename in schemas['files']:
             Draft202012Validator.check_schema(document(output / 'schemas' / filename))

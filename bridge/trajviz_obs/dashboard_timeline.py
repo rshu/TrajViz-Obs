@@ -1,4 +1,4 @@
-"""Prompt-aware timeline compression for the TrajViz 0.5.1 dashboard."""
+"""Prompt-aware timeline compression for the TrajViz dashboard."""
 
 from __future__ import annotations
 
@@ -20,6 +20,16 @@ TIMELINE_TRANSLATIONS = {
 }
 
 
+def _legend_header(fig):
+    """Keep wrapped legends clear of the top lane on every engine path."""
+    if fig is None:
+        return None
+    top = fig.layout.margin.t or 0
+    fig.update_layout(legend={"y": 1.02, "yanchor": "bottom"},
+                      margin={"t": max(120, top)}, height=fig.layout.height + max(0, 120 - top))
+    return fig
+
+
 @functools.cache
 def timeline_builder():
     """Apply upstream's prompt-aware mapping without replacing chart rendering."""
@@ -31,7 +41,12 @@ def timeline_builder():
     build = gantt.build_execution_gantt_chart
     original_axis = getattr(gantt, "_IdleGapAxis", None)
     if original_axis is None or "user_times" in inspect.signature(original_axis).parameters:
-        return build  # Newer TrajViz versions contain the fix natively.
+        # Newer engines fix prompt gaps natively; the plugin still owns its
+        # legend placement independently of that axis implementation.
+        def render_native(steps, dark=False, axis_mode=gantt.GANTT_AXIS_SKIP_IDLE):
+            return _legend_header(build(steps, dark=dark, axis_mode=axis_mode))
+
+        return render_native
 
     def render(steps, dark=False, axis_mode=gantt.GANTT_AXIS_SKIP_IDLE):
         timed = [(step, gantt._epoch_ms(step.get("time_created_ms"))) for step in steps if isinstance(step, dict)]
@@ -82,11 +97,7 @@ def timeline_builder():
         fig = native(steps, dark=dark, axis_mode=axis_mode)
         if fig is None:
             return None
-        # A horizontal legend can wrap. Anchor its bottom above the axes so
-        # extra rows grow into the header, not over the top user-wait lane.
-        top = fig.layout.margin.t or 0
-        fig.update_layout(legend={"y": 1.02, "yanchor": "bottom"},
-                          margin={"t": max(120, top)}, height=fig.layout.height + max(0, 120 - top))
+        _legend_header(fig)
         if fig.layout.xaxis.tickvals is not None:
             fig.update_layout(title_text=_COMPRESSED_TITLE, xaxis_title=_COMPRESSED_AXIS)
         bands = [trace for trace in fig.data if trace.name == gantt._WAIT_LEGEND]

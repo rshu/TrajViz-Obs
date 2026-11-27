@@ -3,7 +3,7 @@ import type { EngineInterface, On, TurnStepInput, TurnStepResult } from 'claude-
 import { capturePromptObservation, createPromptCapture, finishPromptCapture, promptExplorerArgs } from './lib/prompt-capture'
 
 const PYTHON = '/cache/trajviz-obs/envs/0123456789abcdef01234567/0123456789abcdef0123456789abcdef/bin/python'
-const STATE = JSON.stringify({ revision: 6, python: PYTHON, trajviz: '0.5.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.5.1', createdAt: 1 })
+const STATE = JSON.stringify({ revision: 6, python: PYTHON, trajviz: '0.7.1', extras: ['llm', 'charts', 'zstd'], source: 'agent-trajviz==0.7.1', createdAt: 1 })
 const PRIVATE = 'PRIVATE-SYNTHETIC-PROMPT'
 const DONE = { exitCode: 0, stdout: '{"saved":true}', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
 const STEP: TurnStepInput = { turnId: 'turn-one', index: 0, model: 'test-model', messageCount: 1 }

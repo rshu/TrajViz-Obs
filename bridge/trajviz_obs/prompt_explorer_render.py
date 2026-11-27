@@ -118,7 +118,7 @@ _KINDS = {
     "component_observation": ("Component observation", "#b7791f"),
     "opaque": ("Other captured content", "#94a3b8"),
 }
-_ADAPTERS = {"pi": "Pi", "claude-code": "Claude Code", "opencode": "OpenCode"}
+_ADAPTERS = {"pi": "Pi", "claude-code": "Claude Code", "opencode": "OpenCode", "deveco": "DevEco Code"}
 _CHANGE_LABELS = {"added": "Added", "removed": "Removed", "modified": "Changed", "moved": "Moved", "unchanged": "Unchanged"}
 
 
@@ -384,6 +384,10 @@ def render_explorer(dataset: dict, selected_request: str | None = None, selected
     """Render one selected capture. All interactions are selection-only data attributes."""
     records = [row for row in dataset.get("records", []) if isinstance(row, dict)]
     root = '<div id="obs-prompt-explorer">'
+    if _mapping(dataset.get("source_health")).get("status") == "stale":
+        root += ('<div class="pe-note pe-warning" role="status">Live DevEco session refresh failed. '
+                 'The last successful native session is being used; child-session discovery may be stale. '
+                 'Retry the obs tool with command "overview" or "dashboard". Available prompt observations remain readable below.</div>')
     if dataset.get("history_reset") is True:
         root += '<p class="pe-note pe-warning">Session history changed or the saved window expired. Showing newest captures.</p>'
     if not records:
@@ -418,7 +422,7 @@ def render_explorer(dataset: dict, selected_request: str | None = None, selected
     scope = "Main agent" if agent is None and correlation.get("scope") == "main" else str(agent) if agent else "Agent scope not recorded"
     model = _mapping(selected.get("model"))
     model_name = model.get("id") or model.get("modelID") or "Model not recorded"
-    parts = [root, f'<header class="pe-header"><div class="pe-heading"><h2>Request composition</h2><span class="pe-badge">{_escape(boundary)}</span></div>',
+    parts = [root, f'<header class="pe-header"><div class="pe-heading"><h2>Captured composition</h2><span class="pe-badge">{_escape(boundary)}</span></div>',
              f'<div class="pe-meta"><span>{_escape(adapter)}</span><span>{_escape(scope)}</span><span>{_escape(model_name)}</span><span>{_escape(selected.get("observed_at", "Time not recorded"))}</span></div>',
              f'<p class="pe-muted">{_escape(explanation)}</p>{_snapshot_badges(selected, baseline if comparable else None)}</header>', _page_status(dataset)]
     if selected.get("remote_context"):

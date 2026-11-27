@@ -16,7 +16,7 @@ from uuid import uuid4
 MAX_RECORD_BYTES = 4 * 1024 * 1024
 MAX_INSTANCE_BYTES = 128 * 1024 * 1024
 MAX_RECORDS = 4096
-ADAPTERS = {"pi", "claude-code", "opencode"}
+ADAPTERS = {"pi", "claude-code", "opencode", "deveco"}
 IDENTITY = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 

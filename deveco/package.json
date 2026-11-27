@@ -1,0 +1,44 @@
+{
+  "name": "trajviz-obs-deveco",
+  "version": "0.1.0",
+  "description": "Read-only trajectory and prompt observability for DevEco Code",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rshu/TrajViz-Obs.git",
+    "directory": "deveco"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist/index.js",
+    "runtime/bridge/**/*.py",
+    "README.md",
+    "LICENSE",
+    "scripts/capture-run.mjs"
+  ],
+  "scripts": {
+    "build": "bun scripts/package.mjs && bun build src/index.ts --target=bun --external zod --outfile dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test ./test",
+    "prepack": "bun run build"
+  },
+  "dependencies": {
+    "zod": "4.1.12",
+    "@opentelemetry/api": "1.9.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.1",
+    "@types/node": "22.18.6",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "bin": {
+    "trajviz-deveco-capture": "./scripts/capture-run.mjs"
+  }
+}
